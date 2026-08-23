@@ -1,19 +1,21 @@
 //! MirForge 客户端（Bevy）。
 //!
-//! M1 地图漫游版：直读原版资源渲染地图（back 大砖 / mid 中砖 / front 物件按行深度），
-//! 分块按需生成与回收，帧图按需解码进运行时图集。
+//! M1 角色行走版：直读原版资源渲染地图与角色（CArmour 8 向动画），
+//! 分块按需生成与回收，帧图按需解码进运行时图集；移动判定走共享 sim crate。
 //!
 //! 环境变量：
 //! - `MIRFORGE_RES`  资源根目录（必需，指向含 Map/ 与图库的目录）
 //! - `MIRFORGE_MAP`  地图文件名（默认 `0.map`）
 //! - `MIRFORGE_START` 初始镜头格坐标（默认 `330,150`，0.map 的比奇城一带）
 //!
-//! 操作：WASD/方向键平移，PageUp/PageDown 或 +/- 缩放，F 键 1x/2x/3x 整数缩放循环。
+//! 操作：WASD/方向键 = 角色行走（沿墙滑行），PageUp/PageDown 或 +/- 缩放，
+//! F 键 1x/2x/3x 整数缩放循环，Shift = 跑步。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::math::DVec2;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
@@ -21,6 +23,7 @@ use bevy::window::PresentMode;
 use mir_atlas::{AtlasCpu, PAGE_SIZE};
 use mir_formats::crystal_lib::CrystalLib;
 use mir_formats::map::MirMap;
+use sim::{dir8_from, WalkGrid, BODY_RADIUS};
 
 const CELL_W: f32 = 48.0;
 const CELL_H: f32 = 32.0;
@@ -44,7 +47,15 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (camera_control, stream_chunks, upload_dirty_pages).chain(),
+            (
+                player_move,
+                camera_follow,
+                camera_control,
+                stream_chunks,
+                player_sprite,
+                upload_dirty_pages,
+            )
+                .chain(),
         )
         .run();
 }
@@ -57,6 +68,8 @@ enum Layer {
     Back,
     Mid,
     Front,
+    /// 角色 (CArmour)
+    Hum,
 }
 
 #[derive(Clone, Copy)]
@@ -77,12 +90,15 @@ struct World {
     pages: Vec<Handle<Image>>,
     frames: HashMap<(Layer, i16, i32), Option<FrameRef>>,
     chunks: HashMap<(i32, i32), Entity>,
+    hum: Option<CrystalLib>,
+    walk: WalkGrid,
 }
 
 impl World {
     fn lib_name(layer: Layer, front_lib: i16) -> Option<String> {
         // 与既有约定一致: back→Tiles, mid→SmTiles, front: 0=Tiles 1=SmTiles 2=Objects n=Objects{n-1}
         Some(match layer {
+            Layer::Hum => return None, // Hum 专用库, 不走目录查找
             Layer::Back => "Tiles".into(),
             Layer::Mid => "SmTiles".into(),
             Layer::Front => match front_lib {
@@ -119,8 +135,10 @@ impl World {
             return *cached;
         }
         let fref = (|| {
-            let name = Self::lib_name(layer, front_lib)?;
-            let img = {
+            let img = if layer == Layer::Hum {
+                self.hum.as_ref()?.image(idx as usize).ok().flatten()?
+            } else {
+                let name = Self::lib_name(layer, front_lib)?;
                 let lib = self.open_lib(&name)?;
                 lib.image(idx as usize).ok().flatten()?
             };
@@ -210,6 +228,39 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         Camera2d,
         Transform::from_xyz(sx * CELL_W, -sy * CELL_H, 1000.0),
     ));
+    // 角色库: CArmour/00.Lib (男 0..808, 女 808..1616; 站 0+4/向, 走 32+6/向, 跑 80+6/向)
+    let hum = idx
+        .libs
+        .iter()
+        .find(|l| {
+            l.path.to_string_lossy().to_lowercase().contains("carmour")
+                && l.path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s == "00")
+        })
+        .and_then(|l| std::fs::read(&l.path).ok())
+        .and_then(|d| CrystalLib::parse(d).ok());
+    if hum.is_none() {
+        warn!("未找到 CArmour/00.Lib, 角色将不可见");
+    }
+    // 行走网格: 原版地图格级阻挡 → 1/4 子格
+    let cells = map.cells.clone();
+    let (mw, mh) = (map.width, map.height);
+    let walk = WalkGrid::from_cells(mw, mh, |x, y| cells[(y * mw + x) as usize].blocked);
+    // 玩家
+    commands.spawn((
+        Player {
+            pos: DVec2::new(sx as f64 + 0.5, sy as f64 + 0.5),
+            dir: 4,
+            moving: false,
+            anim_t: 0.0,
+        },
+        Sprite::default(),
+        Transform::default(),
+        Visibility::default(),
+    ));
+    info!("玩家已生成 @({sx},{sy})");
     // 预建 8 页图集纹理 (不够时 upload 系统按需补)
     let mut pages = Vec::new();
     for _ in 0..8 {
@@ -223,6 +274,8 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         pages,
         frames: HashMap::new(),
         chunks: HashMap::new(),
+        hum,
+        walk,
     });
 }
 
@@ -240,31 +293,115 @@ fn blank_page() -> Image {
     )
 }
 
+// ─────────── 玩家 ───────────
+
+/// 玩家状态 (位置为格坐标, 连续浮点)
+#[derive(Component)]
+struct Player {
+    pos: DVec2,
+    /// Mir 8 向 (0=上, 顺时针)
+    dir: usize,
+    moving: bool,
+    anim_t: f64,
+}
+
+const WALK_SPEED: f64 = 4.2; // 格/秒
+const RUN_SPEED: f64 = 7.0;
+
+fn player_move(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    world: Res<World>,
+    mut q: Query<&mut Player>,
+) {
+    let Ok(mut p) = q.get_single_mut() else {
+        return;
+    };
+    let mut v = DVec2::ZERO;
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+        v.y -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+        v.y += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+        v.x -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+        v.x += 1.0;
+    }
+    let dt = time.delta_secs_f64();
+    if v == DVec2::ZERO {
+        if p.moving {
+            p.moving = false;
+            p.anim_t = 0.0;
+        } else {
+            p.anim_t += dt;
+        }
+        return;
+    }
+    let run = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let speed = if run { RUN_SPEED } else { WALK_SPEED };
+    let v = v.normalize() * speed * dt;
+    let (nx, ny) = world.walk.try_move(p.pos.x, p.pos.y, v.x, v.y, BODY_RADIUS);
+    let moved = (nx - p.pos.x).abs() > 1e-9 || (ny - p.pos.y).abs() > 1e-9;
+    if moved {
+        p.dir = dir8_from(nx - p.pos.x, ny - p.pos.y);
+        p.pos = DVec2::new(nx, ny);
+    }
+    if moved != p.moving {
+        p.anim_t = 0.0;
+    }
+    p.moving = moved;
+    if moved {
+        p.anim_t += dt;
+    }
+}
+
+/// 按动作/方向/时间挑帧并更新精灵与变换
+fn player_sprite(mut world: ResMut<World>, mut q: Query<(&Player, &mut Sprite, &mut Transform)>) {
+    let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
+        return;
+    };
+    // 帧表 (男, CArmour 实证布局): 站 0 + dir*4 + f(4, 200ms); 走 32 + dir*6 + f(6, 90ms)
+    let frame_idx = if p.moving {
+        32 + p.dir * 6 + ((p.anim_t / 0.09) as usize % 6)
+    } else {
+        p.dir * 4 + ((p.anim_t / 0.2) as usize % 4)
+    };
+    let Some(f) = world.frame(Layer::Hum, 0, frame_idx as i32) else {
+        warn_once!("角色帧 {frame_idx} 不可用");
+        return;
+    };
+    sprite.image = world.pages[f.page.min(world.pages.len() - 1)].clone();
+    sprite.rect = Some(f.rect);
+    sprite.anchor = Anchor::TopLeft;
+    // Mir 角色帧偏移相对所在格左上角; 位置取格坐标向下取整的格原点 + 帧内偏移 + 连续余量
+    let px = p.pos.x as f32 * CELL_W - CELL_W / 2.0 + f.off.x;
+    let py = p.pos.y as f32 * CELL_H - CELL_H / 2.0 + f.off.y;
+    // 与前景高物件同一行深度体系; +0.005 让同行时角色压在物件之上
+    let z = 10.0 + p.pos.y as f32 * 0.01 + 0.005;
+    tf.translation = Vec3::new(px, -py, z);
+}
+
+fn camera_follow(q_player: Query<&Player>, mut q_cam: Query<&mut Transform, With<Camera2d>>) {
+    let (Ok(p), Ok(mut cam)) = (q_player.get_single(), q_cam.get_single_mut()) else {
+        return;
+    };
+    cam.translation.x = (p.pos.x as f32 - 0.5) * CELL_W;
+    cam.translation.y = -((p.pos.y as f32 - 0.5) * CELL_H);
+}
+
 // ─────────── 镜头 ───────────
 
 fn camera_control(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
+    mut q: Query<&mut OrthographicProjection, With<Camera2d>>,
 ) {
-    let Ok((mut tf, mut proj)) = q.get_single_mut() else {
+    let Ok(mut proj) = q.get_single_mut() else {
         return;
     };
-    let mut dir = Vec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        dir.y += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
-        dir.y -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        dir.x -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        dir.x += 1.0;
-    }
-    let speed = 900.0 * proj.scale;
-    tf.translation += (dir.normalize_or_zero() * speed * time.delta_secs()).extend(0.0);
 
     if keys.pressed(KeyCode::PageUp) || keys.pressed(KeyCode::Equal) {
         proj.scale = (proj.scale * (1.0 - time.delta_secs())).max(0.2);
@@ -355,8 +492,15 @@ fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> 
             }
             if cell.front >= 0 {
                 if let Some(f) = world.frame(Layer::Front, cell.front_lib, cell.front) {
-                    // 前景物件: 底对齐 + 帧偏移, 深度按行 (下行画在上行前)
-                    sprites.push(sprite_at(world, f, cx, cy, 10.0 + cy as f32 * 0.01, true));
+                    // 前景层沿用 Crystal 画序: 高 32/64 的平铺地表在 floor 阶段 (角色之下),
+                    // 更高的物件才按行深度参与遮挡 (下行画在上行前)
+                    let h = f.size.y;
+                    let z = if h == CELL_H || h == CELL_H * 2.0 {
+                        2.0
+                    } else {
+                        10.0 + cy as f32 * 0.01
+                    };
+                    sprites.push(sprite_at(world, f, cx, cy, z, true));
                 }
             }
         }

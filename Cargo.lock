@@ -2768,6 +2768,7 @@ dependencies = [
  "bevy",
  "mir-atlas",
  "mir-formats",
+ "sim",
 ]
 
 [[package]]

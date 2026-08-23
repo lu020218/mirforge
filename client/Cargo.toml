@@ -8,6 +8,7 @@ license.workspace = true
 bevy = "0.15"
 mir-formats = { path = "../crates/mir-formats" }
 mir-atlas = { path = "../crates/mir-atlas" }
+sim = { path = "../crates/sim" }
 
 [lints]
 workspace = true
