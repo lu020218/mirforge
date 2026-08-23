@@ -150,12 +150,19 @@ fn read_head(p: &Path, n: usize) -> Result<Vec<u8>, String> {
 fn head_dims(head: &[u8], kind: MapKind) -> (u32, u32) {
     let u16at = |i: usize| u16::from_le_bytes([head[i], head[i + 1]]);
     match kind {
-        MapKind::Type0 => (u16at(0) as u32, u16at(2) as u32),
-        MapKind::Type100 => (u16at(4) as u32, u16at(6) as u32),
+        MapKind::Type0 | MapKind::Type2 | MapKind::Type3 => (u16at(0) as u32, u16at(2) as u32),
         MapKind::Type1 => {
             let xor = u16at(23);
             ((u16at(21) ^ xor) as u32, (u16at(25) ^ xor) as u32)
         }
+        MapKind::Type4 => {
+            let xor = u16at(33);
+            ((u16at(31) ^ xor) as u32, (u16at(35) ^ xor) as u32)
+        }
+        MapKind::Type5 => (u16at(22) as u32, u16at(24) as u32),
+        MapKind::Type6 => (u16at(16) as u32, u16at(18) as u32),
+        MapKind::Type7 => (u16at(21) as u32, u16at(25) as u32),
+        MapKind::Type100 => (u16at(4) as u32, u16at(6) as u32),
     }
 }
 
