@@ -1,0 +1,193 @@
+{
+  "note": "MirForge 方向A鎏金经典皮肤 (tools/gen-skin.mjs 生成)",
+  "assets": {
+    "panelOrnate": {
+      "file": "panel_ornate.png",
+      "slice": [
+        32,
+        32,
+        32,
+        32
+      ]
+    },
+    "panelPlain": {
+      "file": "panel_plain.png",
+      "slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    "panelGlass": {
+      "file": "panel_glass.png",
+      "slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    "titlebar": {
+      "file": "titlebar.png",
+      "slice": [
+        12,
+        12,
+        12,
+        12
+      ]
+    },
+    "btnGold": {
+      "file": "btn_gold.png",
+      "slice": [
+        12,
+        12,
+        12,
+        12
+      ]
+    },
+    "btnGoldHover": {
+      "file": "btn_gold_hover.png",
+      "slice": [
+        12,
+        12,
+        12,
+        12
+      ]
+    },
+    "btnGoldPressed": {
+      "file": "btn_gold_pressed.png",
+      "slice": [
+        12,
+        12,
+        12,
+        12
+      ]
+    },
+    "btnGhost": {
+      "file": "btn_ghost.png",
+      "slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    "btnGhostHover": {
+      "file": "btn_ghost_hover.png",
+      "slice": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    "slot": {
+      "file": "slot.png",
+      "slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "slotGold": {
+      "file": "slot_gold.png",
+      "slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "slotSelected": {
+      "file": "slot_selected.png",
+      "slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "slotFrame": {
+      "file": "slot_frame.png",
+      "slice": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "barFrame": {
+      "file": "bar_frame.png",
+      "slice": [
+        8,
+        6,
+        8,
+        6
+      ]
+    },
+    "barFillHp": {
+      "file": "bar_fill_hp.png",
+      "slice": [
+        6,
+        5,
+        6,
+        5
+      ]
+    },
+    "barFillMp": {
+      "file": "bar_fill_mp.png",
+      "slice": [
+        6,
+        5,
+        6,
+        5
+      ]
+    },
+    "barFillExp": {
+      "file": "bar_fill_exp.png",
+      "slice": [
+        8,
+        2,
+        8,
+        2
+      ]
+    },
+    "badge": {
+      "file": "badge.png",
+      "slice": [
+        10,
+        9,
+        10,
+        9
+      ]
+    },
+    "avatarRing": {
+      "file": "avatar_ring.png",
+      "slice": null
+    },
+    "cornerOrnate": {
+      "file": "corner_ornate.png",
+      "slice": null
+    }
+  },
+  "colors": {
+    "gold": "#c9a55c",
+    "goldBright": "#ffd876",
+    "edgeGold": "#6b5a32",
+    "textMain": "#e8e2d0",
+    "textDim": "#9a917c",
+    "disabled": "#5b5648",
+    "edgeDark": "#2a2d3c",
+    "panelBg": "#0d0f18",
+    "slotBg": "#0e1017",
+    "quality": {
+      "common": "#cfc8b4",
+      "fine": "#7bd88f",
+      "rare": "#5c9ce8",
+      "epic": "#9d7bd8",
+      "legend": "#eecd52"
+    }
+  }
+}
