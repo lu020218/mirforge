@@ -1,5 +1,6 @@
 [package]
 name = "mir-atlas"
+description = "运行时纹理图集: 货架打包 + 多页管理"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

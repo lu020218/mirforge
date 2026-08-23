@@ -6,7 +6,7 @@
 //! - 索引表：`count` 个 `i32` 文件内偏移（≤0 = 空帧）。
 //! - 每帧：`w i16, h i16, x i16, y i16, shadow_x i16, shadow_y i16, shadow u8, length i32`
 //!   共 17 字节，随后 `length` 字节 GZip 压缩的 BGRA32 像素（w*h*4）。
-//! - 像素：BGRA → RGBA；纯黑 (0,0,0) 视为透明（传奇约定）。
+//! - 像素：BGRA → RGBA，alpha 直通（库数据编码期已把背景像素置 alpha=0）。
 
 use std::io::Read;
 
@@ -102,18 +102,12 @@ impl CrystalLib {
         }
         let mut rgba = vec![0u8; expect];
         for i in (0..expect).step_by(4) {
-            let (b, g, r, a) = (bgra[i], bgra[i + 1], bgra[i + 2], bgra[i + 3]);
-            rgba[i] = r;
-            rgba[i + 1] = g;
-            rgba[i + 2] = b;
-            // 传奇约定: 纯黑视为透明 (图库多以黑为抠像底)
-            rgba[i + 3] = if r == 0 && g == 0 && b == 0 {
-                0
-            } else if a == 0 {
-                255
-            } else {
-                a
-            };
+            // BGRA → RGBA, alpha 直通: 库数据在编码期已把背景(含黑底)置 alpha=0,
+            // 解码层不得再造 alpha (强制不透明会把透明背景画成垃圾色块 — 实测教训)
+            rgba[i] = bgra[i + 2];
+            rgba[i + 1] = bgra[i + 1];
+            rgba[i + 2] = bgra[i];
+            rgba[i + 3] = bgra[i + 3];
         }
         Ok(Some(DecodedImage {
             width: w as u16,
@@ -140,8 +134,8 @@ mod tests {
     /// 合成 v2 库: 2 帧, 第 0 帧空, 第 1 帧 2×1 (红色 + 黑色透明)
     #[test]
     fn v2_two_frames() {
-        // BGRA: 像素0 = 红 (0,0,255,255), 像素1 = 纯黑
-        let pixels = [0u8, 0, 255, 255, 0, 0, 0, 255];
+        // BGRA: 像素0 = 红 (不透明), 像素1 = 黑色但 alpha=0 (库的透明背景约定)
+        let pixels = [0u8, 0, 255, 255, 0, 0, 0, 0];
         let comp = gz(&pixels);
         let mut buf = Vec::new();
         buf.extend_from_slice(&2i32.to_le_bytes()); // version
@@ -169,7 +163,7 @@ mod tests {
         assert_eq!((im.width, im.height), (2, 1));
         assert_eq!((im.offset_x, im.offset_y), (-24, -16));
         assert_eq!(&im.rgba[0..4], &[255, 0, 0, 255]); // BGRA→RGBA
-        assert_eq!(im.rgba[7], 0); // 纯黑 → 透明
+        assert_eq!(im.rgba[7], 0); // alpha 直通: 背景 alpha=0 保持透明
         assert!(lib.image(9).unwrap().is_none());
     }
 

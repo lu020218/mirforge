@@ -238,8 +238,8 @@ fn idx16(raw: u16) -> i32 {
     if v == 0 {
         -1
     } else {
-        v
-    }
+        v - 1
+    } // 图号从 1 起, 帧数组 0 基
 }
 
 /// u32 图号 → 索引（高位为标志位，索引取低 29 位；0 = 无图）
@@ -249,8 +249,8 @@ fn idx32(raw: u32) -> i32 {
     if v == 0 {
         -1
     } else {
-        v
-    }
+        v - 1
+    } // 同上: -1 到 0 基
 }
 
 #[cfg(test)]
@@ -274,8 +274,8 @@ mod tests {
         assert_eq!(m.kind, MapKind::Type0);
         assert_eq!((m.width, m.height), (2, 2));
         let c = m.cell(1, 0).unwrap();
-        assert_eq!(c.back, 7);
-        assert_eq!(c.front, 42);
+        assert_eq!(c.back, 6); // 图号 7 → 帧 6
+        assert_eq!(c.front, 41);
         assert_eq!(c.front_lib, 3);
         assert!(c.blocked);
         assert!(!m.cell(0, 0).unwrap().blocked);
@@ -298,7 +298,7 @@ mod tests {
         let m = parse(&buf).unwrap();
         assert_eq!(m.kind, MapKind::Type100);
         let c = m.cell(1, 0).unwrap();
-        assert_eq!(c.back, 551);
+        assert_eq!(c.back, 550);
         assert_eq!(c.back_lib, 5);
         assert!(c.blocked);
         assert!(!m.cell(0, 0).unwrap().blocked);
@@ -323,8 +323,8 @@ mod tests {
         assert_eq!(m.kind, MapKind::Type1);
         assert_eq!((m.width, m.height), (2, 1));
         let c = m.cell(0, 0).unwrap();
-        assert_eq!(c.back, 100);
-        assert_eq!(c.front, 9);
+        assert_eq!(c.back, 99);
+        assert_eq!(c.front, 8);
         assert_eq!(c.front_lib, 3);
         assert!(c.blocked);
     }
