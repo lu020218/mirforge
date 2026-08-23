@@ -8,8 +8,8 @@
 //! - `MIRFORGE_MAP`  地图文件名（默认 `0.map`）
 //! - `MIRFORGE_START` 初始镜头格坐标（默认 `330,150`，0.map 的比奇城一带）
 //!
-//! 操作：WASD/方向键 = 角色行走（沿墙滑行），PageUp/PageDown 或 +/- 缩放，
-//! F 键 1x/2x/3x 整数缩放循环，Shift = 跑步。
+//! 操作（经典传奇）：鼠标左键按住 = 朝光标走路，右键按住 = 跑步（均沿墙滑行）；
+//! PageUp/PageDown 或 +/- 缩放，F 键 1x/2x/3x 整数缩放循环。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -254,6 +254,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             pos: DVec2::new(sx as f64 + 0.5, sy as f64 + 0.5),
             dir: 4,
             moving: false,
+            running: false,
             anim_t: 0.0,
         },
         Sprite::default(),
@@ -302,33 +303,53 @@ struct Player {
     /// Mir 8 向 (0=上, 顺时针)
     dir: usize,
     moving: bool,
+    running: bool,
     anim_t: f64,
 }
 
 const WALK_SPEED: f64 = 4.2; // 格/秒
 const RUN_SPEED: f64 = 7.0;
+/// 光标离角色近于此距离(格)时不再追(防原地抖动)
+const CURSOR_DEADZONE: f64 = 0.4;
 
+/// 经典传奇操作: 左键按住=朝光标走路, 右键按住=跑步 (点到 NPC/怪的分流留待后续实体系统)
 fn player_move(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut ev_cursor: EventReader<CursorMoved>,
+    q_cam: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     world: Res<World>,
+    mut last_cursor: Local<Option<Vec2>>,
     mut q: Query<&mut Player>,
 ) {
     let Ok(mut p) = q.get_single_mut() else {
         return;
     };
+    // 光标屏幕位置走事件流记忆: Window::cursor_position 在光标离窗时清 None,
+    // 事件不会——按住拖出窗口也能沿最后方向继续走 (经典手感)
+    for e in ev_cursor.read() {
+        *last_cursor = Some(e.position);
+    }
+    let run = buttons.pressed(MouseButton::Right);
+    let held = buttons.pressed(MouseButton::Left) || run;
     let mut v = DVec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        v.y -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
-        v.y += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        v.x -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        v.x += 1.0;
+    if held {
+        if let (Some(cursor), Ok((cam, cam_tf))) = (*last_cursor, q_cam.get_single()) {
+            if let Ok(wpt) = cam.viewport_to_world_2d(cam_tf, cursor) {
+                // 世界像素 → 格坐标 (Bevy y 向上, 世界 y 向下取负还原); 每帧换算,
+                // 镜头滚动时朝向随光标屏幕位置更新
+                let target = DVec2::new(
+                    wpt.x as f64 / CELL_W as f64,
+                    -(wpt.y as f64) / CELL_H as f64,
+                );
+                let d = target - p.pos;
+                if d.length() > CURSOR_DEADZONE {
+                    // 方向吸附 8 向: 身体走向与精灵朝向结构上一致 (阶梯路径, 经典手感)
+                    let dir = dir8_from(d.x, d.y);
+                    v = DVec2::new(sim::DIR8[dir].0, sim::DIR8[dir].1);
+                }
+            }
+        }
     }
     let dt = time.delta_secs_f64();
     if v == DVec2::ZERO {
@@ -340,19 +361,19 @@ fn player_move(
         }
         return;
     }
-    let run = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let speed = if run { RUN_SPEED } else { WALK_SPEED };
-    let v = v.normalize() * speed * dt;
+    let v = v * speed * dt;
     let (nx, ny) = world.walk.try_move(p.pos.x, p.pos.y, v.x, v.y, BODY_RADIUS);
     let moved = (nx - p.pos.x).abs() > 1e-9 || (ny - p.pos.y).abs() > 1e-9;
     if moved {
         p.dir = dir8_from(nx - p.pos.x, ny - p.pos.y);
         p.pos = DVec2::new(nx, ny);
     }
-    if moved != p.moving {
+    if moved != p.moving || (moved && run != p.running) {
         p.anim_t = 0.0;
     }
     p.moving = moved;
+    p.running = run;
     if moved {
         p.anim_t += dt;
     }
@@ -363,8 +384,10 @@ fn player_sprite(mut world: ResMut<World>, mut q: Query<(&Player, &mut Sprite, &
     let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
         return;
     };
-    // 帧表 (男, CArmour 实证布局): 站 0 + dir*4 + f(4, 200ms); 走 32 + dir*6 + f(6, 90ms)
-    let frame_idx = if p.moving {
+    // 帧表 (男, CArmour 实证布局): 站 0 + dir*4 + f(4, 200ms); 走 32 + dir*6 (6, 90ms); 跑 80 + dir*6
+    let frame_idx = if p.moving && p.running {
+        80 + p.dir * 6 + ((p.anim_t / 0.08) as usize % 6)
+    } else if p.moving {
         32 + p.dir * 6 + ((p.anim_t / 0.09) as usize % 6)
     } else {
         p.dir * 4 + ((p.anim_t / 0.2) as usize % 4)
