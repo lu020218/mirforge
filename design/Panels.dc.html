@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  <style>
+    body { margin: 0; font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+    a { color: #c9a55c; } a:hover { color: #ffd876; }
+    .ornate { position: relative; }
+    .ornate::before, .ornate::after { content: ""; position: absolute; width: 22px; height: 22px; pointer-events: none; }
+    .ornate::before { top: -2px; left: -2px; border-top: 2px solid #c9a55c; border-left: 2px solid #c9a55c; }
+    .ornate::after { bottom: -2px; right: -2px; border-bottom: 2px solid #c9a55c; border-right: 2px solid #c9a55c; }
+    .ornate2 { position: absolute; inset: 0; pointer-events: none; }
+    .ornate2::before { content: ""; position: absolute; width: 26px; height: 26px; top: -2px; right: -2px; border-top: 2px solid #c9a55c; border-right: 2px solid #c9a55c; }
+    .ornate2::after { content: ""; position: absolute; width: 26px; height: 26px; bottom: -2px; left: -2px; border-bottom: 2px solid #c9a55c; border-left: 2px solid #c9a55c; }
+  </style>
+</helmet>
+<div style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background: radial-gradient(1300px 800px at 50% 42%, #171b28 0%, #10121c 55%, #0a0b12 100%)">
+  <!-- 压暗的战场背景 -->
+  <div style="position: absolute; inset: 0; background: rgba(0,0,0,0.35)"></div>
+
+  <!-- 背包面板 (可拖拽标题栏) -->
+  <div class="ornate" style="position: absolute; left: 468px; top: 220px; width: 430px; background: rgba(13,15,24,0.94); border: 1px solid #6b5a32; box-shadow: 0 30px 80px rgba(0,0,0,0.65)"><div class="ornate2"></div>
+    <div style="height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid #2a2d3c; background: linear-gradient(180deg, rgba(201,165,92,0.08), rgba(0,0,0,0))">
+      <div style="font-size: 15px; letter-spacing: 6px; color: #e8e2d0">背 包</div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9a917c" stroke-width="2"><path d="M6 6 L18 18 M18 6 L6 18"></path></svg>
+    </div>
+    <div style="padding: 16px; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px">
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #eecd52; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#eecd52" stroke-width="1.5"><path d="M4 20 L14 10 M12 4 l8 8 -3 1 -2 4 -1-3 -4-2 Z"></path></svg></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #9d7bd8; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9d7bd8" stroke-width="1.5"><path d="M12 3 L15 8 L12 21 L9 8 Z M9 8 h6"></path></svg></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #5c9ce8; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5c9ce8" stroke-width="1.5"><circle cx="12" cy="13" r="5"></circle><path d="M12 8 V4 M9 5 h6"></path></svg></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #7bd88f; border-radius: 3px; display: flex; align-items: center; justify-content: center; position: relative"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7bd88f" stroke-width="1.5"><path d="M12 4 a5 5 0 0 1 5 5 c0 4-5 11-5 11 s-5-7-5-11 a5 5 0 0 1 5-5 Z"></path></svg><span style="position: absolute; bottom: 1px; right: 3px; font-size: 9px; color: #cfc8b4">12</span></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #cfc8b4; border-radius: 3px; display: flex; align-items: center; justify-content: center; position: relative"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#cfc8b4" stroke-width="1.5"><rect x="7" y="4" width="10" height="16" rx="2"></rect><path d="M10 8 h4"></path></svg><span style="position: absolute; bottom: 1px; right: 3px; font-size: 9px; color: #cfc8b4">5</span></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+      <div style="aspect-ratio: 1; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px"></div>
+    </div>
+    <div style="height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-top: 1px solid #2a2d3c; font-size: 12px">
+      <span style="color: #9a917c">32 格 · 已用 5</span>
+      <span style="color: #eecd52; display: flex; align-items: center; gap: 6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#eecd52" stroke-width="1.6"><circle cx="12" cy="12" r="8"></circle><path d="M12 8 v8 M9.5 10 h5 M9.5 14 h5"></path></svg>12,340</span>
+    </div>
+  </div>
+
+  <!-- 角色面板 (定稿: 经典 F10 布局 — 立绘居中, 装备槽左右下环绕) -->
+  <div class="ornate" style="position: absolute; left: 1010px; top: 180px; width: 440px; background: rgba(13,15,24,0.94); border: 1px solid #6b5a32; box-shadow: 0 30px 80px rgba(0,0,0,0.65)"><div class="ornate2"></div>
+    <div style="height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid #2a2d3c; background: linear-gradient(180deg, rgba(201,165,92,0.08), rgba(0,0,0,0))">
+      <div style="font-size: 15px; letter-spacing: 6px; color: #e8e2d0">角 色</div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9a917c" stroke-width="2"><path d="M6 6 L18 18 M18 6 L6 18"></path></svg>
+    </div>
+    <div style="padding: 18px 20px; display: flex; justify-content: space-between; gap: 12px">
+      <!-- 左列: 武器/衣服/护腕/戒指 -->
+      <div style="display: flex; flex-direction: column; gap: 10px">
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #6b5a32; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#eecd52" stroke-width="1.4"><path d="M4 20 L14 10 M12 4 l8 8 -3 1 -2 4 -1-3 -4-2 Z"></path></svg></div>
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #6b5a32; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#cfc8b4" stroke-width="1.4"><path d="M8 4 L5 7 L7 11 L7 20 h10 V11 L19 7 L16 4 L12 6 Z"></path></svg></div>
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">护腕</span></div>
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">戒指</span></div>
+      </div>
+      <!-- 中央立绘 -->
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; flex-grow: 1">
+        <div style="width: 150px; height: 240px; background: linear-gradient(180deg, rgba(52,55,76,0.9), rgba(24,26,40,0.95)); clip-path: polygon(50% 0%, 66% 10%, 72% 30%, 88% 46%, 74% 52%, 78% 96%, 22% 96%, 26% 52%, 12% 46%, 28% 30%, 34% 10%); box-shadow: 0 0 40px rgba(201,165,92,0.1)"></div>
+        <div style="display: flex; align-items: baseline; gap: 8px">
+          <span style="font-size: 17px; font-weight: 700; color: #e8e2d0">玄夜</span>
+          <span style="font-size: 11px; color: #ffd876; border: 1px solid #6b5a32; border-radius: 9px; padding: 0 8px">Lv 32</span>
+        </div>
+      </div>
+      <!-- 右列: 头盔/项链/护腕/戒指 -->
+      <div style="display: flex; flex-direction: column; gap: 10px">
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #6b5a32; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#cfc8b4" stroke-width="1.4"><path d="M5 14 a7 7 0 0 1 14 0 v4 h-3 v-3 h-8 v3 H5 Z"></path></svg></div>
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #6b5a32; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#5c9ce8" stroke-width="1.4"><path d="M6 4 a8 8 0 0 0 12 0 M12 10 l2 3 -2 3 -2-3 Z"></path></svg></div>
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">护腕</span></div>
+        <div style="width: 56px; height: 56px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">戒指</span></div>
+      </div>
+    </div>
+    <!-- 底排: 腰带/鞋子/宝石/生肖/星座 (定稿底排) -->
+    <div style="padding: 0 20px 14px; display: flex; justify-content: center; gap: 10px">
+      <div style="width: 52px; height: 52px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">腰带</span></div>
+      <div style="width: 52px; height: 52px; background: #0e1017; border: 1px solid #6b5a32; border-radius: 3px; display: flex; align-items: center; justify-content: center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#cfc8b4" stroke-width="1.4"><path d="M5 17 h8 l6 3 v-4 l-4-2 V6 H8 v8 Z"></path></svg></div>
+      <div style="width: 52px; height: 52px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">宝石</span></div>
+      <div style="width: 52px; height: 52px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">生肖</span></div>
+      <div style="width: 52px; height: 52px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; display: flex; align-items: center; justify-content: center"><span style="font-size: 10px; color: #5b5648">星座</span></div>
+    </div>
+    <!-- 属性: 两列免滚动 (定稿) -->
+    <div style="border-top: 1px solid #2a2d3c; padding: 14px 20px 18px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: 12px">
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">攻击</span><span style="color: #e8e2d0">128 - 156</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">防御</span><span style="color: #e8e2d0">87</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">魔法</span><span style="color: #e8e2d0">0 - 0</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">魔御</span><span style="color: #e8e2d0">42</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">道术</span><span style="color: #e8e2d0">0 - 0</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">命中</span><span style="color: #e8e2d0">92%</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">攻速</span><span style="color: #e8e2d0">+3</span></div>
+      <div style="display: flex; justify-content: space-between"><span style="color: #9a917c">幸运</span><span style="color: #e8e2d0">+1</span></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

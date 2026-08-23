@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  <style>
+    body { margin: 0; font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+    a { color: #c9a55c; } a:hover { color: #ffd876; }
+  </style>
+</helmet>
+<div style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background: radial-gradient(1300px 800px at 50% 42%, #1b2030 0%, #12141f 55%, #0b0c14 100%)">
+  <!-- 世界占位: 地面明暗与远处建筑剪影 -->
+  <div style="position: absolute; inset: 0; background: repeating-linear-gradient(83deg, rgba(255,255,255,0.012) 0 3px, rgba(0,0,0,0) 3px 9px)"></div>
+  <div style="position: absolute; left: 44%; top: 24%; width: 300px; height: 210px; background: linear-gradient(180deg, rgba(46,50,72,0.8), rgba(26,28,44,0.9)); clip-path: polygon(0 38%, 12% 30%, 50% 6%, 88% 30%, 100% 38%, 100% 100%, 0 100%)"></div>
+  <!-- 中央角色占位 + 头顶名字 (定稿: 名字显示在人物头顶) -->
+  <div style="position: absolute; left: 50%; top: 52%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 8px">
+    <div style="font-size: 13px; color: #ffd876; text-shadow: 0 1px 3px #000">玄夜</div>
+    <div style="width: 56px; height: 96px; background: linear-gradient(180deg, #3a3d50, #1c1e30); clip-path: polygon(50% 0%, 68% 12%, 66% 34%, 84% 48%, 70% 52%, 74% 100%, 26% 100%, 30% 52%, 16% 48%, 34% 34%, 32% 12%)"></div>
+    <div style="width: 64px; height: 16px; border-radius: 50%; background: radial-gradient(closest-side, rgba(0,0,0,0.5), rgba(0,0,0,0))"></div>
+  </div>
+
+  <!-- 右上: 方形小地图 (定稿: 208×208 正方形 1px 细框, 区域名/坐标叠图上) -->
+  <div style="position: absolute; top: 20px; right: 20px; width: 208px; height: 208px; border: 1px solid #6b5a32; background: linear-gradient(135deg, #141726 0%, #10121d 100%); box-shadow: 0 8px 30px rgba(0,0,0,0.5)">
+    <div style="position: absolute; left: 34px; top: 52px; width: 60px; height: 44px; background: rgba(201,165,92,0.12)"></div>
+    <div style="position: absolute; left: 110px; top: 90px; width: 48px; height: 36px; background: rgba(201,165,92,0.09)"></div>
+    <div style="position: absolute; left: 70px; top: 130px; width: 90px; height: 8px; background: rgba(201,165,92,0.10)"></div>
+    <div style="position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: #ffd876; box-shadow: 0 0 8px #ffd876"></div>
+    <div style="position: absolute; left: 128px; top: 64px; width: 4px; height: 4px; border-radius: 50%; background: #e04040"></div>
+    <div style="position: absolute; left: 88px; top: 148px; width: 4px; height: 4px; border-radius: 50%; background: #e04040"></div>
+    <div style="position: absolute; top: 8px; left: 10px; font-size: 12px; letter-spacing: 2px; color: #e8e2d0; text-shadow: 0 1px 2px #000">比奇省</div>
+    <div style="position: absolute; bottom: 6px; right: 10px; font-size: 11px; color: #9a917c">50 , 50</div>
+  </div>
+
+  <!-- 小地图下: 任务追踪 (定稿位置) -->
+  <div style="position: absolute; top: 246px; right: 20px; width: 208px; display: flex; flex-direction: column; gap: 10px; font-size: 12px">
+    <div style="letter-spacing: 3px; color: #c9a55c; display: flex; align-items: center; gap: 8px">任务追踪<div style="flex-grow: 1; height: 1px; background: linear-gradient(90deg, #6b5a32, rgba(107,90,50,0))"></div></div>
+    <div style="display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: rgba(13,15,24,0.55); border-left: 2px solid #6b5a32">
+      <div style="color: #e8e2d0">除害：猎杀鸡</div>
+      <div style="color: #9a917c">已猎杀 <span style="color: #eecd52">6</span> / 10</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: rgba(13,15,24,0.55); border-left: 2px solid #2a2d3c">
+      <div style="color: #cfc8b4">狼患：讨伐野狼</div>
+      <div style="color: #9a917c">前置任务未完成</div>
+    </div>
+  </div>
+
+  <!-- 左下: 聊天 (玻璃) -->
+  <div style="position: absolute; left: 20px; bottom: 128px; width: 400px; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; flex-direction: column; gap: 5px; padding: 12px 14px; background: rgba(10,11,18,0.55); border: 1px solid rgba(107,90,50,0.35); border-radius: 4px; font-size: 13px; line-height: 1.5">
+      <div><span style="color: #7ec4ff">[世界] 铁血盟主:</span> <span style="color: #cfc8b4">祖玛七层组队来</span></div>
+      <div><span style="color: #7bd88f">[区域] 璃月:</span> <span style="color: #cfc8b4">比奇北门收黑铁矿</span></div>
+      <div><span style="color: #eecd52">[系统]</span> <span style="color: #9a917c">欢迎来到玛法大陆</span></div>
+      <div><span style="color: #e896c8">[私聊] 清风:</span> <span style="color: #cfc8b4">在哪儿呢？</span></div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; background: rgba(10,11,18,0.55); border: 1px solid rgba(107,90,50,0.35); border-radius: 4px">
+      <span style="font-size: 12px; color: #c9a55c">世界</span>
+      <span style="font-size: 13px; color: #5b5648">按 Enter 发言…</span>
+    </div>
+  </div>
+
+  <!-- 右下: 功能按钮组 (定稿: B背包 C角色 K技能 L任务 F好友 G工会 P组队) -->
+  <div style="position: absolute; right: 20px; bottom: 128px; display: flex; gap: 8px">
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><rect x="4" y="8" width="16" height="12" rx="1"></rect><path d="M9 8 V6 a3 3 0 0 1 6 0 V8"></path></svg><span style="font-size: 9px; color: #9a917c">B</span></div>
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20 c0-4 3.2-6.5 7-6.5 s7 2.5 7 6.5"></path></svg><span style="font-size: 9px; color: #9a917c">C</span></div>
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><path d="M12 3 l2.4 5.6 L20 10 l-5.6 2.4 L12 18 l-2.4-5.6 L4 10 l5.6-1.4 Z"></path></svg><span style="font-size: 9px; color: #9a917c">K</span></div>
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><path d="M6 4 h9 l3 3 v13 H6 Z M9 10 h6 M9 14 h6"></path></svg><span style="font-size: 9px; color: #9a917c">L</span></div>
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><circle cx="9" cy="9" r="3"></circle><circle cx="16" cy="10" r="2.4"></circle><path d="M3.5 20 c0-3.4 2.6-5.4 5.5-5.4 s5.5 2 5.5 5.4 M14.5 15.2 c2.8 0 5 1.7 5 4.8"></path></svg><span style="font-size: 9px; color: #9a917c">F</span></div>
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><path d="M6 21 V5 l6-2 6 2 v16 M9 9 h.01 M15 9 h.01 M9 13 h.01 M15 13 h.01 M10 21 v-4 h4 v4"></path></svg><span style="font-size: 9px; color: #9a917c">G</span></div>
+    <div style="width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: rgba(13,15,24,0.6); border: 1px solid #2a2d3c; border-radius: 4px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c9a55c" stroke-width="1.6"><circle cx="8" cy="8" r="2.6"></circle><circle cx="16" cy="8" r="2.6"></circle><path d="M3 19 c0-3 2.2-4.8 5-4.8 s5 1.8 5 4.8 M11 19 c0-3 2.2-4.8 5-4.8 s5 1.8 5 4.8"></path></svg><span style="font-size: 9px; color: #9a917c">P</span></div>
+  </div>
+
+  <!-- 底部动作条 (定稿: 中央大头像+两翼对称, 透明背景; 左翼 HP+1234, 右翼 MP+QWER) -->
+  <div style="position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: flex-end; gap: 22px">
+    <!-- 左翼 -->
+    <div style="display: flex; flex-direction: column; gap: 10px; align-items: flex-end">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <span style="font-size: 10px; letter-spacing: 1px; color: #9a917c">HP</span>
+        <div style="width: 280px; height: 14px; border: 1px solid #6b5a32; border-radius: 7px; background: #0e1017; overflow: hidden"><div style="width: 72%; height: 100%; background: linear-gradient(180deg, #e04040, #7a1420); border-radius: 6px"></div></div>
+        <span style="font-size: 11px; color: #cfc8b4">864/1200</span>
+      </div>
+      <div style="display: flex; gap: 8px">
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.7); border: 1px solid #6b5a32; border-radius: 4px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e8e2d0" stroke-width="1.5"><path d="M4 20 L14 10 M12 4 l8 8 -3 1 -2 4 -1-3 -4-2 Z"></path></svg><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #9a917c">1</span></div>
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.7); border: 1px solid #6b5a32; border-radius: 4px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ff9d5c" stroke-width="1.5"><path d="M12 3 c3 4 6 6 6 10 a6 6 0 0 1 -12 0 c0-4 3-6 6-10 Z"></path></svg><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #9a917c">2</span></div>
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.7); border: 1px solid #6b5a32; border-radius: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8fd8ff" stroke-width="1.5"><path d="M6 18 a8 8 0 0 1 12 0 M4 13 a11 11 0 0 1 16 0 M12 21 h.01"></path></svg><div style="position: absolute; inset: 0; background: rgba(0,0,0,0.55); clip-path: polygon(0 0, 100% 0, 100% 40%, 0 40%)"></div><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #9a917c">3</span></div>
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.55); border: 1px solid #2a2d3c; border-radius: 4px"><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #5b5648">4</span></div>
+      </div>
+    </div>
+    <!-- 中央头像 (定稿: 92px 居中高出两翼, 等级徽章在底部中央) -->
+    <div style="position: relative; margin-bottom: 14px; display: flex; flex-direction: column; align-items: center">
+      <div style="width: 92px; height: 92px; border-radius: 50%; border: 2px solid #c9a55c; background: radial-gradient(circle at 35% 30%, #2a2c40, #12131e); box-shadow: 0 0 30px rgba(201,165,92,0.25); display: flex; align-items: center; justify-content: center">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ffd876" stroke-width="1.4"><path d="M12 3 L12 15 M8 7 L16 7 M9 15 L15 15 L14 21 L10 21 Z"></path></svg>
+      </div>
+      <div style="margin-top: -12px; padding: 1px 12px; background: #241d10; border: 1px solid #c9a55c; border-radius: 10px; font-size: 11px; font-weight: 700; color: #ffd876">32</div>
+    </div>
+    <!-- 右翼 -->
+    <div style="display: flex; flex-direction: column; gap: 10px; align-items: flex-start">
+      <div style="display: flex; align-items: center; gap: 8px">
+        <span style="font-size: 11px; color: #cfc8b4">412/520</span>
+        <div style="width: 280px; height: 14px; border: 1px solid #6b5a32; border-radius: 7px; background: #0e1017; overflow: hidden"><div style="width: 79%; height: 100%; background: linear-gradient(180deg, #3f83e8, #16337a); border-radius: 6px"></div></div>
+        <span style="font-size: 10px; letter-spacing: 1px; color: #9a917c">MP</span>
+      </div>
+      <div style="display: flex; gap: 8px">
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.7); border: 1px solid #6b5a32; border-radius: 4px; display: flex; align-items: center; justify-content: center"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffd876" stroke-width="1.5"><path d="M13 2 L5 14 h5 L9 22 L19 9 h-6 Z"></path></svg><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #9a917c">Q</span></div>
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.55); border: 1px solid #2a2d3c; border-radius: 4px"><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #5b5648">W</span></div>
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.55); border: 1px solid #2a2d3c; border-radius: 4px"><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #5b5648">E</span></div>
+        <div style="width: 52px; height: 52px; position: relative; background: rgba(13,15,24,0.55); border: 1px solid #2a2d3c; border-radius: 4px"><span style="position: absolute; top: 2px; left: 5px; font-size: 9px; color: #5b5648">R</span></div>
+      </div>
+    </div>
+  </div>
+  <!-- EXP 细条横贯底边 (定稿) -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: #0e1017"><div style="width: 46%; height: 100%; background: linear-gradient(90deg, #7a5d14, #eecd52)"></div></div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  <style>
+    body { margin: 0; font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+    a { color: #c9a55c; text-decoration: none; } a:hover { color: #ffd876; }
+    .ornate { position: relative; }
+    .ornate::before, .ornate::after { content: ""; position: absolute; width: 26px; height: 26px; pointer-events: none; }
+    .ornate::before { top: -2px; left: -2px; border-top: 2px solid #c9a55c; border-left: 2px solid #c9a55c; }
+    .ornate::after { bottom: -2px; right: -2px; border-bottom: 2px solid #c9a55c; border-right: 2px solid #c9a55c; }
+    .ornate2 { position: absolute; inset: 0; pointer-events: none; }
+    .ornate2::before { content: ""; position: absolute; width: 26px; height: 26px; top: -2px; right: -2px; border-top: 2px solid #c9a55c; border-right: 2px solid #c9a55c; }
+    .ornate2::after { content: ""; position: absolute; width: 26px; height: 26px; bottom: -2px; left: -2px; border-bottom: 2px solid #c9a55c; border-left: 2px solid #c9a55c; }
+    input::placeholder { color: #5b5648; }
+  </style>
+</helmet>
+<div style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background: radial-gradient(1200px 700px at 50% 30%, #171a2c 0%, #0d0f1a 55%, #0a0a12 100%)">
+  <!-- 氛围: 远山剪影与雾 -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 420px; background: linear-gradient(180deg, rgba(10,10,18,0) 0%, rgba(8,8,14,0.9) 70%); "></div>
+  <div style="position: absolute; left: -60px; right: -60px; bottom: 180px; height: 260px; background: radial-gradient(800px 200px at 30% 100%, rgba(32,36,58,0.7), rgba(0,0,0,0)), radial-gradient(900px 240px at 75% 100%, rgba(26,29,48,0.8), rgba(0,0,0,0))"></div>
+  <div style="position: absolute; left: 0; right: 0; top: 0; height: 100%; background: radial-gradient(1400px 900px at 50% 45%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.55) 100%); pointer-events: none"></div>
+  <!-- 金色余烬粒子 -->
+  <div style="position: absolute; left: 24%; top: 38%; width: 3px; height: 3px; border-radius: 50%; background: #ffd876; opacity: 0.5; box-shadow: 0 0 8px #ffd876"></div>
+  <div style="position: absolute; left: 71%; top: 30%; width: 2px; height: 2px; border-radius: 50%; background: #ffd876; opacity: 0.35; box-shadow: 0 0 6px #ffd876"></div>
+  <div style="position: absolute; left: 62%; top: 62%; width: 2px; height: 2px; border-radius: 50%; background: #c9a55c; opacity: 0.3; box-shadow: 0 0 6px #c9a55c"></div>
+  <div style="position: absolute; left: 34%; top: 66%; width: 2px; height: 2px; border-radius: 50%; background: #c9a55c; opacity: 0.25; box-shadow: 0 0 5px #c9a55c"></div>
+
+  <!-- 标题 -->
+  <div style="position: absolute; left: 0; right: 0; top: 148px; display: flex; flex-direction: column; align-items: center; gap: 14px">
+    <div style="font-family: 'Noto Serif SC', serif; font-weight: 900; font-size: 88px; letter-spacing: 26px; text-indent: 26px; color: #e8e2d0; text-shadow: 0 0 40px rgba(201,165,92,0.35), 0 2px 0 #0a0a12">传 奇</div>
+    <div style="display: flex; align-items: center; gap: 16px">
+      <div style="width: 120px; height: 1px; background: linear-gradient(90deg, rgba(201,165,92,0), #c9a55c)"></div>
+      <div style="font-size: 15px; letter-spacing: 8px; text-indent: 8px; color: #c9a55c">MIRFORGE</div>
+      <div style="width: 120px; height: 1px; background: linear-gradient(270deg, rgba(201,165,92,0), #c9a55c)"></div>
+    </div>
+  </div>
+
+  <!-- 登录卡 -->
+  <div class="ornate" style="position: absolute; left: 50%; top: 430px; transform: translateX(-50%); width: 440px; background: rgba(13,15,24,0.88); border: 1px solid #6b5a32; box-shadow: 0 30px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,216,118,0.08); padding: 40px 44px 36px; display: flex; flex-direction: column; gap: 22px"><div class="ornate2"></div>
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <label style="font-size: 12px; letter-spacing: 3px; color: #9a917c">账 号</label>
+      <input type="text" placeholder="输入账号" style="height: 46px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; color: #e8e2d0; font-size: 15px; padding: 0 14px; outline: none">
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <label style="font-size: 12px; letter-spacing: 3px; color: #9a917c">密 码</label>
+      <input type="password" placeholder="输入密码" style="height: 46px; background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; color: #e8e2d0; font-size: 15px; padding: 0 14px; outline: none">
+    </div>
+    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #9a917c">
+      <span>服务器：<a href="#">玛法一区 · 流畅</a></span>
+      <a href="#">忘记密码</a>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 6px">
+      <div style="height: 52px; display: flex; align-items: center; justify-content: center; background: linear-gradient(180deg, #4a3c22, #241d10); border: 1px solid #6b5a32; border-radius: 3px; color: #ffd876; font-size: 16px; font-weight: 700; letter-spacing: 8px; text-indent: 8px; box-shadow: 0 0 24px rgba(201,165,92,0.18)">进 入 游 戏</div>
+      <div style="height: 46px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid #2a2d3c; border-radius: 3px; color: #9a917c; font-size: 14px; letter-spacing: 6px; text-indent: 6px">注 册 账 号</div>
+    </div>
+  </div>
+
+  <!-- 底部信息 -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 26px; display: flex; justify-content: center; gap: 28px; font-size: 12px; color: #5b5648">
+    <span>MirForge v0.1 · 开源引擎</span>
+    <span>本引擎不含游戏资源 · 资源版权归其权利方所有</span>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

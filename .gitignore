@@ -21,3 +21,6 @@ cache/
 # 编辑器/系统
 .DS_Store
 Thumbs.db
+
+# 设计画布产物 (2MB+, 由 design/*.dc.html 重新生成)
+design/mirforge-ui-design.html
