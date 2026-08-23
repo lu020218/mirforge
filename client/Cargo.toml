@@ -1,0 +1,11 @@
+[package]
+name = "mirforge-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mir-formats = { path = "../crates/mir-formats" }
+
+[lints]
+workspace = true

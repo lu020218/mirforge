@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  asset-guard:
+    # 开源合规: 阻止游戏资源/大二进制误入仓库
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no game assets or big binaries
+        run: |
+          set -e
+          bad=$(git ls-files | grep -iE '\.(map|wil|wix|wzl|wzx|lib|dll|exe|zip|7z|rar)$' || true)
+          if [ -n "$bad" ]; then echo "禁止提交资源/二进制文件:"; echo "$bad"; exit 1; fi
+          big=$(git ls-files | while read f; do
+            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$sz" -gt 1048576 ]; then echo "$f ($sz bytes)"; fi
+          done)
+          if [ -n "$big" ]; then echo "文件超过 1MB (资源请勿入库):"; echo "$big"; exit 1; fi

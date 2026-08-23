@@ -1,0 +1,23 @@
+# Rust
+target/
+Cargo.lock.bak
+
+# 游戏资源 (一律不入库: 版权归权利方, 使用者自备)
+assets/
+resources/
+*.map
+*.wil
+*.wix
+*.wzl
+*.wzx
+*.Lib
+*.lib
+
+# 运行时产物
+*.db
+*.log
+cache/
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db

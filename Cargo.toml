@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mir-formats",
+    "crates/mir-atlas",
+    "crates/protocol",
+    "crates/sim",
+    "server",
+    "client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lu020218/mirforge"
+
+[workspace.lints.clippy]
+all = "warn"

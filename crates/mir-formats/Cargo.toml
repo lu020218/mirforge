@@ -1,0 +1,13 @@
+[package]
+name = "mir-formats"
+description = "传奇原版资源格式解码: .map / WIL/WIX / WZL/WZX / Crystal .Lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2 = "1"
+thiserror = "2"
+
+[lints]
+workspace = true
