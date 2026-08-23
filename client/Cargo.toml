@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bevy = "0.15"
 mir-formats = { path = "../crates/mir-formats" }
 
 [lints]

@@ -17,3 +17,7 @@ repository = "https://github.com/lu020218/mirforge"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# Bevy 官方建议: 开发期给依赖开优化, 否则调试构建帧率过低
+[profile.dev.package."*"]
+opt-level = 3
