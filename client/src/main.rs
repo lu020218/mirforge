@@ -307,8 +307,12 @@ struct Player {
     anim_t: f64,
 }
 
-const WALK_SPEED: f64 = 4.2; // 格/秒
-const RUN_SPEED: f64 = 7.0;
+// 速度对齐原版节奏: 走路一步(1 格)≈0.6s, 跑步一个周期跨 2 格
+const WALK_SPEED: f64 = 1.7; // 格/秒
+const RUN_SPEED: f64 = 3.4;
+// 动画与位移锁定: 走/跑一个 6 帧周期恰好覆盖 1/2 格, 脚步不打滑(否则视觉发飘)
+const WALK_FRAME_DT: f64 = 1.0 / (WALK_SPEED * 6.0);
+const RUN_FRAME_DT: f64 = 2.0 / (RUN_SPEED * 6.0);
 /// 光标离角色近于此距离(格)时不再追(防原地抖动)
 const CURSOR_DEADZONE: f64 = 0.4;
 
@@ -384,11 +388,11 @@ fn player_sprite(mut world: ResMut<World>, mut q: Query<(&Player, &mut Sprite, &
     let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
         return;
     };
-    // 帧表 (男, CArmour 实证布局): 站 0 + dir*4 + f(4, 200ms); 走 32 + dir*6 (6, 90ms); 跑 80 + dir*6
+    // 帧表 (男, CArmour 实证布局): 站 0 + dir*4 + f(4, 200ms); 走 32 + dir*6; 跑 80 + dir*6
     let frame_idx = if p.moving && p.running {
-        80 + p.dir * 6 + ((p.anim_t / 0.08) as usize % 6)
+        80 + p.dir * 6 + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
     } else if p.moving {
-        32 + p.dir * 6 + ((p.anim_t / 0.09) as usize % 6)
+        32 + p.dir * 6 + ((p.anim_t / WALK_FRAME_DT) as usize % 6)
     } else {
         p.dir * 4 + ((p.anim_t / 0.2) as usize % 4)
     };
