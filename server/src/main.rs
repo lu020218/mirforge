@@ -35,6 +35,8 @@ struct ZoneSidecar {
     spawn: Option<(f64, f64)>,
     #[serde(default)]
     portals: Vec<PortalSidecar>,
+    #[serde(default)]
+    monsters: Vec<MonsterSidecar>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +46,29 @@ struct PortalSidecar {
     to: String,
     to_x: Option<f64>,
     to_y: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct MonsterSidecar {
+    template: String,
+    /// 客户端怪物图库号 (Data/Monster/{image:03}.Lib)
+    image: u16,
+    x: f64,
+    y: f64,
+    #[serde(default = "one")]
+    count: u32,
+    /// 被动怪 (不主动仇恨, 如鸡/鹿)
+    #[serde(default)]
+    passive: bool,
+    #[serde(default = "default_radius")]
+    radius: f64,
+}
+
+fn one() -> u32 {
+    1
+}
+fn default_radius() -> f64 {
+    5.0
 }
 
 fn zones_dir() -> PathBuf {
@@ -101,6 +126,19 @@ fn load_zone(
                 to_zone: p.to,
                 to_x: p.to_x,
                 to_y: p.to_y,
+            })
+            .collect(),
+        monster_spawns: sidecar
+            .monsters
+            .into_iter()
+            .map(|m| game::MonsterSpawn {
+                template: m.template,
+                image: m.image,
+                x: m.x,
+                y: m.y,
+                count: m.count,
+                radius: m.radius,
+                passive: m.passive,
             })
             .collect(),
     })

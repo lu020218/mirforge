@@ -121,6 +121,9 @@ pub struct EntityUpdate {
     pub position: Option<Position>,
     pub hp: Option<i32>,
     pub animation: Option<String>,
+    /// Mir 8 向 (0=上, 顺时针)。怪物必带; 玩家缺省由位移推导
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<u8>,
     /// true = 实体已消失（如怪物死亡），客户端移除
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed: Option<bool>,
@@ -328,6 +331,7 @@ mod tests {
                 position: Some(Position { x: 330.5, y: 150.5 }),
                 hp: Some(100),
                 animation: Some("walk".into()),
+                dir: None,
                 removed: None,
             }],
             timestamp: 12345,

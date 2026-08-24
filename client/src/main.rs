@@ -123,13 +123,15 @@ impl Net {
     }
 }
 
-/// 其他玩家（服务器广播驱动，插值行走）
+/// 其他实体：玩家或怪物（服务器广播驱动，插值行走）
 #[derive(Default)]
 struct Remote {
     entity: Option<Entity>,
+    /// Some(n) = 怪物, 用 Data/Monster/{n:03}.Lib; None = 玩家 (CArmour)
+    image: Option<u16>,
     pos: DVec2,
     target: DVec2,
-    /// 0=站 1=走 2=跑
+    /// 0=站 1=走 2=跑 3=攻击
     anim: u8,
     dir: usize,
     anim_t: f64,
@@ -149,6 +151,8 @@ enum Layer {
     Front,
     /// 角色 (CArmour)
     Hum,
+    /// 怪物 (Data/Monster/{n:03}.Lib)
+    Mon(u16),
 }
 
 #[derive(Clone, Copy)]
@@ -168,6 +172,8 @@ struct World {
     /// 地图名(小写) → 文件路径, 切区时按名加载
     maps: HashMap<String, PathBuf>,
     lib_dir: PathBuf,
+    /// 怪物图库目录 (Data/Monster)
+    mon_dir: PathBuf,
     libs: HashMap<String, Option<CrystalLib>>,
     atlas: AtlasCpu,
     pages: Vec<Handle<Image>>,
@@ -181,7 +187,8 @@ impl World {
     fn lib_name(layer: Layer, front_lib: i16) -> Option<String> {
         // 与既有约定一致: back→Tiles, mid→SmTiles, front: 0=Tiles 1=SmTiles 2=Objects n=Objects{n-1}
         Some(match layer {
-            Layer::Hum => return None, // Hum 专用库, 不走目录查找
+            Layer::Hum | Layer::Mon(_) => return None, // 专用库, 不走地图图库目录
+
             Layer::Back => "Tiles".into(),
             Layer::Mid => "SmTiles".into(),
             Layer::Front => match front_lib {
@@ -218,12 +225,28 @@ impl World {
             return *cached;
         }
         let fref = (|| {
-            let img = if layer == Layer::Hum {
-                self.hum.as_ref()?.image(idx as usize).ok().flatten()?
-            } else {
-                let name = Self::lib_name(layer, front_lib)?;
-                let lib = self.open_lib(&name)?;
-                lib.image(idx as usize).ok().flatten()?
+            let img = match layer {
+                Layer::Hum => self.hum.as_ref()?.image(idx as usize).ok().flatten()?,
+                Layer::Mon(n) => {
+                    let name = format!("mon{n:03}");
+                    if !self.libs.contains_key(&name) {
+                        let lib = std::fs::read(self.mon_dir.join(format!("{n:03}.Lib")))
+                            .ok()
+                            .and_then(|d| CrystalLib::parse(d).ok());
+                        self.libs.insert(name.clone(), lib);
+                    }
+                    self.libs
+                        .get(&name)
+                        .and_then(|l| l.as_ref())?
+                        .image(idx as usize)
+                        .ok()
+                        .flatten()?
+                }
+                _ => {
+                    let name = Self::lib_name(layer, front_lib)?;
+                    let lib = self.open_lib(&name)?;
+                    lib.image(idx as usize).ok().flatten()?
+                }
             };
             let placed = self
                 .atlas
@@ -374,11 +397,18 @@ fn setup(
                 .map(|n| (n.to_lowercase(), m.path.clone()))
         })
         .collect();
+    // 怪物图库目录: lib_dir = <root>/Data/Map/<套名> → <root>/Data/Monster
+    let mon_dir = lib_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("Monster"))
+        .unwrap_or_else(|| lib_dir.join("Monster"));
     commands.insert_resource(World {
         map,
         map_name: map_name.to_lowercase(),
         maps,
         lib_dir,
+        mon_dir,
         libs: HashMap::new(),
         atlas: AtlasCpu::default(),
         pages,
@@ -957,6 +987,10 @@ fn net_pump(
                         }
                         let r = remotes.0.entry(e.id.clone()).or_default();
                         r.last_seen = now;
+                        // id 形如 mon_{image}_{template}_{n} → 怪物
+                        if r.image.is_none() && e.id.starts_with("mon_") {
+                            r.image = e.id.split('_').nth(1).and_then(|s| s.parse().ok());
+                        }
                         if let Some(pos) = e.position {
                             let t = DVec2::new(pos.x, pos.y);
                             if r.entity.is_none() {
@@ -967,8 +1001,12 @@ fn net_pump(
                         r.anim = match e.animation.as_deref() {
                             Some("run") => 2,
                             Some("walk") => 1,
+                            Some("attack") => 3,
                             _ => 0,
                         };
+                        if let Some(d) = e.dir {
+                            r.dir = (d as usize) % 8;
+                        }
                     }
                 }
                 _ => {}
@@ -1031,26 +1069,37 @@ fn remote_step(
         let dist = d.length();
         let speed = match r.anim {
             2 => RUN_SPEED,
-            1 => WALK_SPEED,
+            1 => WALK_SPEED * if r.image.is_some() { 1.6 } else { 1.0 },
             _ => 0.0,
         };
         let step = (speed * dt).max(dist * 4.0 * dt);
-        let moving = dist > 0.02;
+        let moving = dist > 0.02 && r.anim != 3;
         if moving {
             r.dir = dir8_from(d.x, d.y);
             r.pos += if dist <= step { d } else { d / dist * step };
-        } else {
+        } else if r.anim != 3 {
             r.pos = r.target;
         }
         r.anim_t += dt;
-        let frame_idx = if moving && r.anim == 2 {
-            80 + r.dir * 6 + ((r.anim_t / RUN_FRAME_DT) as usize % 6)
-        } else if moving {
-            32 + r.dir * 6 + ((r.anim_t / WALK_FRAME_DT) as usize % 6)
+        // 帧表: 玩家=CArmour (站/走/跑), 怪物=Mon 库 (站/走/攻)
+        let (layer, frame_idx) = if let Some(n) = r.image {
+            let idx = match r.anim {
+                3 => 80 + r.dir * 6 + ((r.anim_t / 0.15) as usize % 6),
+                _ if moving => 32 + r.dir * 6 + ((r.anim_t / 0.12) as usize % 6),
+                _ => r.dir * 4 + ((r.anim_t / 0.25) as usize % 4),
+            };
+            (Layer::Mon(n), idx)
         } else {
-            r.dir * 4 + ((r.anim_t / 0.2) as usize % 4)
+            let idx = if moving && r.anim == 2 {
+                80 + r.dir * 6 + ((r.anim_t / RUN_FRAME_DT) as usize % 6)
+            } else if moving {
+                32 + r.dir * 6 + ((r.anim_t / WALK_FRAME_DT) as usize % 6)
+            } else {
+                r.dir * 4 + ((r.anim_t / 0.2) as usize % 4)
+            };
+            (Layer::Hum, idx)
         };
-        let Some(f) = world.frame(Layer::Hum, 0, frame_idx as i32) else {
+        let Some(f) = world.frame(layer, 0, frame_idx as i32) else {
             continue;
         };
         let px = r.pos.x as f32 * CELL_W - CELL_W / 2.0 + f.off.x;

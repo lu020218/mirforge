@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use protocol::{ClientMessage, EntityUpdate, Position, ServerMessage, PROTOCOL_VERSION};
-use sim::{WalkGrid, BODY_RADIUS};
+use sim::{dir8_from, WalkGrid, BODY_RADIUS};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -39,6 +39,48 @@ pub struct Zone {
     pub walk: WalkGrid,
     pub spawn: (f64, f64),
     pub portals: Vec<Portal>,
+    pub monster_spawns: Vec<MonsterSpawn>,
+}
+
+/// 怪物刷新点（边车配置）：home 附近 radius 内刷 count 只
+pub struct MonsterSpawn {
+    pub template: String,
+    /// 客户端图库号 (Data/Monster/{image:03}.Lib)
+    pub image: u16,
+    pub x: f64,
+    pub y: f64,
+    pub count: u32,
+    pub radius: f64,
+    /// 被动怪不主动仇恨/攻击
+    pub passive: bool,
+}
+
+// ── 怪物 AI 参数 (对齐旧服务器实测值) ──
+const AGGRO_RANGE: f64 = 6.0; // 仇恨半径
+const LEASH_RANGE: f64 = 12.0; // 拉离脱战半径
+const ATTACK_RANGE: f64 = 1.6; // 出手距离
+const CHASE_SPEED: f64 = 1.8; // 追击 格/s
+const WANDER_SPEED: f64 = 0.8; // 游荡 格/s
+const ATTACK_ANIM: Duration = Duration::from_millis(900);
+const ATTACK_COOLDOWN: Duration = Duration::from_millis(1500);
+
+/// 在场怪物
+struct Monster {
+    id: String,
+    zone: String,
+    home: (f64, f64),
+    /// 游荡活动半径 (来自刷新点)
+    roam: f64,
+    x: f64,
+    y: f64,
+    dir: u8,
+    /// 当前移动目标 (None = 站立)
+    target: Option<(f64, f64)>,
+    chasing: bool,
+    attack_until: Option<Instant>,
+    next_attack: Instant,
+    next_decide: Instant,
+    passive: bool,
 }
 
 /// 从 (x,y) 就近找可站立点（螺旋外扩, 最远 60 格）
@@ -95,6 +137,9 @@ pub struct Game {
     players: HashMap<String, PlayerState>,
     /// resume token → account_id
     tokens: HashMap<String, String>,
+    monsters: Vec<Monster>,
+    /// xorshift64 随机态 (怪物 AI 用, 无需加密质量)
+    rng: u64,
     last_save: Instant,
 }
 
@@ -112,6 +157,43 @@ impl Game {
         db: Db,
         sessions: Sessions,
     ) -> Self {
+        // 按刷新点物化怪物 (出生位置吸附可走格)
+        let mut monsters = Vec::new();
+        let mut rng: u64 = 0x9E3779B97F4A7C15;
+        let mut next = |limit: f64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f64 / (1u64 << 53) as f64 * limit
+        };
+        let now = Instant::now();
+        for zone in zones.values() {
+            for sp in &zone.monster_spawns {
+                for i in 0..sp.count {
+                    let want = (
+                        sp.x + next(sp.radius * 2.0) - sp.radius,
+                        sp.y + next(sp.radius * 2.0) - sp.radius,
+                    );
+                    let (x, y) = nearest_walkable(&zone.walk, want.0, want.1);
+                    monsters.push(Monster {
+                        id: format!("mon_{}_{}_{}", sp.image, sp.template, i),
+                        zone: zone.id.clone(),
+                        home: (x, y),
+                        roam: sp.radius,
+                        x,
+                        y,
+                        dir: 4,
+                        target: None,
+                        chasing: false,
+                        attack_until: None,
+                        next_attack: now,
+                        next_decide: now,
+                        passive: sp.passive,
+                    });
+                }
+            }
+        }
+        info!("怪物已刷新: {} 只", monsters.len());
         Game {
             zones,
             default_zone,
@@ -120,8 +202,17 @@ impl Game {
             conns: HashMap::new(),
             players: HashMap::new(),
             tokens: HashMap::new(),
+            monsters,
+            rng: 0x00C0_FFEE_1234_5678,
             last_save: Instant::now(),
         }
+    }
+
+    fn rand01(&mut self) -> f64 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        (self.rng >> 11) as f64 / (1u64 << 53) as f64
     }
 
     pub async fn run(mut self, mut events: mpsc::UnboundedReceiver<ConnEvent>) {
@@ -586,13 +677,17 @@ impl Game {
                 let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
             }
         }
+        // 怪物 AI (有玩家在线才跑)
+        if !self.players.is_empty() {
+            self.monster_ai(now);
+        }
         // 20Hz 广播, 按区域分组 (只看得见同区域的人)
         if self.players.is_empty() {
             return;
         }
         let ts = now_ms();
         for zone_id in self.zones.keys() {
-            let entities: Vec<EntityUpdate> = self
+            let mut entities: Vec<EntityUpdate> = self
                 .players
                 .iter()
                 .filter(|(_, p)| &p.zone == zone_id)
@@ -608,12 +703,35 @@ impl Game {
                         }
                         .into(),
                     ),
+                    dir: None,
                     removed: None,
                 })
                 .collect();
             if entities.is_empty() {
                 continue;
             }
+            entities.extend(
+                self.monsters
+                    .iter()
+                    .filter(|m| &m.zone == zone_id)
+                    .map(|m| EntityUpdate {
+                        id: m.id.clone(),
+                        position: Some(Position { x: m.x, y: m.y }),
+                        hp: None,
+                        animation: Some(
+                            if m.attack_until.is_some() {
+                                "attack"
+                            } else if m.target.is_some() {
+                                "walk"
+                            } else {
+                                "stand"
+                            }
+                            .into(),
+                        ),
+                        dir: Some(m.dir),
+                        removed: None,
+                    }),
+            );
             let targets: Vec<String> = self
                 .players
                 .values()
@@ -629,6 +747,94 @@ impl Game {
                 },
             )
             .await;
+        }
+    }
+
+    /// 怪物 AI: 0.5s 决策 (仇恨/追击/拴绳/游荡) + 每 tick 连续移动
+    fn monster_ai(&mut self, now: Instant) {
+        let dt = TICK.as_secs_f64();
+        // 决策所需的玩家位置快照 (避免与 monsters 可变借用冲突)
+        let players: Vec<(String, f64, f64)> = self
+            .players
+            .values()
+            .filter(|p| p.connected)
+            .map(|p| (p.zone.clone(), p.x, p.y))
+            .collect();
+        let mut rolls: Vec<f64> = Vec::with_capacity(self.monsters.len());
+        for _ in 0..self.monsters.len() {
+            let r = self.rand01();
+            rolls.push(r);
+        }
+        for (mi, m) in self.monsters.iter_mut().enumerate() {
+            let Some(zone) = self.zones.get(&m.zone) else {
+                continue;
+            };
+            // 攻击动画期间原地不动
+            if let Some(t) = m.attack_until {
+                if now < t {
+                    continue;
+                }
+                m.attack_until = None;
+            }
+            if now >= m.next_decide {
+                m.next_decide = now + Duration::from_millis(500);
+                let home_d = ((m.x - m.home.0).powi(2) + (m.y - m.home.1).powi(2)).sqrt();
+                let nearest = players
+                    .iter()
+                    .filter(|(z, _, _)| z == &m.zone)
+                    .map(|(_, px, py)| {
+                        let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+                        (d, *px, *py)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if home_d > LEASH_RANGE {
+                    // 拉离过远 → 脱战回家
+                    m.chasing = false;
+                    m.target = Some(m.home);
+                } else if let Some((d, px, py)) =
+                    nearest.filter(|(d, _, _)| *d < AGGRO_RANGE && !m.passive)
+                {
+                    if d < ATTACK_RANGE {
+                        // 出手 (伤害结算 M3.2 接入)
+                        m.dir = dir8_from(px - m.x, py - m.y) as u8;
+                        m.target = None;
+                        m.chasing = false;
+                        if now >= m.next_attack {
+                            m.attack_until = Some(now + ATTACK_ANIM);
+                            m.next_attack = now + ATTACK_COOLDOWN;
+                        }
+                    } else {
+                        m.chasing = true;
+                        m.target = Some((px, py));
+                    }
+                } else if m.target.is_none() && rolls[mi] < 0.15 {
+                    // 游荡: 家附近随机踱步 (同一随机数派生角度, 低质量即可)
+                    let ang = rolls[mi] * 41.0;
+                    let want = (m.home.0 + ang.sin() * m.roam, m.home.1 + ang.cos() * m.roam);
+                    m.chasing = false;
+                    m.target = Some(want);
+                }
+            }
+            // 连续移动 (滑行走 sim, 与玩家同源)
+            if let Some((tx, ty)) = m.target {
+                let (dx, dy) = (tx - m.x, ty - m.y);
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < 0.15 {
+                    m.target = None;
+                    continue;
+                }
+                let speed = if m.chasing { CHASE_SPEED } else { WANDER_SPEED };
+                let step = (speed * dt).min(dist);
+                let (sx, sy) = (dx / dist * step, dy / dist * step);
+                m.dir = dir8_from(dx, dy) as u8;
+                let (nx, ny) = zone.walk.try_move(m.x, m.y, sx, sy, BODY_RADIUS);
+                if (nx - m.x).abs() < 1e-9 && (ny - m.y).abs() < 1e-9 {
+                    m.target = None; // 完全卡死则放弃本次目标
+                } else {
+                    m.x = nx;
+                    m.y = ny;
+                }
+            }
         }
     }
 }
