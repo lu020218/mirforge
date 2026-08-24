@@ -73,7 +73,7 @@ async fn main() {
         matches!(m, ServerMessage::HelloAck { .. })
     })
     .await;
-    println!("[1/6] hello 协商 ok");
+    println!("[1/8] hello 协商 ok");
 
     send(
         &mut ws,
@@ -91,7 +91,7 @@ async fn main() {
         ServerMessage::SessionToken { token } => token,
         _ => unreachable!(),
     };
-    println!("[2/6] 注册 + 会话令牌 ok");
+    println!("[2/8] 注册 + 会话令牌 ok");
 
     send(
         &mut ws,
@@ -128,7 +128,7 @@ async fn main() {
             ..
         } => {
             println!(
-                "[3/6] 进图 ok: {zone_name} @({:.1},{:.1})",
+                "[3/8] 进图 ok: {zone_name} @({:.1},{:.1})",
                 position.x, position.y
             );
             position
@@ -155,7 +155,7 @@ async fn main() {
         pos_after.x
     );
     println!(
-        "[4/6] 移动校验 ok: x {:.2} → {:.2} (20×0.15)",
+        "[4/8] 移动校验 ok: x {:.2} → {:.2} (20×0.15)",
         spawn.x, pos_after.x
     );
 
@@ -175,7 +175,7 @@ async fn main() {
         pos_clamped.x
     );
     println!(
-        "[5/6] 超速限幅 ok: 50 格瞬移被压到 +{:.2}",
+        "[5/8] 超速限幅 ok: 50 格瞬移被压到 +{:.2}",
         pos_clamped.x - pos_after.x
     );
 
@@ -218,11 +218,68 @@ async fn main() {
                 position.y
             );
             println!(
-                "[6/6] Resume 原位恢复 ok @({:.2},{:.2})",
+                "[6/8] Resume 原位恢复 ok @({:.2},{:.2})",
                 position.x, position.y
             );
         }
         _ => unreachable!(),
     }
+
+    // ── 传送门: 走向 0.map (334.5,154.5) 的门 → 应切区到盟重省 ──
+    let d = (334.5 - pos_clamped.x, 154.5 - pos_clamped.y);
+    let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+    let step = Position {
+        x: d.0 / len * 0.15,
+        y: d.1 / len * 0.15,
+    };
+    let (zone, arrive) = walk_until_zone(&mut ws2, step, 80, "去程传送").await;
+    assert_eq!(zone, "盟重省", "传送目的地错误");
+    println!(
+        "[7/8] 传送门去程 ok: {zone} @({:.1},{:.1})",
+        arrive.x, arrive.y
+    );
+
+    // ── 回程: 从盟重出生点走向 (303.5,300.5) 的门 → 应回比奇省 ──
+    let d = (303.5 - arrive.x, 300.5 - arrive.y);
+    let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+    let step = Position {
+        x: d.0 / len * 0.15,
+        y: d.1 / len * 0.15,
+    };
+    let (zone, back) = walk_until_zone(&mut ws2, step, 80, "回程传送").await;
+    assert_eq!(zone, "比奇省", "回程目的地错误");
+    assert!(
+        (back.x - 330.5).abs() < 1.0 && (back.y - 150.5).abs() < 1.0,
+        "回程落点异常: ({:.1},{:.1})",
+        back.x,
+        back.y
+    );
+    println!("[8/8] 传送门回程 ok: {zone} @({:.1},{:.1})", back.x, back.y);
     println!("冒烟全过 ✓");
+}
+
+/// 按固定方向持续走, 边走边等 ZoneChanged (传送门触发)
+async fn walk_until_zone(
+    ws: &mut Ws,
+    dir: Position,
+    max_steps: usize,
+    what: &str,
+) -> (String, Position) {
+    for _ in 0..max_steps {
+        send(ws, &ClientMessage::Move { direction: dir }).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws.next()).await {
+            if let Message::Text(text) = msg {
+                if let Ok(ServerMessage::ZoneChanged {
+                    zone_name,
+                    position,
+                    ..
+                }) = protocol::decode_server(&text)
+                {
+                    return (zone_name, position);
+                }
+            }
+        }
+    }
+    panic!("{what}: 走了 {max_steps} 步未触发传送门");
 }

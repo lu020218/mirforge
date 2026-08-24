@@ -163,6 +163,10 @@ struct FrameRef {
 #[derive(Resource)]
 struct World {
     map: MirMap,
+    /// 当前地图文件名 (小写; 与服务器 zone_id 对应)
+    map_name: String,
+    /// 地图名(小写) → 文件路径, 切区时按名加载
+    maps: HashMap<String, PathBuf>,
     lib_dir: PathBuf,
     libs: HashMap<String, Option<CrystalLib>>,
     atlas: AtlasCpu,
@@ -360,8 +364,20 @@ fn setup(
     for _ in 0..8 {
         pages.push(images.add(blank_page()));
     }
+    let maps: HashMap<String, PathBuf> = idx
+        .maps
+        .iter()
+        .filter_map(|m| {
+            m.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| (n.to_lowercase(), m.path.clone()))
+        })
+        .collect();
     commands.insert_resource(World {
         map,
+        map_name: map_name.to_lowercase(),
+        maps,
         lib_dir,
         libs: HashMap::new(),
         atlas: AtlasCpu::default(),
@@ -371,6 +387,39 @@ fn setup(
         hum,
         walk,
     });
+}
+
+impl World {
+    /// 切区: 按地图名重载地图与行走网格; 旧分块由调用方回收。
+    /// 图集与帧缓存保留 (同一套图库, 跨图复用)。
+    fn switch_map(&mut self, zone_id: &str) -> bool {
+        let key = zone_id.to_lowercase();
+        if key == self.map_name {
+            return true;
+        }
+        let Some(path) = self.maps.get(&key) else {
+            error!("切区失败: 本地找不到地图 {zone_id}");
+            return false;
+        };
+        let Ok(bytes) = std::fs::read(path) else {
+            error!("切区失败: 读地图失败 {path:?}");
+            return false;
+        };
+        let Ok(map) = mir_formats::map::parse(&bytes) else {
+            error!("切区失败: 解析地图失败 {path:?}");
+            return false;
+        };
+        let cells = map.cells.clone();
+        let (mw, mh) = (map.width, map.height);
+        self.walk = WalkGrid::from_cells(mw, mh, |x, y| cells[(y * mw + x) as usize].blocked);
+        info!(
+            "切区 → {zone_id} ({:?} {}x{})",
+            map.kind, map.width, map.height
+        );
+        self.map = map;
+        self.map_name = key;
+        true
+    }
 }
 
 fn blank_page() -> Image {
@@ -785,6 +834,7 @@ fn net_pump(
     mut commands: Commands,
     time: Res<Time>,
     mut net: ResMut<Net>,
+    mut world: ResMut<World>,
     mut remotes: ResMut<Remotes>,
     mut next: ResMut<NextState<Screen>>,
     screen: Res<State<Screen>>,
@@ -840,7 +890,20 @@ fn net_pump(
                     net.status = format!("角色 {name} 已创建");
                 }
                 ServerMessage::LoginSuccess { player_id, .. } => net.my_id = Some(player_id),
-                ServerMessage::ZoneChanged { position, .. } => {
+                ServerMessage::ZoneChanged {
+                    zone_id, position, ..
+                } => {
+                    // 跨地图: 重载地图/行走网格, 回收旧分块与远程玩家
+                    if zone_id.to_lowercase() != world.map_name && world.switch_map(&zone_id) {
+                        for (_, e) in world.chunks.drain() {
+                            commands.entity(e).despawn_recursive();
+                        }
+                        for (_, mut r) in remotes.0.drain() {
+                            if let Some(ent) = r.entity.take() {
+                                commands.entity(ent).despawn();
+                            }
+                        }
+                    }
                     let pos = DVec2::new(position.x, position.y);
                     if let Ok(mut p) = q_player.get_single_mut() {
                         p.pos = pos;

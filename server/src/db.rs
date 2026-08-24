@@ -16,6 +16,7 @@ pub struct CharacterRow {
     pub class: CharacterClass,
     pub gender: String,
     pub level: u32,
+    pub zone: String,
     pub x: f64,
     pub y: f64,
 }
@@ -69,12 +70,17 @@ impl Db {
                 class TEXT NOT NULL,
                 gender TEXT NOT NULL DEFAULT 'male',
                 level INTEGER NOT NULL DEFAULT 1,
+                zone TEXT NOT NULL DEFAULT '0.map',
                 x REAL NOT NULL,
                 y REAL NOT NULL
             )",
         )
         .execute(&pool)
         .await?;
+        // 旧开发库升级 (列已存在则忽略)
+        let _ = sqlx::query("ALTER TABLE characters ADD COLUMN zone TEXT NOT NULL DEFAULT '0.map'")
+            .execute(&pool)
+            .await;
         Ok(Db { pool })
     }
 
@@ -123,18 +129,20 @@ impl Db {
         name: &str,
         class: CharacterClass,
         gender: &str,
+        zone: &str,
         spawn: (f64, f64),
     ) -> Result<Option<String>, sqlx::Error> {
         let id = uuid::Uuid::new_v4().to_string();
         let r = sqlx::query(
-            "INSERT OR IGNORE INTO characters (id, account_id, name, class, gender, level, x, y)
-             VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            "INSERT OR IGNORE INTO characters (id, account_id, name, class, gender, level, zone, x, y)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
         )
         .bind(&id)
         .bind(account_id)
         .bind(name)
         .bind(class_to_str(class))
         .bind(gender)
+        .bind(zone)
         .bind(spawn.0)
         .bind(spawn.1)
         .execute(&self.pool)
@@ -171,7 +179,7 @@ impl Db {
         character_id: &str,
     ) -> Result<Option<CharacterRow>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, name, class, gender, level, x, y FROM characters WHERE id = ? AND account_id = ?",
+            "SELECT id, name, class, gender, level, zone, x, y FROM characters WHERE id = ? AND account_id = ?",
         )
         .bind(character_id)
         .bind(account_id)
@@ -183,6 +191,7 @@ impl Db {
             class: class_from_str(&r.get::<String, _>("class")),
             gender: r.get("gender"),
             level: r.get::<i64, _>("level") as u32,
+            zone: r.get("zone"),
             x: r.get("x"),
             y: r.get("y"),
         }))
@@ -191,10 +200,12 @@ impl Db {
     pub async fn save_position(
         &self,
         character_id: &str,
+        zone: &str,
         x: f64,
         y: f64,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE characters SET x = ?, y = ? WHERE id = ?")
+        sqlx::query("UPDATE characters SET zone = ?, x = ?, y = ? WHERE id = ?")
+            .bind(zone)
             .bind(x)
             .bind(y)
             .bind(character_id)
@@ -237,6 +248,7 @@ mod tests {
                 "侠客",
                 CharacterClass::Warrior,
                 "male",
+                "0.map",
                 (330.5, 150.5),
             )
             .await
@@ -244,7 +256,14 @@ mod tests {
             .unwrap();
         // 重名拒绝
         assert!(db
-            .create_character(&acc, "侠客", CharacterClass::Mage, "female", (0.0, 0.0))
+            .create_character(
+                &acc,
+                "侠客",
+                CharacterClass::Mage,
+                "female",
+                "0.map",
+                (0.0, 0.0)
+            )
             .await
             .unwrap()
             .is_none());
@@ -255,7 +274,9 @@ mod tests {
         assert!(db.character("someone-else", &cid).await.unwrap().is_none());
         let c = db.character(&acc, &cid).await.unwrap().unwrap();
         assert_eq!((c.x, c.y), (330.5, 150.5));
-        db.save_position(&cid, 331.0, 151.0).await.unwrap();
+        db.save_position(&cid, "2.map", 331.0, 151.0).await.unwrap();
+        let c = db.character(&acc, &cid).await.unwrap().unwrap();
+        assert_eq!(c.zone, "2.map");
         let c = db.character(&acc, &cid).await.unwrap().unwrap();
         assert_eq!((c.x, c.y), (331.0, 151.0));
     }

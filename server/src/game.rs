@@ -21,11 +21,46 @@ const TICK: Duration = Duration::from_millis(50);
 /// 位置定期存档间隔
 const SAVE_EVERY: Duration = Duration::from_secs(5);
 
+/// 传送门（边车配置）：踏入 x,y 半径 [`PORTAL_RADIUS`] 内 → 传到 to_zone
+/// （to_x/to_y 省略时落在目标区域出生点）
+pub struct Portal {
+    pub x: f64,
+    pub y: f64,
+    pub to_zone: String,
+    pub to_x: Option<f64>,
+    pub to_y: Option<f64>,
+}
+
+const PORTAL_RADIUS: f64 = 1.0;
+
 pub struct Zone {
     pub id: String,
     pub name: String,
     pub walk: WalkGrid,
     pub spawn: (f64, f64),
+    pub portals: Vec<Portal>,
+}
+
+/// 从 (x,y) 就近找可站立点（螺旋外扩, 最远 60 格）
+pub fn nearest_walkable(walk: &WalkGrid, x: f64, y: f64) -> (f64, f64) {
+    if walk.is_walkable_circle(x, y, BODY_RADIUS) {
+        return (x, y);
+    }
+    let (cx, cy) = (x.floor() as i64, y.floor() as i64);
+    for r in 1..=60i64 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue; // 只扫当前圈
+                }
+                let (tx, ty) = ((cx + dx) as f64 + 0.5, (cy + dy) as f64 + 0.5);
+                if walk.is_walkable_circle(tx, ty, BODY_RADIUS) {
+                    return (tx, ty);
+                }
+            }
+        }
+    }
+    (x, y)
 }
 
 /// 连接级状态（角色选定前）
@@ -40,6 +75,7 @@ struct PlayerState {
     conn_id: String,
     account_id: String,
     character: CharacterRow,
+    zone: String,
     x: f64,
     y: f64,
     moving: bool,
@@ -50,7 +86,8 @@ struct PlayerState {
 }
 
 pub struct Game {
-    zone: Zone,
+    zones: HashMap<String, Zone>,
+    default_zone: String,
     db: Db,
     sessions: Sessions,
     conns: HashMap<String, ConnState>,
@@ -69,9 +106,15 @@ fn now_ms() -> u64 {
 }
 
 impl Game {
-    pub fn new(zone: Zone, db: Db, sessions: Sessions) -> Self {
+    pub fn new(
+        zones: HashMap<String, Zone>,
+        default_zone: String,
+        db: Db,
+        sessions: Sessions,
+    ) -> Self {
         Game {
-            zone,
+            zones,
+            default_zone,
             db,
             sessions,
             conns: HashMap::new(),
@@ -210,9 +253,21 @@ impl Game {
                 let Some(account_id) = self.account_of(&conn_id) else {
                     return;
                 };
+                let spawn = self
+                    .zones
+                    .get(&self.default_zone)
+                    .map(|z| z.spawn)
+                    .unwrap_or((330.5, 150.5));
                 match self
                     .db
-                    .create_character(&account_id, &name, class, &gender, self.zone.spawn)
+                    .create_character(
+                        &account_id,
+                        &name,
+                        class,
+                        &gender,
+                        &self.default_zone,
+                        spawn,
+                    )
                     .await
                 {
                     Ok(Some(character_id)) => {
@@ -301,7 +356,10 @@ impl Game {
                 }
             }
             ClientMessage::Move { direction } => {
-                self.handle_move(&conn_id, direction);
+                if let Some((cid, character_id, x, y)) = self.handle_move(&conn_id, direction) {
+                    // 触发传送门 → 通知切区
+                    self.send_enter_zone_only(&cid, &character_id, x, y).await;
+                }
             }
             other => {
                 // M3 玩法消息占位
@@ -337,8 +395,14 @@ impl Game {
     }
 
     async fn enter_game(&mut self, conn_id: &str, account_id: &str, c: CharacterRow) {
+        // 存档区域已不存在时回缺省区域出生点
+        let (zone, x, y) = if self.zones.contains_key(&c.zone) {
+            (c.zone.clone(), c.x, c.y)
+        } else {
+            let z = &self.zones[&self.default_zone];
+            (self.default_zone.clone(), z.spawn.0, z.spawn.1)
+        };
         // 同角色旧连接被顶替
-        let (x, y) = (c.x, c.y);
         let character_id = c.id.clone();
         self.players.insert(
             character_id.clone(),
@@ -346,6 +410,7 @@ impl Game {
                 conn_id: conn_id.to_string(),
                 account_id: account_id.to_string(),
                 character: c,
+                zone: zone.clone(),
                 x,
                 y,
                 moving: false,
@@ -355,7 +420,7 @@ impl Game {
                 disconnected_at: None,
             },
         );
-        info!("进入游戏: {character_id} @({x:.1},{y:.1})");
+        info!("进入游戏: {character_id} {zone} @({x:.1},{y:.1})");
         self.send_enter_payload(conn_id, &character_id, x, y).await;
     }
 
@@ -386,23 +451,35 @@ impl Game {
             },
         )
         .await;
+        let (zone_id, zone_name) = self
+            .zones
+            .get(&p.zone)
+            .map(|z| (z.id.clone(), z.name.clone()))
+            .unwrap_or((p.zone.clone(), p.zone.clone()));
         send_to(
             &self.sessions,
             conn_id,
             ServerMessage::ZoneChanged {
-                zone_id: self.zone.id.clone(),
-                zone_name: self.zone.name.clone(),
+                zone_id,
+                zone_name,
                 position: Position { x, y },
             },
         )
         .await;
     }
 
-    /// 移动校验：步长按时间窗限幅 → sim 同源判定（客户端预测调同一函数）
-    fn handle_move(&mut self, conn_id: &str, direction: Position) {
-        let Some(p) = self.players.values_mut().find(|p| p.conn_id == conn_id) else {
-            return;
-        };
+    /// 移动校验：步长按时间窗限幅 → sim 同源判定（客户端预测调同一函数）。
+    /// 踏中传送门时切区并返回 (conn, character, x, y) 供调用方发 ZoneChanged。
+    fn handle_move(
+        &mut self,
+        conn_id: &str,
+        direction: Position,
+    ) -> Option<(String, String, f64, f64)> {
+        let (id, p) = self
+            .players
+            .iter_mut()
+            .find(|(_, p)| p.conn_id == conn_id)?;
+        let zone = self.zones.get(&p.zone)?;
         let now = Instant::now();
         let dt = now
             .duration_since(p.last_move)
@@ -417,12 +494,55 @@ impl Game {
             dx *= k;
             dy *= k;
         }
-        let (nx, ny) = self.zone.walk.try_move(p.x, p.y, dx, dy, BODY_RADIUS);
+        let (nx, ny) = zone.walk.try_move(p.x, p.y, dx, dy, BODY_RADIUS);
         p.moving = (nx - p.x).abs() > 1e-9 || (ny - p.y).abs() > 1e-9;
         // 跑步阈值: 单包速度超走路上限即视为跑 (广播动画用)
         p.running = p.moving && len / dt.max(1e-6) > 2.0;
         p.x = nx;
         p.y = ny;
+        // 传送门判定
+        let portal = zone
+            .portals
+            .iter()
+            .find(|pt| ((pt.x - nx).powi(2) + (pt.y - ny).powi(2)).sqrt() < PORTAL_RADIUS)?;
+        let target = self.zones.get(&portal.to_zone)?;
+        let (tx, ty) = nearest_walkable(
+            &target.walk,
+            portal.to_x.unwrap_or(target.spawn.0),
+            portal.to_y.unwrap_or(target.spawn.1),
+        );
+        let to_zone = portal.to_zone.clone();
+        info!(
+            "传送: {} {} ({nx:.1},{ny:.1}) → {to_zone} ({tx:.1},{ty:.1})",
+            id, p.zone
+        );
+        p.zone = to_zone;
+        p.x = tx;
+        p.y = ty;
+        p.moving = false;
+        Some((conn_id.to_string(), id.clone(), tx, ty))
+    }
+
+    /// 只发 ZoneChanged（切区通知）
+    async fn send_enter_zone_only(&self, conn_id: &str, character_id: &str, x: f64, y: f64) {
+        let Some(p) = self.players.get(character_id) else {
+            return;
+        };
+        let (zone_id, zone_name) = self
+            .zones
+            .get(&p.zone)
+            .map(|z| (z.id.clone(), z.name.clone()))
+            .unwrap_or((p.zone.clone(), p.zone.clone()));
+        send_to(
+            &self.sessions,
+            conn_id,
+            ServerMessage::ZoneChanged {
+                zone_id,
+                zone_name,
+                position: Position { x, y },
+            },
+        )
+        .await;
     }
 
     async fn on_disconnect(&mut self, conn_id: &str) {
@@ -456,52 +576,59 @@ impl Game {
             .collect();
         for id in expired {
             if let Some(p) = self.players.remove(&id) {
-                let _ = self.db.save_position(&id, p.x, p.y).await;
+                let _ = self.db.save_position(&id, &p.zone, p.x, p.y).await;
                 info!("重连窗过期, 存档并移除: {id}");
             }
         }
         if now.duration_since(self.last_save) > SAVE_EVERY {
             self.last_save = now;
             for (id, p) in &self.players {
-                let _ = self.db.save_position(id, p.x, p.y).await;
+                let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
             }
         }
-        // 20Hz 区域广播（M2 单区域: 全体在场者）
+        // 20Hz 广播, 按区域分组 (只看得见同区域的人)
         if self.players.is_empty() {
             return;
         }
-        let entities: Vec<EntityUpdate> = self
-            .players
-            .iter()
-            .map(|(id, p)| EntityUpdate {
-                id: id.clone(),
-                position: Some(Position { x: p.x, y: p.y }),
-                hp: None,
-                animation: Some(
-                    match (p.moving, p.running) {
-                        (true, true) => "run",
-                        (true, false) => "walk",
-                        _ => "stand",
-                    }
-                    .into(),
-                ),
-                removed: None,
-            })
-            .collect();
-        let targets: Vec<String> = self
-            .players
-            .values()
-            .filter(|p| p.connected)
-            .map(|p| p.conn_id.clone())
-            .collect();
-        broadcast_to(
-            &self.sessions,
-            &targets,
-            ServerMessage::StateUpdate {
-                entities,
-                timestamp: now_ms(),
-            },
-        )
-        .await;
+        let ts = now_ms();
+        for zone_id in self.zones.keys() {
+            let entities: Vec<EntityUpdate> = self
+                .players
+                .iter()
+                .filter(|(_, p)| &p.zone == zone_id)
+                .map(|(id, p)| EntityUpdate {
+                    id: id.clone(),
+                    position: Some(Position { x: p.x, y: p.y }),
+                    hp: None,
+                    animation: Some(
+                        match (p.moving, p.running) {
+                            (true, true) => "run",
+                            (true, false) => "walk",
+                            _ => "stand",
+                        }
+                        .into(),
+                    ),
+                    removed: None,
+                })
+                .collect();
+            if entities.is_empty() {
+                continue;
+            }
+            let targets: Vec<String> = self
+                .players
+                .values()
+                .filter(|p| p.connected && &p.zone == zone_id)
+                .map(|p| p.conn_id.clone())
+                .collect();
+            broadcast_to(
+                &self.sessions,
+                &targets,
+                ServerMessage::StateUpdate {
+                    entities,
+                    timestamp: ts,
+                },
+            )
+            .await;
+        }
     }
 }
