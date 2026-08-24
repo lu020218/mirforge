@@ -213,9 +213,24 @@ pub enum ServerMessage {
     },
     #[serde(rename = "inventoryState")]
     InventoryState {
-        inventory: serde_json::Value,
-        equipment: serde_json::Value,
+        inventory: Vec<ItemInfo>,
+        equipment: std::collections::HashMap<String, ItemInfo>,
     },
+}
+
+/// 一件物品（实例）。slot: weapon/armor/helmet/necklace/ring
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ItemInfo {
+    pub id: String,
+    pub template: String,
+    pub name: String,
+    pub slot: String,
+    #[serde(default)]
+    pub attack: i32,
+    #[serde(default)]
+    pub defense: i32,
+    #[serde(default)]
+    pub hp: i32,
 }
 
 // ─────────── 载荷结构 ───────────

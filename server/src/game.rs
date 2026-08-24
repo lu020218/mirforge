@@ -56,6 +56,7 @@ pub struct MonsterSpawn {
     pub hp: i32,
     pub damage: i32,
     pub exp: u64,
+    pub drops: Vec<DropEntry>,
 }
 
 // ── 战斗参数 (M3.2 基础值; 装备加成随 3.4 接入) ──
@@ -220,6 +221,100 @@ fn skills_for(class: protocol::CharacterClass) -> &'static [SkillDef] {
     }
 }
 
+// ─────────── 物品 (M3.4; 模板静态表, 掉落表走边车) ───────────
+
+struct ItemDef {
+    template: &'static str,
+    name: &'static str,
+    slot: &'static str,
+    attack: i32,
+    defense: i32,
+    hp: i32,
+}
+
+static ITEM_DEFS: [ItemDef; 7] = [
+    ItemDef {
+        template: "wooden_sword",
+        name: "木剑",
+        slot: "weapon",
+        attack: 2,
+        defense: 0,
+        hp: 0,
+    },
+    ItemDef {
+        template: "iron_sword",
+        name: "铁剑",
+        slot: "weapon",
+        attack: 6,
+        defense: 0,
+        hp: 0,
+    },
+    ItemDef {
+        template: "cloth_armor",
+        name: "布衣",
+        slot: "armor",
+        attack: 0,
+        defense: 2,
+        hp: 0,
+    },
+    ItemDef {
+        template: "leather_armor",
+        name: "皮甲",
+        slot: "armor",
+        attack: 0,
+        defense: 4,
+        hp: 10,
+    },
+    ItemDef {
+        template: "leather_helmet",
+        name: "皮盔",
+        slot: "helmet",
+        attack: 0,
+        defense: 2,
+        hp: 0,
+    },
+    ItemDef {
+        template: "amber_necklace",
+        name: "琥珀项链",
+        slot: "necklace",
+        attack: 2,
+        defense: 0,
+        hp: 0,
+    },
+    ItemDef {
+        template: "copper_ring",
+        name: "铜戒指",
+        slot: "ring",
+        attack: 1,
+        defense: 0,
+        hp: 0,
+    },
+];
+
+fn item_def(template: &str) -> Option<&'static ItemDef> {
+    ITEM_DEFS.iter().find(|d| d.template == template)
+}
+
+fn make_item(template: &str) -> Option<protocol::ItemInfo> {
+    let d = item_def(template)?;
+    Some(protocol::ItemInfo {
+        id: uuid::Uuid::new_v4().to_string(),
+        template: d.template.to_string(),
+        name: d.name.to_string(),
+        slot: d.slot.to_string(),
+        attack: d.attack,
+        defense: d.defense,
+        hp: d.hp,
+    })
+}
+
+/// 掉落表条目 (边车配置)
+#[derive(Clone)]
+pub struct DropEntry {
+    pub item: String,
+    pub chance: f64,
+}
+
 // ── 怪物 AI 参数 (对齐旧服务器实测值) ──
 const AGGRO_RANGE: f64 = 6.0; // 仇恨半径
 const LEASH_RANGE: f64 = 12.0; // 拉离脱战半径
@@ -252,6 +347,7 @@ struct Monster {
     max_hp: i32,
     damage: i32,
     exp: u64,
+    drops: Vec<DropEntry>,
     /// 死亡动画播放中 (到点转入等待重生)
     dying_until: Option<Instant>,
     /// 等待重生 (期间不广播不参与 AI)
@@ -317,6 +413,27 @@ struct PlayerState {
     last_attack: Instant,
     /// 技能 id → 冷却结束时刻
     cooldowns: HashMap<String, Instant>,
+    inventory: Vec<protocol::ItemInfo>,
+    equipment: HashMap<String, protocol::ItemInfo>,
+}
+
+impl PlayerState {
+    fn equip_attack(&self) -> i32 {
+        self.equipment.values().map(|i| i.attack).sum()
+    }
+    fn equip_defense(&self) -> i32 {
+        self.equipment.values().map(|i| i.defense).sum()
+    }
+    fn equip_hp(&self) -> i32 {
+        self.equipment.values().map(|i| i.hp).sum()
+    }
+    /// 装备/升级后重算上限并夹住当前值
+    fn recalc(&mut self) {
+        self.max_hp = max_hp_for(self.level) + self.equip_hp();
+        self.hp = self.hp.min(self.max_hp);
+        self.max_mp = max_mp_for(self.level);
+        self.mp = self.mp.min(self.max_mp);
+    }
 }
 
 pub struct Game {
@@ -387,6 +504,7 @@ impl Game {
                         max_hp: sp.hp,
                         damage: sp.damage,
                         exp: sp.exp,
+                        drops: sp.drops.clone(),
                         dying_until: None,
                         respawn_at: None,
                         removed_sent: false,
@@ -657,6 +775,12 @@ impl Game {
             ClientMessage::Attack { target_id, .. } => {
                 self.handle_attack(&conn_id, &target_id).await;
             }
+            ClientMessage::Equip { item_id, .. } => {
+                self.handle_equip(&conn_id, &item_id).await;
+            }
+            ClientMessage::Unequip { slot } => {
+                self.handle_unequip(&conn_id, &slot).await;
+            }
             ClientMessage::UseSkill {
                 skill_id,
                 target_id,
@@ -708,6 +832,7 @@ impl Game {
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
         let (level, exp) = (c.level, c.exp);
+        let (c_inventory, c_equipment) = (c.inventory.clone(), c.equipment.clone());
         self.players.insert(
             character_id.clone(),
             PlayerState {
@@ -730,12 +855,20 @@ impl Game {
                 exp,
                 last_attack: Instant::now() - PLAYER_ATTACK_CD,
                 cooldowns: HashMap::new(),
+                inventory: c_inventory,
+                equipment: c_equipment,
             },
         );
+        self.players.get_mut(&character_id).unwrap().recalc();
+        {
+            let p = self.players.get_mut(&character_id).unwrap();
+            p.hp = p.max_hp;
+        }
         info!("进入游戏: {character_id} {zone} @({x:.1},{y:.1})");
         self.send_enter_payload(conn_id, &character_id, x, y).await;
         self.send_player_status(&character_id).await;
         self.send_skill_list(&character_id).await;
+        self.send_inventory(&character_id).await;
     }
 
     /// 推送 HUD 状态 (等级/经验/HP/MP)
@@ -924,7 +1057,7 @@ impl Game {
             return;
         }
         let mon_id = m.id.clone();
-        let dmg = attack_for(level);
+        let dmg = attack_for(level) + self.players[&char_id].equip_attack();
         self.hit_monster(&char_id, &mon_id, dmg).await;
     }
 
@@ -959,8 +1092,113 @@ impl Game {
         .await;
         if killed {
             self.award_exp(char_id, exp_gain).await;
+            self.roll_drops(char_id, mon_id).await;
         }
         killed
+    }
+
+    /// 击杀掷落: 命中的物品直接入包 (经典拾取交互后续再做)
+    async fn roll_drops(&mut self, char_id: &str, mon_id: &str) {
+        let Some(drops) = self
+            .monsters
+            .iter()
+            .find(|m| m.id == mon_id)
+            .map(|m| m.drops.clone())
+        else {
+            return;
+        };
+        let mut gained = Vec::new();
+        for d in drops {
+            if self.rand01() < d.chance {
+                if let Some(item) = make_item(&d.item) {
+                    gained.push(item);
+                }
+            }
+        }
+        if gained.is_empty() {
+            return;
+        }
+        let Some(p) = self.players.get_mut(char_id) else {
+            return;
+        };
+        let conn = p.conn_id.clone();
+        let names: Vec<String> = gained.iter().map(|i| i.name.clone()).collect();
+        p.inventory.extend(gained);
+        for name in names {
+            send_to(
+                &self.sessions,
+                &conn,
+                ServerMessage::Notification {
+                    message: format!("获得物品: {name}"),
+                    notification_type: "loot".into(),
+                },
+            )
+            .await;
+        }
+        self.send_inventory(char_id).await;
+    }
+
+    /// 推送背包与装备
+    async fn send_inventory(&self, char_id: &str) {
+        let Some(p) = self.players.get(char_id) else {
+            return;
+        };
+        send_to(
+            &self.sessions,
+            &p.conn_id,
+            ServerMessage::InventoryState {
+                inventory: p.inventory.clone(),
+                equipment: p.equipment.clone(),
+            },
+        )
+        .await;
+    }
+
+    /// 穿装: 槽位由物品模板决定, 原槽装备回包
+    async fn handle_equip(&mut self, conn_id: &str, item_id: &str) {
+        let Some(char_id) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id)
+            .map(|(id, _)| id.clone())
+        else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(idx) = p.inventory.iter().position(|i| i.id == item_id) else {
+                return;
+            };
+            let item = p.inventory.remove(idx);
+            if let Some(old) = p.equipment.insert(item.slot.clone(), item) {
+                p.inventory.push(old);
+            }
+            p.recalc();
+        }
+        self.send_inventory(&char_id).await;
+        self.send_player_status(&char_id).await;
+    }
+
+    /// 卸装回包
+    async fn handle_unequip(&mut self, conn_id: &str, slot: &str) {
+        let Some(char_id) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id)
+            .map(|(id, _)| id.clone())
+        else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(item) = p.equipment.remove(slot) else {
+                return;
+            };
+            p.inventory.push(item);
+            p.recalc();
+        }
+        self.send_inventory(&char_id).await;
+        self.send_player_status(&char_id).await;
     }
 
     /// 技能施放: 等级/MP/冷却/射程校验 → 按类型结算 → SkillEffect 广播
@@ -1021,7 +1259,7 @@ impl Game {
             (m.x, m.y)
         };
         // 结算
-        let dmg_base = attack_for(level);
+        let dmg_base = attack_for(level) + self.players[&char_id].equip_attack();
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
         match def.kind {
             SkillKind::Damage(mult) => {
@@ -1079,9 +1317,8 @@ impl Game {
         while p.exp >= exp_required(p.level) {
             p.exp -= exp_required(p.level);
             p.level += 1;
-            p.max_hp = max_hp_for(p.level);
+            p.recalc();
             p.hp = p.max_hp;
-            p.max_mp = max_mp_for(p.level);
             p.mp = p.max_mp;
             leveled = true;
         }
@@ -1183,6 +1420,7 @@ impl Game {
             if let Some(p) = self.players.remove(&id) {
                 let _ = self.db.save_position(&id, &p.zone, p.x, p.y).await;
                 let _ = self.db.save_progress(&id, p.level, p.exp).await;
+                let _ = self.db.save_items(&id, &p.inventory, &p.equipment).await;
                 info!("重连窗过期, 存档并移除: {id}");
             }
         }
@@ -1191,6 +1429,7 @@ impl Game {
             for (id, p) in &self.players {
                 let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
                 let _ = self.db.save_progress(id, p.level, p.exp).await;
+                let _ = self.db.save_items(id, &p.inventory, &p.equipment).await;
             }
         }
         // 怪物 AI (有玩家在线才跑)
@@ -1407,6 +1646,7 @@ impl Game {
             let Some(p) = self.players.get_mut(&char_id) else {
                 continue;
             };
+            let dmg = (dmg - p.equip_defense()).max(1);
             p.hp -= dmg;
             let (zone, conn, dead) = (p.zone.clone(), p.conn_id.clone(), p.hp <= 0);
             let conns = self.zone_conns(&zone);

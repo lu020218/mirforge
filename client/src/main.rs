@@ -73,6 +73,7 @@ fn main() {
                 dev_autologin,
                 login_ui.run_if(in_state(Screen::Login)),
                 charselect_ui.run_if(in_state(Screen::CharSelect)),
+                inventory_ui.run_if(in_state(Screen::InGame)),
             )
                 .chain(),
         )
@@ -113,6 +114,8 @@ struct Net {
     my_id: Option<String>,
     characters: Vec<CharacterSummary>,
     skills: Vec<protocol::SkillInfo>,
+    inventory: Vec<protocol::ItemInfo>,
+    equipment: HashMap<String, protocol::ItemInfo>,
     status: String,
     /// HUD 状态行 (PlayerStatus 驱动, F3 面板显示)
     hud: String,
@@ -1032,6 +1035,13 @@ fn net_pump(
                     next.set(Screen::Login);
                 }
                 ServerMessage::SkillList { skills } => net.skills = skills,
+                ServerMessage::InventoryState {
+                    inventory,
+                    equipment,
+                } => {
+                    net.inventory = inventory;
+                    net.equipment = equipment;
+                }
                 ServerMessage::PlayerStatus {
                     level,
                     experience,
@@ -1443,6 +1453,87 @@ fn float_damage(
         }
         tf.translation.y += 38.0 * time.delta_secs();
         color.0.set_alpha(1.0 - (age - 0.5).max(0.0) * 2.0);
+    }
+}
+
+/// 过渡版背包(B)/装备(C)面板
+fn inventory_ui(
+    mut ctx: EguiContexts,
+    keys: Res<ButtonInput<KeyCode>>,
+    net: Res<Net>,
+    mut show_bag: Local<bool>,
+    mut show_equip: Local<bool>,
+) {
+    if keys.just_pressed(KeyCode::KeyB) {
+        *show_bag = !*show_bag;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        *show_equip = !*show_equip;
+    }
+    let fmt_stats = |i: &protocol::ItemInfo| {
+        let mut s = Vec::new();
+        if i.attack > 0 {
+            s.push(format!("攻+{}", i.attack));
+        }
+        if i.defense > 0 {
+            s.push(format!("防+{}", i.defense));
+        }
+        if i.hp > 0 {
+            s.push(format!("血+{}", i.hp));
+        }
+        s.join(" ")
+    };
+    if *show_bag {
+        let items = net.inventory.clone();
+        egui::Window::new("背包 (B)")
+            .default_pos((40.0, 300.0))
+            .show(ctx.ctx_mut(), |ui| {
+                if items.is_empty() {
+                    ui.label("空空如也");
+                }
+                for item in &items {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}  {}", item.name, fmt_stats(item)));
+                        if ui.small_button("装备").clicked() {
+                            net.send(ClientMessage::Equip {
+                                item_id: item.id.clone(),
+                                slot: item.slot.clone(),
+                            });
+                        }
+                    });
+                }
+            });
+    }
+    if *show_equip {
+        let equipment = net.equipment.clone();
+        egui::Window::new("装备 (C)")
+            .default_pos((40.0, 520.0))
+            .show(ctx.ctx_mut(), |ui| {
+                const SLOTS: [(&str, &str); 5] = [
+                    ("weapon", "武器"),
+                    ("armor", "衣服"),
+                    ("helmet", "头盔"),
+                    ("necklace", "项链"),
+                    ("ring", "戒指"),
+                ];
+                for (slot, label) in SLOTS {
+                    ui.horizontal(|ui| {
+                        match equipment.get(slot) {
+                            Some(item) => {
+                                ui.label(format!("{label}: {}  {}", item.name, fmt_stats(item)));
+                                if ui.small_button("卸下").clicked() {
+                                    net.send(ClientMessage::Unequip {
+                                        slot: slot.to_string(),
+                                    });
+                                }
+                            }
+                            None => {
+                                ui.label(format!("{label}: -"));
+                            }
+                        };
+                    });
+                }
+            });
     }
 }
 

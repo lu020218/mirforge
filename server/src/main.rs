@@ -49,6 +49,12 @@ struct PortalSidecar {
 }
 
 #[derive(Deserialize)]
+struct DropSidecar {
+    item: String,
+    chance: f64,
+}
+
+#[derive(Deserialize)]
 struct MonsterSidecar {
     template: String,
     /// 客户端怪物图库号 (Data/Monster/{image:03}.Lib)
@@ -66,6 +72,8 @@ struct MonsterSidecar {
     damage: i32,
     #[serde(default = "default_exp")]
     exp: u64,
+    #[serde(default)]
+    drops: Vec<DropSidecar>,
     #[serde(default = "default_radius")]
     radius: f64,
 }
@@ -154,6 +162,14 @@ fn load_zone(
                 hp: m.hp,
                 damage: m.damage,
                 exp: m.exp,
+                drops: m
+                    .drops
+                    .into_iter()
+                    .map(|d| game::DropEntry {
+                        item: d.item,
+                        chance: d.chance,
+                    })
+                    .collect(),
             })
             .collect(),
     })
