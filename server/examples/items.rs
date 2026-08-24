@@ -125,10 +125,11 @@ async fn main() {
                 {
                     pos = p;
                 }
-                if let Some(e) = entities
-                    .iter()
-                    .find(|e| e.id.starts_with("mon_5_scarecrow") && e.removed != Some(true))
-                {
+                if let Some(e) = entities.iter().find(|e| {
+                    e.id.starts_with("mon_5_scarecrow")
+                        && e.removed != Some(true)
+                        && e.hp.unwrap_or(1) > 0
+                }) {
                     if let Some(mp) = e.position {
                         target = Some((e.id.clone(), mp));
                     }
@@ -144,25 +145,62 @@ async fn main() {
     let (mon_id, _) = target.expect("没找到稻草人");
     println!("[1/5] 锁定 {mon_id}");
 
-    // 裸装伤害应为 6 (Lv1, 无武器)
-    send(
-        &mut ws,
-        &ClientMessage::Attack {
-            target_id: mon_id.clone(),
-            skill_id: "basic".into(),
-        },
-    )
-    .await;
-    let bare = match recv_until(
-        &mut ws,
-        "裸装伤害",
-        |m| matches!(m, ServerMessage::DamageNumber { target_id, .. } if *target_id == mon_id),
-    )
-    .await
-    {
-        ServerMessage::DamageNumber { amount, .. } => amount,
-        _ => unreachable!(),
-    };
+    // 裸装伤害应为 6 (Lv1, 无武器); 追进重试直到首击命中
+    let mut bare = None;
+    'first: for _ in 0..20 {
+        send(
+            &mut ws,
+            &ClientMessage::Attack {
+                target_id: mon_id.clone(),
+                skill_id: "basic".into(),
+            },
+        )
+        .await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(700);
+        while let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout_at(deadline, ws.next()).await
+        {
+            match protocol::decode_server(&text) {
+                Ok(ServerMessage::DamageNumber {
+                    target_id, amount, ..
+                }) if target_id == mon_id => {
+                    bare = Some(amount);
+                    break 'first;
+                }
+                Ok(ServerMessage::StateUpdate { entities, .. }) => {
+                    if let Some(p) = entities
+                        .iter()
+                        .find(|e| e.id == cid)
+                        .and_then(|e| e.position)
+                    {
+                        pos = p;
+                    }
+                    if let Some(mp2) = entities
+                        .iter()
+                        .find(|e| e.id == mon_id)
+                        .and_then(|e| e.position)
+                    {
+                        let d = (mp2.x - pos.x, mp2.y - pos.y);
+                        let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+                        if len > 1.8 {
+                            send(
+                                &mut ws,
+                                &ClientMessage::Move {
+                                    direction: Position {
+                                        x: d.0 / len * 0.12,
+                                        y: d.1 / len * 0.12,
+                                    },
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let bare = bare.expect("裸装首击始终未命中");
     assert_eq!(bare, 6, "裸装伤害应为 6");
     println!("[2/5] 裸装伤害 ok: {bare}");
 

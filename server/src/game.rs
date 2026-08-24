@@ -1450,7 +1450,7 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let p = &self.players[&char_id];
             if p.level < def.level {
                 return;
             }
@@ -1469,27 +1469,29 @@ impl Game {
                 .await;
                 return;
             }
-            let p = self.players.get_mut(&char_id).unwrap();
-            p.mp -= def.mp;
-            p.cooldowns.insert(def.id.to_string(), now + def.cd);
         }
-        // 施法中心: 自我施法 = 自身; 否则目标怪 (射程校验)
+        // 施法中心: 自我施法 = 自身; 否则目标怪 (射程校验)。
+        // 目标/射程无效在扣费之前拒绝 —— 白扣蓝进冷却是 bug
         let center = if def.self_cast {
             (px, py)
         } else {
             let Some(m) = self.monsters.iter().find(|m| {
                 Some(m.id.as_str()) == target_id.as_deref() && m.zone == zone && m.alive()
             }) else {
-                self.send_player_status(&char_id).await;
                 return;
             };
             let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
             if d > def.range {
-                self.send_player_status(&char_id).await;
                 return;
             }
             (m.x, m.y)
         };
+        // 校验全过 → 扣蓝 + 进冷却
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            p.mp -= def.mp;
+            p.cooldowns.insert(def.id.to_string(), now + def.cd);
+        }
         // 结算
         let dmg_base = attack_for(level) + self.players[&char_id].equip_attack();
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
@@ -1919,5 +1921,283 @@ impl Game {
             }
             self.send_player_status(&char_id).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::CharacterClass;
+
+    /// 合成测试世界: 20×20 全可走 z1 (带 z2 传送门 + 1 只稻草人) + 10×10 z2
+    fn test_zones() -> HashMap<String, Zone> {
+        let mut zones = HashMap::new();
+        zones.insert(
+            "z1".to_string(),
+            Zone {
+                id: "z1".into(),
+                name: "测试区".into(),
+                walk: WalkGrid::from_cells(40, 40, |_, _| false),
+                spawn: (5.5, 5.5),
+                portals: vec![Portal {
+                    x: 15.5,
+                    y: 5.5,
+                    to_zone: "z2".into(),
+                    to_x: None,
+                    to_y: None,
+                }],
+                monster_spawns: vec![MonsterSpawn {
+                    template: "scarecrow".into(),
+                    image: 5,
+                    x: 10.0,
+                    y: 10.0,
+                    count: 1,
+                    radius: 0.5,
+                    passive: false,
+                    hp: 12,
+                    damage: 4,
+                    exp: 20,
+                    drops: vec![DropEntry {
+                        item: "iron_sword".into(),
+                        chance: 1.0,
+                    }],
+                }],
+            },
+        );
+        zones.insert(
+            "z2".to_string(),
+            Zone {
+                id: "z2".into(),
+                name: "测试区2".into(),
+                walk: WalkGrid::from_cells(10, 10, |_, _| false),
+                spawn: (5.5, 5.5),
+                portals: vec![],
+                monster_spawns: vec![],
+            },
+        );
+        zones
+    }
+
+    async fn test_game() -> Game {
+        let db = Db::open(":memory:").await.unwrap();
+        let (gw, _rx) = crate::gateway::Gateway::new();
+        Game::new(test_zones(), "z1".into(), db, gw.sessions())
+    }
+
+    fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {
+        let level = 1;
+        PlayerState {
+            conn_id: conn.into(),
+            account_id: "acc".into(),
+            character: CharacterRow {
+                id: "char1".into(),
+                name: "测试".into(),
+                class: CharacterClass::Warrior,
+                gender: "male".into(),
+                level,
+                exp: 0,
+                zone: zone.into(),
+                inventory: Vec::new(),
+                equipment: HashMap::new(),
+                quests: HashMap::new(),
+                x,
+                y,
+            },
+            zone: zone.into(),
+            x,
+            y,
+            moving: false,
+            running: false,
+            last_move: Instant::now(),
+            connected: true,
+            disconnected_at: None,
+            hp: max_hp_for(level),
+            max_hp: max_hp_for(level),
+            mp: max_mp_for(level),
+            max_mp: max_mp_for(level),
+            level,
+            exp: 0,
+            last_attack: Instant::now() - PLAYER_ATTACK_CD,
+            cooldowns: HashMap::new(),
+            inventory: Vec::new(),
+            equipment: HashMap::new(),
+            quests: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn stat_formulas() {
+        assert_eq!(max_hp_for(1), 52);
+        assert_eq!(max_mp_for(1), 38);
+        assert_eq!(attack_for(1), 6);
+        assert_eq!(exp_required(1), 100);
+        assert!(max_hp_for(10) > max_hp_for(1));
+    }
+
+    #[test]
+    fn static_tables_consistent() {
+        // 三职业各 3 技能, id 全局唯一, 等级门槛非降序
+        let mut ids = std::collections::HashSet::new();
+        for class in [
+            CharacterClass::Warrior,
+            CharacterClass::Mage,
+            CharacterClass::Taoist,
+        ] {
+            let skills = skills_for(class);
+            assert_eq!(skills.len(), 3);
+            let mut last_level = 0;
+            for s in skills {
+                assert!(ids.insert(s.id), "技能 id 重复: {}", s.id);
+                assert!(s.level >= last_level);
+                last_level = s.level;
+            }
+        }
+        // 物品模板唯一 + 槽位合法
+        let slots = ["weapon", "armor", "helmet", "necklace", "ring"];
+        let mut templates = std::collections::HashSet::new();
+        for d in &ITEM_DEFS {
+            assert!(templates.insert(d.template), "物品模板重复: {}", d.template);
+            assert!(slots.contains(&d.slot), "非法槽位: {}", d.slot);
+        }
+        // 任务前置指向存在的任务
+        for q in &QUEST_DEFS {
+            if let Some(pr) = q.prereq {
+                assert!(quest_def(pr).is_some(), "任务 {} 前置 {pr} 不存在", q.id);
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_walkable_snaps_out_of_walls() {
+        // 中心格阻挡的 5×5
+        let walk = WalkGrid::from_cells(5, 5, |x, y| x == 2 && y == 2);
+        let (x, y) = nearest_walkable(&walk, 2.5, 2.5);
+        assert!(walk.is_walkable_circle(x, y, BODY_RADIUS));
+        assert!((x - 2.5).abs() + (y - 2.5).abs() > 0.4, "应吸附到邻格");
+        // 本就可走则原样返回
+        assert_eq!(nearest_walkable(&walk, 0.5, 0.5), (0.5, 0.5));
+    }
+
+    #[tokio::test]
+    async fn move_speed_clamped() {
+        let mut g = test_game().await;
+        let mut p = test_player("c1", "z1", 5.5, 5.5);
+        p.last_move = Instant::now() - Duration::from_secs(1);
+        g.players.insert("char1".into(), p);
+        // 一包要求瞬移 50 格 → 按 0.5s 窗 × 上限 4.08 限幅
+        g.handle_move("c1", Position { x: 50.0, y: 0.0 });
+        let p = &g.players["char1"];
+        assert!(p.x < 5.5 + 2.1, "超速未限幅: {}", p.x);
+        assert!(p.x > 5.5 + 1.9);
+    }
+
+    #[tokio::test]
+    async fn portal_switches_zone() {
+        let mut g = test_game().await;
+        let mut p = test_player("c1", "z1", 15.2, 5.5);
+        p.last_move = Instant::now() - Duration::from_millis(200);
+        g.players.insert("char1".into(), p);
+        let hit = g.handle_move("c1", Position { x: 0.2, y: 0.0 });
+        let (_, _, x, y) = hit.expect("应触发传送门");
+        let p = &g.players["char1"];
+        assert_eq!(p.zone, "z2");
+        assert_eq!((p.x, p.y), (x, y));
+        assert_eq!((x, y), (5.5, 5.5)); // 落在 z2 出生点
+    }
+
+    #[tokio::test]
+    async fn monster_ai_aggro_and_leash() {
+        let mut g = test_game().await;
+        // 距怪 ~3 格 (仇恨 6 格内, 出手 1.6 格外) → 追击
+        g.players
+            .insert("char1".into(), test_player("c1", "z1", 13.0, 10.0));
+        let now = Instant::now();
+        g.monsters[0].next_decide = now;
+        g.monster_ai(now);
+        assert!(g.monsters[0].chasing, "仇恨范围内玩家应触发追击");
+        // 拉离 12 格 → 回家
+        g.monsters[0].x = g.monsters[0].home.0 + 15.0;
+        g.monsters[0].attack_until = None;
+        g.monsters[0].next_decide = now;
+        g.monster_ai(now);
+        assert!(!g.monsters[0].chasing);
+        assert_eq!(g.monsters[0].target, Some(g.monsters[0].home));
+        // 被动怪不追击
+        g.monsters[0].x = g.monsters[0].home.0;
+        g.monsters[0].passive = true;
+        g.monsters[0].target = None;
+        g.monsters[0].attack_until = None;
+        g.monsters[0].next_decide = now;
+        g.monster_ai(now);
+        assert!(!g.monsters[0].chasing, "被动怪不应追击");
+    }
+
+    #[tokio::test]
+    async fn kill_awards_exp_and_drops() {
+        let mut g = test_game().await;
+        g.players
+            .insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+        let mon_id = g.monsters[0].id.clone();
+        let killed = g.hit_monster("char1", &mon_id, 12).await;
+        assert!(killed);
+        assert!(g.monsters[0].dying_until.is_some());
+        let p = &g.players["char1"];
+        assert_eq!(p.exp, 20, "击杀应得 20 经验");
+        assert_eq!(p.inventory.len(), 1, "100% 掉落应入包");
+        assert_eq!(p.inventory[0].template, "iron_sword");
+        // 已死怪不能再打
+        assert!(!g.hit_monster("char1", &mon_id, 12).await);
+    }
+
+    #[tokio::test]
+    async fn equip_affects_stats() {
+        let mut g = test_game().await;
+        let mut p = test_player("c1", "z1", 5.5, 5.5);
+        p.inventory.push(make_item("iron_sword").unwrap());
+        p.inventory.push(make_item("leather_armor").unwrap());
+        let (sword, armor) = (p.inventory[0].id.clone(), p.inventory[1].id.clone());
+        g.players.insert("char1".into(), p);
+        g.handle_equip("c1", &sword).await;
+        g.handle_equip("c1", &armor).await;
+        let p = &g.players["char1"];
+        assert_eq!(p.equip_attack(), 6);
+        assert_eq!(p.equip_defense(), 4);
+        assert_eq!(p.max_hp, max_hp_for(1) + 10, "皮甲 +10 上限");
+        assert!(p.inventory.is_empty());
+        g.handle_unequip("c1", "weapon").await;
+        let p = &g.players["char1"];
+        assert_eq!(p.equip_attack(), 0);
+        assert_eq!(p.inventory.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn quest_chain_flow() {
+        let mut g = test_game().await;
+        g.players
+            .insert("char1".into(), test_player("c1", "z1", 5.5, 5.5));
+        // 前置未完成不可接猎鹿
+        g.handle_accept_quest("c1", "hunt_deer").await;
+        assert!(!g.players["char1"].quests.contains_key("hunt_deer"));
+        // 接猎鸡 → 杀 3 鸡 → 目标未齐不可交付 → 齐了可交付
+        g.handle_accept_quest("c1", "hunt_chicken").await;
+        assert_eq!(g.players["char1"].quests["hunt_chicken"].state, 1);
+        g.progress_quests("char1", "chicken").await;
+        g.handle_complete_quest("c1", "hunt_chicken").await;
+        assert_eq!(
+            g.players["char1"].quests["hunt_chicken"].state, 1,
+            "目标未齐不应交付"
+        );
+        g.progress_quests("char1", "chicken").await;
+        g.progress_quests("char1", "chicken").await;
+        // 多杀不越界
+        g.progress_quests("char1", "chicken").await;
+        assert_eq!(g.players["char1"].quests["hunt_chicken"].counts[0], 3);
+        g.handle_complete_quest("c1", "hunt_chicken").await;
+        let p = &g.players["char1"];
+        assert_eq!(p.quests["hunt_chicken"].state, 2);
+        assert_eq!(p.exp, 50, "交付应得 50 经验");
+        // 前置完成 → 猎鹿可接
+        g.handle_accept_quest("c1", "hunt_deer").await;
+        assert_eq!(g.players["char1"].quests["hunt_deer"].state, 1);
     }
 }

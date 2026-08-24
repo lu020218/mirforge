@@ -75,6 +75,7 @@ fn main() {
                 charselect_ui.run_if(in_state(Screen::CharSelect)),
                 inventory_ui.run_if(in_state(Screen::InGame)),
                 quest_ui.run_if(in_state(Screen::InGame)),
+                hud_ui.run_if(in_state(Screen::InGame)),
             )
                 .chain(),
         )
@@ -119,11 +120,27 @@ struct Net {
     equipment: HashMap<String, protocol::ItemInfo>,
     quests: Vec<protocol::QuestInfo>,
     status: String,
-    /// HUD 状态行 (PlayerStatus 驱动, F3 面板显示)
-    hud: String,
+    /// HUD 数值 (PlayerStatus 驱动)
+    stat: Option<Stat>,
+    /// 通知堆栈 (msg, 类型, 出生时刻)
+    notices: Vec<(String, String, f64)>,
+    /// 技能冷却结束时刻 (id → elapsed_secs)
+    cds: HashMap<String, f64>,
     /// 未上报的本地位移累计（20Hz 打包发送）
     acc: DVec2,
     last_send: f64,
+}
+
+/// HUD 数值快照
+#[derive(Clone, Copy)]
+struct Stat {
+    level: u32,
+    exp: u64,
+    req: u64,
+    hp: i32,
+    max_hp: i32,
+    mp: i32,
+    max_mp: i32,
 }
 
 impl Net {
@@ -138,6 +155,10 @@ impl Net {
 #[derive(Default)]
 struct Remote {
     entity: Option<Entity>,
+    /// 血条前景/背景实体 (受伤怪才显示)
+    bar: Option<(Entity, Entity)>,
+    /// (当前, 最大) — 首见按满血记最大
+    hp: Option<(i32, i32)>,
     /// Some(n) = 怪物, 用 Data/Monster/{n:03}.Lib; None = 玩家 (CArmour)
     image: Option<u16>,
     pos: DVec2,
@@ -652,8 +673,11 @@ fn debug_panel(
         .default_pos((8.0, 8.0))
         .show(ctx.ctx_mut(), |ui| {
             ui.label(format!("FPS: {fps:.0}"));
-            if !net.hud.is_empty() {
-                ui.label(net.hud.clone());
+            if let Some(s) = &net.stat {
+                ui.label(format!(
+                    "Lv{} exp {}/{} hp {}/{} mp {}/{}",
+                    s.level, s.exp, s.req, s.hp, s.max_hp, s.mp, s.max_mp
+                ));
             }
             if let Ok(p) = q_player.get_single() {
                 let state = match (p.moving, p.running) {
@@ -1005,6 +1029,10 @@ fn net_pump(
                             if let Some(ent) = r.entity.take() {
                                 commands.entity(ent).despawn();
                             }
+                            if let Some((a, b)) = r.bar.take() {
+                                commands.entity(a).despawn();
+                                commands.entity(b).despawn();
+                            }
                         }
                     }
                     let pos = DVec2::new(position.x, position.y);
@@ -1051,14 +1079,29 @@ fn net_pump(
                     required_experience,
                     hp,
                     max_hp,
-                    ..
+                    mp,
+                    max_mp,
                 } => {
-                    net.hud = format!(
-                        "Lv{level}  exp {experience}/{required_experience}  hp {hp}/{max_hp}"
-                    );
+                    net.stat = Some(Stat {
+                        level,
+                        exp: experience,
+                        req: required_experience,
+                        hp,
+                        max_hp,
+                        mp,
+                        max_mp,
+                    });
                 }
-                ServerMessage::Notification { message, .. } => {
+                ServerMessage::Notification {
+                    message,
+                    notification_type,
+                } => {
                     info!("通知: {message}");
+                    let now = time.elapsed_secs_f64();
+                    net.notices.push((message, notification_type, now));
+                    if net.notices.len() > 6 {
+                        net.notices.remove(0);
+                    }
                 }
                 ServerMessage::SkillEffect {
                     skill_id,
@@ -1139,6 +1182,10 @@ fn net_pump(
                                 if let Some(ent) = r.entity.take() {
                                     commands.entity(ent).despawn();
                                 }
+                                if let Some((a, b)) = r.bar.take() {
+                                    commands.entity(a).despawn();
+                                    commands.entity(b).despawn();
+                                }
                             }
                             continue;
                         }
@@ -1154,6 +1201,12 @@ fn net_pump(
                                 r.pos = t; // 首见直接落位
                             }
                             r.target = t;
+                        }
+                        if let Some(hp) = e.hp {
+                            r.hp = Some(match r.hp {
+                                Some((_, max)) => (hp.min(max), max),
+                                None => (hp, hp.max(1)),
+                            });
                         }
                         let anim = match e.animation.as_deref() {
                             Some("run") => 2,
@@ -1223,6 +1276,10 @@ fn remote_step(
             if let Some(ent) = r.entity.take() {
                 commands.entity(ent).despawn();
             }
+            if let Some((a, b)) = r.bar.take() {
+                commands.entity(a).despawn();
+                commands.entity(b).despawn();
+            }
             gone.push(id.clone());
             continue;
         }
@@ -1282,6 +1339,46 @@ fn remote_step(
             None => {
                 r.entity = Some(commands.spawn((sprite, tf, Visibility::default())).id());
             }
+        }
+        // 受伤怪头顶血条 (满血/死亡中不显示)
+        let show_bar =
+            r.image.is_some() && r.anim != 4 && r.hp.is_some_and(|(cur, max)| cur > 0 && cur < max);
+        if show_bar {
+            let (cur, max) = r.hp.unwrap();
+            let frac = cur as f32 / max as f32;
+            let cx = r.pos.x as f32 * CELL_W - CELL_W / 2.0 + CELL_W / 2.0;
+            let cy = -(r.pos.y as f32 * CELL_H - CELL_H / 2.0 - 52.0);
+            let bg = (
+                Sprite {
+                    color: Color::srgba(0.05, 0.05, 0.08, 0.85),
+                    custom_size: Some(Vec2::new(44.0, 6.0)),
+                    ..default()
+                },
+                Transform::from_xyz(cx, cy, 650.0),
+            );
+            let fg = (
+                Sprite {
+                    color: Color::srgb(0.88, 0.25, 0.25),
+                    custom_size: Some(Vec2::new(42.0 * frac, 4.0)),
+                    anchor: Anchor::CenterLeft,
+                    ..default()
+                },
+                Transform::from_xyz(cx - 21.0, cy, 651.0),
+            );
+            match r.bar {
+                Some((b, f)) => {
+                    commands.entity(b).insert(bg);
+                    commands.entity(f).insert(fg);
+                }
+                None => {
+                    let b = commands.spawn((bg.0, bg.1, Visibility::default())).id();
+                    let f = commands.spawn((fg.0, fg.1, Visibility::default())).id();
+                    r.bar = Some((b, f));
+                }
+            }
+        } else if let Some((a, b)) = r.bar.take() {
+            commands.entity(a).despawn();
+            commands.entity(b).despawn();
         }
     }
     for id in gone {
@@ -1370,9 +1467,8 @@ fn skill_color(id: &str) -> Color {
 fn cast_skills(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    net: Res<Net>,
+    mut net: ResMut<Net>,
     remotes: Res<Remotes>,
-    mut cds: Local<HashMap<String, f64>>,
     mut q: Query<&mut Player>,
 ) {
     let Ok(mut p) = q.get_single_mut() else {
@@ -1391,7 +1487,7 @@ fn cast_skills(
         return;
     };
     let now = time.elapsed_secs_f64();
-    if cds.get(&s.id).is_some_and(|&t| now < t) {
+    if net.cds.get(&s.id).is_some_and(|&t| now < t) {
         return;
     }
     let target = if s.self_cast {
@@ -1413,7 +1509,8 @@ fn cast_skills(
     if let Some((_, _, mp)) = &target {
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
     }
-    cds.insert(s.id.clone(), now + s.cooldown_ms as f64 / 1000.0);
+    net.cds
+        .insert(s.id.clone(), now + s.cooldown_ms as f64 / 1000.0);
     p.attack_start = Some(now);
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
@@ -1538,6 +1635,110 @@ fn inventory_ui(
                 }
             });
     }
+}
+
+/// 过渡版 HUD: 底部血蓝经验条 + 技能栏冷却 + 右上通知堆栈
+fn hud_ui(mut ctx: EguiContexts, time: Res<Time>, mut net: ResMut<Net>) {
+    let now = time.elapsed_secs_f64();
+    // 通知堆栈 (右上, 4s 过期)
+    net.notices.retain(|(_, _, born)| now - born < 4.0);
+    if !net.notices.is_empty() {
+        egui::Area::new(egui::Id::new("notices"))
+            .anchor(egui::Align2::RIGHT_TOP, (-16.0, 60.0))
+            .show(ctx.ctx_mut(), |ui| {
+                for (msg, kind, born) in &net.notices {
+                    let age = (now - born) as f32;
+                    let alpha = (1.0 - (age - 3.0).max(0.0)).clamp(0.0, 1.0);
+                    let color = match kind.as_str() {
+                        "exp" | "quest" => egui::Color32::from_rgb(238, 205, 82),
+                        "loot" => egui::Color32::from_rgb(123, 216, 143),
+                        "levelup" => egui::Color32::from_rgb(255, 216, 118),
+                        "warn" | "death" => egui::Color32::from_rgb(224, 64, 64),
+                        _ => egui::Color32::from_rgb(232, 226, 208),
+                    };
+                    ui.label(
+                        egui::RichText::new(msg)
+                            .color(color.gamma_multiply(alpha))
+                            .size(16.0),
+                    );
+                }
+            });
+    }
+    // 底部状态条
+    let Some(s) = net.stat else { return };
+    egui::TopBottomPanel::bottom("hud")
+        .frame(
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgba_unmultiplied(10, 10, 18, 200))
+                .inner_margin(egui::Margin::symmetric(12.0, 6.0)),
+        )
+        .show(ctx.ctx_mut(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Lv{}", s.level))
+                        .color(egui::Color32::from_rgb(255, 216, 118))
+                        .size(20.0)
+                        .strong(),
+                );
+                ui.vertical(|ui| {
+                    ui.spacing_mut().interact_size.y = 14.0;
+                    let hp_frac = s.hp.max(0) as f32 / s.max_hp.max(1) as f32;
+                    ui.add(
+                        egui::ProgressBar::new(hp_frac)
+                            .desired_width(220.0)
+                            .desired_height(14.0)
+                            .fill(egui::Color32::from_rgb(224, 64, 64))
+                            .text(
+                                egui::RichText::new(format!("{}/{}", s.hp, s.max_hp))
+                                    .size(11.0)
+                                    .color(egui::Color32::WHITE),
+                            ),
+                    );
+                    let mp_frac = s.mp.max(0) as f32 / s.max_mp.max(1) as f32;
+                    ui.add(
+                        egui::ProgressBar::new(mp_frac)
+                            .desired_width(220.0)
+                            .desired_height(14.0)
+                            .fill(egui::Color32::from_rgb(63, 131, 232))
+                            .text(
+                                egui::RichText::new(format!("{}/{}", s.mp, s.max_mp))
+                                    .size(11.0)
+                                    .color(egui::Color32::WHITE),
+                            ),
+                    );
+                    let exp_frac = s.exp as f32 / s.req.max(1) as f32;
+                    ui.add(
+                        egui::ProgressBar::new(exp_frac)
+                            .desired_width(220.0)
+                            .desired_height(5.0)
+                            .fill(egui::Color32::from_rgb(238, 205, 82)),
+                    );
+                });
+                ui.add_space(20.0);
+                // 技能栏 (1/2/3)
+                let skills = net.skills.clone();
+                for (i, sk) in skills.iter().enumerate().take(3) {
+                    let remain = net.cds.get(&sk.id).map(|&t| t - now).unwrap_or(0.0);
+                    let label = if remain > 0.0 {
+                        format!("[{}] {}\n{:.1}s", i + 1, sk.name, remain)
+                    } else {
+                        format!("[{}] {}\nMP{}", i + 1, sk.name, sk.mp_cost)
+                    };
+                    let text = if remain > 0.0 {
+                        egui::RichText::new(label).color(egui::Color32::from_rgb(90, 86, 72))
+                    } else {
+                        egui::RichText::new(label).color(egui::Color32::from_rgb(232, 226, 208))
+                    };
+                    ui.add(egui::Button::new(text).min_size(egui::vec2(86.0, 40.0)));
+                }
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new("B背包 C装备 L任务 F3调试")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(122, 117, 100)),
+                );
+            });
+        });
 }
 
 /// 过渡版任务面板 (L)

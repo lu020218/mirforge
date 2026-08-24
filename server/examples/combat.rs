@@ -37,7 +37,7 @@ fn scan_monster(m: &ServerMessage, prefix: &str) -> Option<(String, Position, i3
     if let ServerMessage::StateUpdate { entities, .. } = m {
         entities
             .iter()
-            .find(|e| e.id.starts_with(prefix) && e.removed != Some(true))
+            .find(|e| e.id.starts_with(prefix) && e.removed != Some(true) && e.hp.unwrap_or(1) > 0)
             .and_then(|e| Some((e.id.clone(), e.position?, e.hp.unwrap_or(0))))
     } else {
         None
