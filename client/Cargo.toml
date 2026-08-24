@@ -10,6 +10,9 @@ bevy_egui = "0.31"
 mir-formats = { path = "../crates/mir-formats" }
 mir-atlas = { path = "../crates/mir-atlas" }
 sim = { path = "../crates/sim" }
+protocol = { path = "../crates/protocol" }
+tungstenite = "0.24"
+crossbeam-channel = "0.5"
 
 [lints]
 workspace = true

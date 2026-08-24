@@ -11,6 +11,8 @@
 //! 操作（经典传奇）：鼠标左键按住 = 朝光标走路，右键按住 = 跑步（均沿墙滑行）；
 //! PageUp/PageDown 或 +/- 缩放，F 键 1x/2x/3x 整数缩放循环。
 
+mod net;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -25,12 +27,23 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use mir_atlas::{AtlasCpu, PAGE_SIZE};
 use mir_formats::crystal_lib::CrystalLib;
 use mir_formats::map::MirMap;
+use protocol::{CharacterClass, CharacterSummary, ClientMessage, ServerMessage, PROTOCOL_VERSION};
 use sim::{dir8_from, WalkGrid, BODY_RADIUS};
 
 const CELL_W: f32 = 48.0;
 const CELL_H: f32 = 32.0;
 const CHUNK: i32 = 16; // 格/块
 const VIEW_MARGIN: i32 = 1; // 视口外多保留的块圈数
+
+/// 客户端流程状态：离线直接进游戏；联机走 登录 → 选角 → 游戏
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+enum Screen {
+    #[default]
+    Boot,
+    Login,
+    CharSelect,
+    InGame,
+}
 
 fn main() {
     App::new()
@@ -47,7 +60,22 @@ fn main() {
                 }),
         )
         .add_plugins((EguiPlugin, FrameTimeDiagnosticsPlugin))
+        .init_state::<Screen>()
+        .init_resource::<Net>()
+        .init_resource::<Remotes>()
         .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (
+                egui_cjk_font,
+                net_pump,
+                net_reconnect,
+                dev_autologin,
+                login_ui.run_if(in_state(Screen::Login)),
+                charselect_ui.run_if(in_state(Screen::CharSelect)),
+            )
+                .chain(),
+        )
         .add_systems(
             Update,
             (
@@ -56,13 +84,60 @@ fn main() {
                 camera_control,
                 stream_chunks,
                 player_sprite,
+                remote_step,
                 upload_dirty_pages,
+                net_send,
                 debug_panel,
             )
                 .chain(),
         )
         .run();
 }
+
+// ─────────── 联机状态 ───────────
+
+/// 联机会话（url 为 None = 离线单机）
+#[derive(Resource, Default)]
+struct Net {
+    url: Option<String>,
+    client: Option<net::NetClient>,
+    connected: bool,
+    /// 断线后到点重连（Time::elapsed_secs_f64）
+    reconnect_at: Option<f64>,
+    token: Option<String>,
+    character_id: Option<String>,
+    /// 服务器分配的本角色实体 id（区分广播里的自己）
+    my_id: Option<String>,
+    characters: Vec<CharacterSummary>,
+    status: String,
+    /// 未上报的本地位移累计（20Hz 打包发送）
+    acc: DVec2,
+    last_send: f64,
+}
+
+impl Net {
+    fn send(&self, msg: ClientMessage) {
+        if let Some(c) = &self.client {
+            let _ = c.tx.send(msg);
+        }
+    }
+}
+
+/// 其他玩家（服务器广播驱动，插值行走）
+#[derive(Default)]
+struct Remote {
+    entity: Option<Entity>,
+    pos: DVec2,
+    target: DVec2,
+    /// 0=站 1=走 2=跑
+    anim: u8,
+    dir: usize,
+    anim_t: f64,
+    last_seen: f64,
+}
+
+#[derive(Resource, Default)]
+struct Remotes(HashMap<String, Remote>);
 
 // ─────────── 资源 ───────────
 
@@ -168,7 +243,12 @@ impl World {
 
 // ─────────── 启动 ───────────
 
-fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+fn setup(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut net: ResMut<Net>,
+    mut next: ResMut<NextState<Screen>>,
+) {
     let root = std::env::var("MIRFORGE_RES").unwrap_or_else(|_| {
         error!("请设置 MIRFORGE_RES 指向传奇资源目录");
         std::process::exit(2);
@@ -252,20 +332,29 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let cells = map.cells.clone();
     let (mw, mh) = (map.width, map.height);
     let walk = WalkGrid::from_cells(mw, mh, |x, y| cells[(y * mw + x) as usize].blocked);
-    // 玩家
-    commands.spawn((
-        Player {
-            pos: DVec2::new(sx as f64 + 0.5, sy as f64 + 0.5),
-            dir: 4,
-            moving: false,
-            running: false,
-            anim_t: 0.0,
-        },
-        Sprite::default(),
-        Transform::default(),
-        Visibility::default(),
-    ));
-    info!("玩家已生成 @({sx},{sy})");
+    // 联机: MIRFORGE_SERVER=ws://host:port 时走 登录→选角→进图; 未设则离线单机
+    if let Ok(url) = std::env::var("MIRFORGE_SERVER") {
+        info!("联机模式: {url}");
+        net.client = Some(net::connect(url.clone()));
+        net.url = Some(url);
+        net.status = "连接中...".into();
+        next.set(Screen::Login);
+    } else {
+        commands.spawn((
+            Player {
+                pos: DVec2::new(sx as f64 + 0.5, sy as f64 + 0.5),
+                dir: 4,
+                moving: false,
+                running: false,
+                anim_t: 0.0,
+            },
+            Sprite::default(),
+            Transform::default(),
+            Visibility::default(),
+        ));
+        info!("离线模式, 玩家已生成 @({sx},{sy})");
+        next.set(Screen::InGame);
+    }
     // 预建 8 页图集纹理 (不够时 upload 系统按需补)
     let mut pages = Vec::new();
     for _ in 0..8 {
@@ -321,12 +410,15 @@ const RUN_FRAME_DT: f64 = 2.0 / (RUN_SPEED * 6.0);
 const CURSOR_DEADZONE: f64 = 0.4;
 
 /// 经典传奇操作: 左键按住=朝光标走路, 右键按住=跑步 (点到 NPC/怪的分流留待后续实体系统)
+#[allow(clippy::too_many_arguments)]
 fn player_move(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut ev_cursor: EventReader<CursorMoved>,
     q_cam: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     world: Res<World>,
+    mut net: ResMut<Net>,
+    mut egui_ctx: EguiContexts,
     mut last_cursor: Local<Option<Vec2>>,
     mut q: Query<&mut Player>,
 ) {
@@ -337,6 +429,10 @@ fn player_move(
     // 事件不会——按住拖出窗口也能沿最后方向继续走 (经典手感)
     for e in ev_cursor.read() {
         *last_cursor = Some(e.position);
+    }
+    // egui 面板占用指针时不当作行走输入
+    if egui_ctx.ctx_mut().wants_pointer_input() {
+        return;
     }
     let run = buttons.pressed(MouseButton::Right);
     let held = buttons.pressed(MouseButton::Left) || run;
@@ -375,6 +471,8 @@ fn player_move(
     let moved = (nx - p.pos.x).abs() > 1e-9 || (ny - p.pos.y).abs() > 1e-9;
     if moved {
         p.dir = dir8_from(nx - p.pos.x, ny - p.pos.y);
+        // 预测即时生效, 实际位移累计入网络上报队列
+        net.acc += DVec2::new(nx - p.pos.x, ny - p.pos.y);
         p.pos = DVec2::new(nx, ny);
     }
     if moved != p.moving || (moved && run != p.running) {
@@ -651,4 +749,436 @@ fn upload_dirty_pages(mut world: ResMut<World>, mut images: ResMut<Assets<Image>
             page.dirty = false;
         }
     }
+}
+
+// ─────────── 联机系统 ───────────
+
+/// egui 默认字体无中文; 从系统字体目录加载 (仅运行时读取, 不入库)
+fn egui_cjk_font(mut ctx: EguiContexts, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    *done = true;
+    for cand in [
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    ] {
+        if let Ok(bytes) = std::fs::read(cand) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts
+                .font_data
+                .insert("cjk".into(), egui::FontData::from_owned(bytes));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push("cjk".into());
+            }
+            ctx.ctx_mut().set_fonts(fonts);
+            return;
+        }
+    }
+    warn!("未找到系统中文字体, UI 中文将显示为方块");
+}
+
+/// 处理服务器消息 (联机核心状态机)
+#[allow(clippy::too_many_arguments)]
+fn net_pump(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut net: ResMut<Net>,
+    mut remotes: ResMut<Remotes>,
+    mut next: ResMut<NextState<Screen>>,
+    screen: Res<State<Screen>>,
+    mut q_player: Query<&mut Player>,
+) {
+    let mut events = Vec::new();
+    if let Some(c) = &net.client {
+        while let Ok(ev) = c.rx.try_recv() {
+            events.push(ev);
+        }
+    }
+    for ev in events {
+        match ev {
+            net::NetEvent::Connected => {
+                net.connected = true;
+                net.status = "已连接, 协商协议...".into();
+                net.send(ClientMessage::Hello {
+                    version: PROTOCOL_VERSION,
+                });
+            }
+            net::NetEvent::Disconnected => {
+                net.connected = false;
+                net.client = None;
+                net.reconnect_at = Some(time.elapsed_secs_f64() + 2.0);
+                net.status = "连接断开, 重连中...".into();
+            }
+            net::NetEvent::Msg(msg) => match msg {
+                ServerMessage::HelloAck { .. } => {
+                    // 重连场景: 有令牌与角色 → 直接 Resume 原位恢复
+                    if let (Some(token), Some(cid)) = (net.token.clone(), net.character_id.clone())
+                    {
+                        net.status = "会话恢复中...".into();
+                        net.send(ClientMessage::Resume {
+                            token,
+                            character_id: cid,
+                        });
+                    } else {
+                        net.status = "请登录".into();
+                    }
+                }
+                ServerMessage::Error { message } => net.status = message,
+                ServerMessage::LoginResult {
+                    success, message, ..
+                } => {
+                    net.status = message;
+                    if success && *screen.get() == Screen::Login {
+                        next.set(Screen::CharSelect);
+                    }
+                }
+                ServerMessage::SessionToken { token } => net.token = Some(token),
+                ServerMessage::CharacterList { characters } => net.characters = characters,
+                ServerMessage::CharacterCreated { name, .. } => {
+                    net.status = format!("角色 {name} 已创建");
+                }
+                ServerMessage::LoginSuccess { player_id, .. } => net.my_id = Some(player_id),
+                ServerMessage::ZoneChanged { position, .. } => {
+                    let pos = DVec2::new(position.x, position.y);
+                    if let Ok(mut p) = q_player.get_single_mut() {
+                        p.pos = pos;
+                    } else {
+                        commands.spawn((
+                            Player {
+                                pos,
+                                dir: 4,
+                                moving: false,
+                                running: false,
+                                anim_t: 0.0,
+                            },
+                            Sprite::default(),
+                            Transform::default(),
+                            Visibility::default(),
+                        ));
+                    }
+                    net.acc = DVec2::ZERO;
+                    net.status.clear();
+                    next.set(Screen::InGame);
+                }
+                ServerMessage::ResumeFailed { message } => {
+                    net.token = None;
+                    net.character_id = None;
+                    net.my_id = None;
+                    net.status = format!("恢复失败: {message}");
+                    next.set(Screen::Login);
+                }
+                ServerMessage::StateUpdate { entities, .. } => {
+                    let now = time.elapsed_secs_f64();
+                    for e in entities {
+                        // 自己: 权威纠偏 (预测与服务器同源 sim, 常态几乎零漂移)
+                        if net.my_id.as_deref() == Some(e.id.as_str()) {
+                            if let (Some(pos), Ok(mut p)) = (e.position, q_player.get_single_mut())
+                            {
+                                let server = DVec2::new(pos.x, pos.y);
+                                if (server - p.pos).length() > 2.0 {
+                                    p.pos = server;
+                                    net.acc = DVec2::ZERO;
+                                }
+                            }
+                            continue;
+                        }
+                        if e.removed == Some(true) {
+                            if let Some(mut r) = remotes.0.remove(&e.id) {
+                                if let Some(ent) = r.entity.take() {
+                                    commands.entity(ent).despawn();
+                                }
+                            }
+                            continue;
+                        }
+                        let r = remotes.0.entry(e.id.clone()).or_default();
+                        r.last_seen = now;
+                        if let Some(pos) = e.position {
+                            let t = DVec2::new(pos.x, pos.y);
+                            if r.entity.is_none() {
+                                r.pos = t; // 首见直接落位
+                            }
+                            r.target = t;
+                        }
+                        r.anim = match e.animation.as_deref() {
+                            Some("run") => 2,
+                            Some("walk") => 1,
+                            _ => 0,
+                        };
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+/// 断线到点重连
+fn net_reconnect(time: Res<Time>, mut net: ResMut<Net>) {
+    let Some(at) = net.reconnect_at else { return };
+    if time.elapsed_secs_f64() < at {
+        return;
+    }
+    net.reconnect_at = None;
+    if let Some(url) = net.url.clone() {
+        net.status = "重连中...".into();
+        net.client = Some(net::connect(url));
+    }
+}
+
+/// 20Hz 上报本地位移
+fn net_send(time: Res<Time>, mut net: ResMut<Net>) {
+    if !net.connected || net.my_id.is_none() {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if now - net.last_send < 0.05 || net.acc == DVec2::ZERO {
+        return;
+    }
+    net.last_send = now;
+    let acc = net.acc;
+    net.acc = DVec2::ZERO;
+    net.send(ClientMessage::Move {
+        direction: protocol::Position { x: acc.x, y: acc.y },
+    });
+}
+
+/// 其他玩家插值行走 + 精灵帧 (与本地玩家同一套 CArmour 帧表)
+fn remote_step(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut world: ResMut<World>,
+    mut remotes: ResMut<Remotes>,
+) {
+    let dt = time.delta_secs_f64();
+    let now = time.elapsed_secs_f64();
+    let mut gone = Vec::new();
+    for (id, r) in remotes.0.iter_mut() {
+        // 3s 未出现在广播里视为离场
+        if now - r.last_seen > 3.0 {
+            if let Some(ent) = r.entity.take() {
+                commands.entity(ent).despawn();
+            }
+            gone.push(id.clone());
+            continue;
+        }
+        // 朝目标插值: 速度按动画档, 距离偏大时加速收敛防积压
+        let d = r.target - r.pos;
+        let dist = d.length();
+        let speed = match r.anim {
+            2 => RUN_SPEED,
+            1 => WALK_SPEED,
+            _ => 0.0,
+        };
+        let step = (speed * dt).max(dist * 4.0 * dt);
+        let moving = dist > 0.02;
+        if moving {
+            r.dir = dir8_from(d.x, d.y);
+            r.pos += if dist <= step { d } else { d / dist * step };
+        } else {
+            r.pos = r.target;
+        }
+        r.anim_t += dt;
+        let frame_idx = if moving && r.anim == 2 {
+            80 + r.dir * 6 + ((r.anim_t / RUN_FRAME_DT) as usize % 6)
+        } else if moving {
+            32 + r.dir * 6 + ((r.anim_t / WALK_FRAME_DT) as usize % 6)
+        } else {
+            r.dir * 4 + ((r.anim_t / 0.2) as usize % 4)
+        };
+        let Some(f) = world.frame(Layer::Hum, 0, frame_idx as i32) else {
+            continue;
+        };
+        let px = r.pos.x as f32 * CELL_W - CELL_W / 2.0 + f.off.x;
+        let py = r.pos.y as f32 * CELL_H - CELL_H / 2.0 + f.off.y;
+        let z = 10.0 + r.pos.y as f32 * 0.01 + 0.004; // 略低于本地玩家
+        let sprite = Sprite {
+            image: world.pages[f.page.min(world.pages.len() - 1)].clone(),
+            rect: Some(f.rect),
+            anchor: Anchor::TopLeft,
+            ..default()
+        };
+        let tf = Transform::from_xyz(px, -py, z);
+        match r.entity {
+            Some(ent) => {
+                commands.entity(ent).insert((sprite, tf));
+            }
+            None => {
+                r.entity = Some(commands.spawn((sprite, tf, Visibility::default())).id());
+            }
+        }
+    }
+    for id in gone {
+        remotes.0.remove(&id);
+    }
+}
+
+/// 开发钩子: MIRFORGE_AUTOLOGIN=user:pass 自动 注册→(已存在则登录)→建角→选角
+/// (联调/自动化测试用; 角色名 = 用户名)
+fn dev_autologin(
+    time: Res<Time>,
+    mut net: ResMut<Net>,
+    screen: Res<State<Screen>>,
+    mut stage: Local<u8>,
+    mut wait_since: Local<f64>,
+) {
+    let Ok(cred) = std::env::var("MIRFORGE_AUTOLOGIN") else {
+        return;
+    };
+    let Some((user, pass)) = cred.split_once(':') else {
+        return;
+    };
+    match screen.get() {
+        Screen::Login if net.connected => {
+            if *stage == 0 {
+                *stage = 1;
+                net.send(ClientMessage::Register {
+                    username: user.into(),
+                    password: pass.into(),
+                });
+            } else if *stage == 1 && net.status == "用户名已存在" {
+                *stage = 2;
+                net.send(ClientMessage::Login {
+                    username: user.into(),
+                    password: pass.into(),
+                });
+            }
+        }
+        Screen::CharSelect => {
+            if *wait_since == 0.0 {
+                *wait_since = time.elapsed_secs_f64();
+            }
+            if *stage >= 5 {
+                return;
+            }
+            if let Some(c) = net.characters.iter().find(|c| c.name == user) {
+                *stage = 5;
+                let id = c.id.clone();
+                net.character_id = Some(id.clone());
+                net.send(ClientMessage::SelectCharacter { character_id: id });
+            } else if *stage < 4 && time.elapsed_secs_f64() - *wait_since > 1.0 {
+                *stage = 4;
+                net.send(ClientMessage::CreateCharacter {
+                    name: user.into(),
+                    class: CharacterClass::Warrior,
+                    gender: "male".into(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+// ─────────── 过渡版登录/选角 UI (egui 素排版, M4 换 Bevy UI 皮肤) ───────────
+
+fn login_ui(
+    mut ctx: EguiContexts,
+    mut net: ResMut<Net>,
+    mut user: Local<String>,
+    mut pass: Local<String>,
+) {
+    egui::Window::new("MirForge 登录")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, (0.0, 0.0))
+        .show(ctx.ctx_mut(), |ui| {
+            ui.set_width(260.0);
+            ui.horizontal(|ui| {
+                ui.label("账号");
+                ui.text_edit_singleline(&mut *user);
+            });
+            ui.horizontal(|ui| {
+                ui.label("密码");
+                ui.add(egui::TextEdit::singleline(&mut *pass).password(true));
+            });
+            ui.add_space(8.0);
+            let ready = net.connected && !user.is_empty() && !pass.is_empty();
+            ui.horizontal(|ui| {
+                if ui.add_enabled(ready, egui::Button::new("登录")).clicked() {
+                    net.send(ClientMessage::Login {
+                        username: user.clone(),
+                        password: pass.clone(),
+                    });
+                    net.status = "登录中...".into();
+                }
+                if ui.add_enabled(ready, egui::Button::new("注册")).clicked() {
+                    net.send(ClientMessage::Register {
+                        username: user.clone(),
+                        password: pass.clone(),
+                    });
+                    net.status = "注册中...".into();
+                }
+            });
+            if !net.status.is_empty() {
+                ui.add_space(4.0);
+                ui.label(net.status.clone());
+            }
+        });
+}
+
+fn charselect_ui(
+    mut ctx: EguiContexts,
+    mut net: ResMut<Net>,
+    mut name: Local<String>,
+    mut class_idx: Local<usize>,
+) {
+    const CLASSES: [(&str, CharacterClass); 3] = [
+        ("战士", CharacterClass::Warrior),
+        ("法师", CharacterClass::Mage),
+        ("道士", CharacterClass::Taoist),
+    ];
+    egui::Window::new("选择角色")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, (0.0, 0.0))
+        .show(ctx.ctx_mut(), |ui| {
+            ui.set_width(300.0);
+            let characters = net.characters.clone();
+            if characters.is_empty() {
+                ui.label("暂无角色, 先创建一个:");
+            }
+            for c in &characters {
+                let cls = CLASSES
+                    .iter()
+                    .find(|(_, k)| *k == c.class)
+                    .map(|(n, _)| *n)
+                    .unwrap_or("?");
+                if ui
+                    .button(format!("{}  Lv.{}  {cls}", c.name, c.level))
+                    .clicked()
+                {
+                    net.character_id = Some(c.id.clone());
+                    net.send(ClientMessage::SelectCharacter {
+                        character_id: c.id.clone(),
+                    });
+                    net.status = "进入游戏...".into();
+                }
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("角色名");
+                ui.text_edit_singleline(&mut *name);
+            });
+            ui.horizontal(|ui| {
+                for (i, (label, _)) in CLASSES.iter().enumerate() {
+                    ui.selectable_value(&mut *class_idx, i, *label);
+                }
+            });
+            if ui
+                .add_enabled(!name.is_empty(), egui::Button::new("创建角色"))
+                .clicked()
+            {
+                net.send(ClientMessage::CreateCharacter {
+                    name: name.clone(),
+                    class: CLASSES[*class_idx].1,
+                    gender: "male".into(),
+                });
+                name.clear();
+            }
+            if !net.status.is_empty() {
+                ui.add_space(4.0);
+                ui.label(net.status.clone());
+            }
+        });
 }
