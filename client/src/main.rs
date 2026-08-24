@@ -83,9 +83,11 @@ fn main() {
                 camera_follow,
                 camera_control,
                 stream_chunks,
+                cast_skills,
                 player_sprite,
                 remote_step,
                 float_damage,
+                fx_step,
                 upload_dirty_pages,
                 net_send,
                 debug_panel,
@@ -110,6 +112,7 @@ struct Net {
     /// 服务器分配的本角色实体 id（区分广播里的自己）
     my_id: Option<String>,
     characters: Vec<CharacterSummary>,
+    skills: Vec<protocol::SkillInfo>,
     status: String,
     /// HUD 状态行 (PlayerStatus 驱动, F3 面板显示)
     hud: String,
@@ -1028,6 +1031,7 @@ fn net_pump(
                     net.status = format!("恢复失败: {message}");
                     next.set(Screen::Login);
                 }
+                ServerMessage::SkillList { skills } => net.skills = skills,
                 ServerMessage::PlayerStatus {
                     level,
                     experience,
@@ -1042,6 +1046,35 @@ fn net_pump(
                 }
                 ServerMessage::Notification { message, .. } => {
                     info!("通知: {message}");
+                }
+                ServerMessage::SkillEffect {
+                    skill_id,
+                    position,
+                    targets,
+                    ..
+                } => {
+                    let color = skill_color(&skill_id);
+                    let mut points = vec![DVec2::new(position.x, position.y)];
+                    for t in &targets {
+                        if let Some(r) = remotes.0.get(t) {
+                            points.push(r.pos);
+                        }
+                    }
+                    for pt in points {
+                        let px = pt.x as f32 * CELL_W - CELL_W / 2.0;
+                        let py = pt.y as f32 * CELL_H - CELL_H / 2.0;
+                        commands.spawn((
+                            Sprite {
+                                color,
+                                custom_size: Some(Vec2::splat(26.0)),
+                                ..default()
+                            },
+                            Transform::from_xyz(px, -py, 700.0),
+                            Fx {
+                                born: time.elapsed_secs_f64(),
+                            },
+                        ));
+                    }
                 }
                 ServerMessage::DamageNumber {
                     target_id, amount, ..
@@ -1296,6 +1329,102 @@ fn dev_autologin(
             }
         }
         _ => {}
+    }
+}
+
+/// 技能特效闪光 (过渡版: 彩色扩散圈; M4 接原版 Magic 特效图库)
+#[derive(Component)]
+struct Fx {
+    born: f64,
+}
+
+fn skill_color(id: &str) -> Color {
+    match id {
+        "huoqiu" | "liehuo" => Color::srgb(1.0, 0.45, 0.1), // 火焰橙
+        "leidian" => Color::srgb(0.5, 0.7, 1.0),            // 雷电蓝白
+        "bingpaoxiao" => Color::srgb(0.4, 0.85, 1.0),       // 寒冰
+        "zhiyu" => Color::srgb(0.4, 1.0, 0.5),              // 治疗绿
+        "shidu" => Color::srgb(0.5, 0.8, 0.2),              // 毒
+        "huofu" => Color::srgb(1.0, 0.85, 0.3),             // 符咒金
+        "yeman" => Color::srgb(1.0, 0.6, 0.3),
+        "shizihou" => Color::srgb(1.0, 0.8, 0.2),
+        _ => Color::WHITE,
+    }
+}
+
+/// 1/2/3 键施放技能: 自我施法直接放, 其余选射程内最近的怪
+#[allow(clippy::too_many_arguments)]
+fn cast_skills(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    net: Res<Net>,
+    remotes: Res<Remotes>,
+    mut cds: Local<HashMap<String, f64>>,
+    mut q: Query<&mut Player>,
+) {
+    let Ok(mut p) = q.get_single_mut() else {
+        return;
+    };
+    let idx = if keys.just_pressed(KeyCode::Digit1) {
+        0
+    } else if keys.just_pressed(KeyCode::Digit2) {
+        1
+    } else if keys.just_pressed(KeyCode::Digit3) {
+        2
+    } else {
+        return;
+    };
+    let Some(s) = net.skills.get(idx).cloned() else {
+        return;
+    };
+    let now = time.elapsed_secs_f64();
+    if cds.get(&s.id).is_some_and(|&t| now < t) {
+        return;
+    }
+    let target = if s.self_cast {
+        None
+    } else {
+        // 射程内最近的活怪
+        let found = remotes
+            .0
+            .iter()
+            .filter(|(_, r)| r.image.is_some() && r.anim != 4)
+            .map(|(id, r)| (id.clone(), (r.pos - p.pos).length(), r.pos))
+            .filter(|(_, d, _)| *d <= s.range)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let Some(t) = found else {
+            return; // 无目标不施放
+        };
+        Some(t)
+    };
+    if let Some((_, _, mp)) = &target {
+        p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
+    }
+    cds.insert(s.id.clone(), now + s.cooldown_ms as f64 / 1000.0);
+    p.attack_start = Some(now);
+    p.anim_t = 0.0;
+    net.send(ClientMessage::UseSkill {
+        skill_id: s.id,
+        target_id: target.map(|(id, _, _)| id),
+        position: None,
+    });
+}
+
+/// 特效步进: 扩散 + 渐隐
+fn fx_step(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut Transform, &mut Sprite, &Fx)>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (e, mut tf, mut sprite, fx) in q.iter_mut() {
+        let age = (now - fx.born) as f32;
+        if age > 0.5 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        tf.scale = Vec3::splat(1.0 + age * 5.0);
+        sprite.color.set_alpha(0.85 * (1.0 - age * 2.0));
     }
 }
 

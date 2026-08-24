@@ -68,12 +68,156 @@ const RESPAWN_TIME: Duration = Duration::from_secs(30);
 fn max_hp_for(level: u32) -> i32 {
     40 + level as i32 * 12
 }
+fn max_mp_for(level: u32) -> i32 {
+    30 + level as i32 * 8
+}
 fn attack_for(level: u32) -> i32 {
     4 + level as i32 * 2
 }
 /// 升到下一级所需累计经验
 fn exp_required(level: u32) -> u64 {
     level as u64 * 100
+}
+
+// ─────────── 技能 (迁自旧服务器三职业设计; 数值随 3.4 装备化再校) ───────────
+
+enum SkillKind {
+    /// 单体伤害 (攻击 × 倍率)
+    Damage(f64),
+    /// 以目标/自身为圆心的范围伤害
+    Aoe { radius: f64, mult: f64 },
+    /// 治疗自身
+    Heal,
+}
+
+struct SkillDef {
+    id: &'static str,
+    name: &'static str,
+    mp: i32,
+    cd: Duration,
+    level: u32,
+    range: f64,
+    self_cast: bool,
+    kind: SkillKind,
+}
+
+const fn ms(v: u64) -> Duration {
+    Duration::from_millis(v)
+}
+
+use SkillKind::{Aoe, Damage, Heal};
+static WARRIOR_SKILLS: [SkillDef; 3] = [
+    SkillDef {
+        id: "liehuo",
+        name: "烈火剑法",
+        mp: 5,
+        cd: ms(3000),
+        level: 1,
+        range: 2.5,
+        self_cast: false,
+        kind: Damage(2.5),
+    },
+    SkillDef {
+        id: "yeman",
+        name: "野蛮冲撞",
+        mp: 8,
+        cd: ms(6000),
+        level: 3,
+        range: 2.5,
+        self_cast: false,
+        kind: Damage(1.6),
+    },
+    SkillDef {
+        id: "shizihou",
+        name: "狮子吼",
+        mp: 15,
+        cd: ms(10000),
+        level: 5,
+        range: 0.0,
+        self_cast: true,
+        kind: Aoe {
+            radius: 3.0,
+            mult: 1.2,
+        },
+    },
+];
+static MAGE_SKILLS: [SkillDef; 3] = [
+    SkillDef {
+        id: "huoqiu",
+        name: "火球术",
+        mp: 6,
+        cd: ms(1500),
+        level: 1,
+        range: 7.0,
+        self_cast: false,
+        kind: Damage(2.0),
+    },
+    SkillDef {
+        id: "leidian",
+        name: "雷电术",
+        mp: 12,
+        cd: ms(4000),
+        level: 3,
+        range: 7.0,
+        self_cast: false,
+        kind: Aoe {
+            radius: 2.0,
+            mult: 1.8,
+        },
+    },
+    SkillDef {
+        id: "bingpaoxiao",
+        name: "冰咆哮",
+        mp: 20,
+        cd: ms(8000),
+        level: 5,
+        range: 7.0,
+        self_cast: false,
+        kind: Aoe {
+            radius: 3.5,
+            mult: 2.2,
+        },
+    },
+];
+static TAOIST_SKILLS: [SkillDef; 3] = [
+    SkillDef {
+        id: "zhiyu",
+        name: "治愈术",
+        mp: 8,
+        cd: ms(3000),
+        level: 1,
+        range: 0.0,
+        self_cast: true,
+        kind: Heal,
+    },
+    SkillDef {
+        id: "shidu",
+        name: "施毒术",
+        mp: 10,
+        cd: ms(4000),
+        level: 3,
+        range: 7.0,
+        self_cast: false,
+        kind: Damage(1.5),
+    },
+    SkillDef {
+        id: "huofu",
+        name: "灵魂火符",
+        mp: 12,
+        cd: ms(2000),
+        level: 5,
+        range: 7.0,
+        self_cast: false,
+        kind: Damage(2.0),
+    },
+];
+
+fn skills_for(class: protocol::CharacterClass) -> &'static [SkillDef] {
+    match class {
+        protocol::CharacterClass::Warrior => &WARRIOR_SKILLS,
+        protocol::CharacterClass::Mage => &MAGE_SKILLS,
+        protocol::CharacterClass::Taoist => &TAOIST_SKILLS,
+    }
 }
 
 // ── 怪物 AI 参数 (对齐旧服务器实测值) ──
@@ -166,9 +310,13 @@ struct PlayerState {
     disconnected_at: Option<Instant>,
     hp: i32,
     max_hp: i32,
+    mp: i32,
+    max_mp: i32,
     level: u32,
     exp: u64,
     last_attack: Instant,
+    /// 技能 id → 冷却结束时刻
+    cooldowns: HashMap<String, Instant>,
 }
 
 pub struct Game {
@@ -185,6 +333,7 @@ pub struct Game {
     /// xorshift64 随机态 (怪物 AI 用, 无需加密质量)
     rng: u64,
     last_save: Instant,
+    last_regen: Instant,
 }
 
 fn now_ms() -> u64 {
@@ -257,6 +406,7 @@ impl Game {
             monsters,
             rng: 0x00C0_FFEE_1234_5678,
             last_save: Instant::now(),
+            last_regen: Instant::now(),
         }
     }
 
@@ -507,6 +657,13 @@ impl Game {
             ClientMessage::Attack { target_id, .. } => {
                 self.handle_attack(&conn_id, &target_id).await;
             }
+            ClientMessage::UseSkill {
+                skill_id,
+                target_id,
+                ..
+            } => {
+                self.handle_use_skill(&conn_id, &skill_id, target_id).await;
+            }
             other => {
                 // M3 玩法消息占位
                 warn!("暂未实现的消息: {other:?}");
@@ -567,14 +724,18 @@ impl Game {
                 disconnected_at: None,
                 hp: max_hp_for(level),
                 max_hp: max_hp_for(level),
+                mp: max_mp_for(level),
+                max_mp: max_mp_for(level),
                 level,
                 exp,
                 last_attack: Instant::now() - PLAYER_ATTACK_CD,
+                cooldowns: HashMap::new(),
             },
         );
         info!("进入游戏: {character_id} {zone} @({x:.1},{y:.1})");
         self.send_enter_payload(conn_id, &character_id, x, y).await;
         self.send_player_status(&character_id).await;
+        self.send_skill_list(&character_id).await;
     }
 
     /// 推送 HUD 状态 (等级/经验/HP/MP)
@@ -591,9 +752,34 @@ impl Game {
                 required_experience: exp_required(p.level),
                 hp: p.hp,
                 max_hp: p.max_hp,
-                mp: 30,
-                max_mp: 30,
+                mp: p.mp,
+                max_mp: p.max_mp,
             },
+        )
+        .await;
+    }
+
+    /// 下发本职业技能表
+    async fn send_skill_list(&self, character_id: &str) {
+        let Some(p) = self.players.get(character_id) else {
+            return;
+        };
+        let skills = skills_for(p.character.class)
+            .iter()
+            .map(|s| protocol::SkillInfo {
+                id: s.id.to_string(),
+                name: s.name.to_string(),
+                mp_cost: s.mp,
+                cooldown_ms: s.cd.as_millis() as u64,
+                required_level: s.level,
+                range: s.range,
+                self_cast: s.self_cast,
+            })
+            .collect();
+        send_to(
+            &self.sessions,
+            &p.conn_id,
+            ServerMessage::SkillList { skills },
         )
         .await;
     }
@@ -737,9 +923,23 @@ impl Game {
         if dist > PLAYER_ATTACK_RANGE {
             return;
         }
+        let mon_id = m.id.clone();
         let dmg = attack_for(level);
+        self.hit_monster(&char_id, &mon_id, dmg).await;
+    }
+
+    /// 对怪结算一次伤害: 扣血/飘字广播/击杀 → 尸体+经验。返回是否击杀。
+    async fn hit_monster(&mut self, char_id: &str, mon_id: &str, dmg: i32) -> bool {
+        let now = Instant::now();
+        let Some(m) = self
+            .monsters
+            .iter_mut()
+            .find(|m| m.id == mon_id && m.alive())
+        else {
+            return false;
+        };
         m.hp -= dmg;
-        let (mon_id, killed, exp_gain) = (m.id.clone(), m.hp <= 0, m.exp);
+        let (zone, killed, exp_gain) = (m.zone.clone(), m.hp <= 0, m.exp);
         if killed {
             m.dying_until = Some(now + DYING_TIME);
             m.target = None;
@@ -751,15 +951,122 @@ impl Game {
             &self.sessions,
             &conns,
             ServerMessage::DamageNumber {
-                target_id: mon_id.clone(),
+                target_id: mon_id.to_string(),
                 amount: dmg,
                 is_critical: false,
             },
         )
         .await;
         if killed {
-            self.award_exp(&char_id, exp_gain).await;
+            self.award_exp(char_id, exp_gain).await;
         }
+        killed
+    }
+
+    /// 技能施放: 等级/MP/冷却/射程校验 → 按类型结算 → SkillEffect 广播
+    async fn handle_use_skill(&mut self, conn_id: &str, skill_id: &str, target_id: Option<String>) {
+        let now = Instant::now();
+        // 施法者快照 + 校验
+        let Some((char_id, zone, px, py, level)) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id)
+            .map(|(id, p)| (id.clone(), p.zone.clone(), p.x, p.y, p.level))
+        else {
+            return;
+        };
+        let class = self.players[&char_id].character.class;
+        let Some(def) = skills_for(class).iter().find(|s| s.id == skill_id) else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            if p.level < def.level {
+                return;
+            }
+            if p.cooldowns.get(def.id).is_some_and(|&t| now < t) {
+                return;
+            }
+            if p.mp < def.mp {
+                send_to(
+                    &self.sessions,
+                    conn_id,
+                    ServerMessage::Notification {
+                        message: "魔法值不足".into(),
+                        notification_type: "warn".into(),
+                    },
+                )
+                .await;
+                return;
+            }
+            let p = self.players.get_mut(&char_id).unwrap();
+            p.mp -= def.mp;
+            p.cooldowns.insert(def.id.to_string(), now + def.cd);
+        }
+        // 施法中心: 自我施法 = 自身; 否则目标怪 (射程校验)
+        let center = if def.self_cast {
+            (px, py)
+        } else {
+            let Some(m) = self.monsters.iter().find(|m| {
+                Some(m.id.as_str()) == target_id.as_deref() && m.zone == zone && m.alive()
+            }) else {
+                self.send_player_status(&char_id).await;
+                return;
+            };
+            let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+            if d > def.range {
+                self.send_player_status(&char_id).await;
+                return;
+            }
+            (m.x, m.y)
+        };
+        // 结算
+        let dmg_base = attack_for(level);
+        let mut hit_ids: Vec<(String, i32)> = Vec::new();
+        match def.kind {
+            SkillKind::Damage(mult) => {
+                if let Some(tid) = &target_id {
+                    hit_ids.push((tid.clone(), (dmg_base as f64 * mult) as i32));
+                }
+            }
+            SkillKind::Aoe { radius, mult } => {
+                for m in self
+                    .monsters
+                    .iter()
+                    .filter(|m| m.zone == zone && m.alive())
+                    .filter(|m| {
+                        ((m.x - center.0).powi(2) + (m.y - center.1).powi(2)).sqrt() <= radius
+                    })
+                {
+                    hit_ids.push((m.id.clone(), (dmg_base as f64 * mult) as i32));
+                }
+            }
+            SkillKind::Heal => {
+                let p = self.players.get_mut(&char_id).unwrap();
+                let amount = 30 + level as i32 * 5;
+                p.hp = (p.hp + amount).min(p.max_hp);
+            }
+        }
+        // 特效广播 (客户端按 skill_id 播放)
+        let conns = self.zone_conns(&zone);
+        broadcast_to(
+            &self.sessions,
+            &conns,
+            ServerMessage::SkillEffect {
+                caster_id: char_id.clone(),
+                skill_id: def.id.to_string(),
+                position: Position {
+                    x: center.0,
+                    y: center.1,
+                },
+                targets: hit_ids.iter().map(|(id, _)| id.clone()).collect(),
+            },
+        )
+        .await;
+        for (mon_id, dmg) in hit_ids {
+            self.hit_monster(&char_id, &mon_id, dmg).await;
+        }
+        self.send_player_status(&char_id).await;
     }
 
     /// 经验入账 + 升级结算
@@ -774,6 +1081,8 @@ impl Game {
             p.level += 1;
             p.max_hp = max_hp_for(p.level);
             p.hp = p.max_hp;
+            p.max_mp = max_mp_for(p.level);
+            p.mp = p.max_mp;
             leveled = true;
         }
         let (conn, level) = (p.conn_id.clone(), p.level);
@@ -839,6 +1148,25 @@ impl Game {
         for p in self.players.values_mut() {
             if p.moving && now.duration_since(p.last_move) > Duration::from_millis(200) {
                 p.moving = false;
+            }
+        }
+        // 每 2s 自然回复 HP/MP
+        if now.duration_since(self.last_regen) > Duration::from_secs(2) {
+            self.last_regen = now;
+            let mut changed = Vec::new();
+            for (id, p) in self.players.iter_mut() {
+                if !p.connected {
+                    continue;
+                }
+                let (hp0, mp0) = (p.hp, p.mp);
+                p.hp = (p.hp + (p.max_hp * 3 / 100).max(1)).min(p.max_hp);
+                p.mp = (p.mp + (p.max_mp * 8 / 100).max(1)).min(p.max_mp);
+                if p.hp != hp0 || p.mp != mp0 {
+                    changed.push(id.clone());
+                }
+            }
+            for id in changed {
+                self.send_player_status(&id).await;
             }
         }
         // 过窗清理 + 存档
