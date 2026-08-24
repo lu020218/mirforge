@@ -315,6 +315,53 @@ pub struct DropEntry {
     pub chance: f64,
 }
 
+// ─────────── 任务 (M3.5; 三链新手任务, 迁自旧服务器) ───────────
+
+struct QuestDef {
+    id: &'static str,
+    name: &'static str,
+    /// (怪物模板, 数量)
+    objectives: &'static [(&'static str, u32)],
+    exp_reward: u64,
+    prereq: Option<&'static str>,
+}
+
+static QUEST_DEFS: [QuestDef; 3] = [
+    QuestDef {
+        id: "hunt_chicken",
+        name: "新手试炼·猎鸡",
+        objectives: &[("chicken", 3)],
+        exp_reward: 50,
+        prereq: None,
+    },
+    QuestDef {
+        id: "hunt_deer",
+        name: "猎鹿行动",
+        objectives: &[("deer", 2)],
+        exp_reward: 80,
+        prereq: Some("hunt_chicken"),
+    },
+    QuestDef {
+        id: "scarecrow_menace",
+        name: "稻田除害",
+        objectives: &[("scarecrow", 2)],
+        exp_reward: 150,
+        prereq: Some("hunt_deer"),
+    },
+];
+
+fn quest_def(id: &str) -> Option<&'static QuestDef> {
+    QUEST_DEFS.iter().find(|q| q.id == id)
+}
+
+/// 任务进度 (持久化)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuestProgress {
+    /// 1=进行中 2=已完成
+    pub state: u8,
+    pub counts: Vec<u32>,
+}
+
 // ── 怪物 AI 参数 (对齐旧服务器实测值) ──
 const AGGRO_RANGE: f64 = 6.0; // 仇恨半径
 const LEASH_RANGE: f64 = 12.0; // 拉离脱战半径
@@ -327,6 +374,7 @@ const ATTACK_COOLDOWN: Duration = Duration::from_millis(1500);
 /// 在场怪物
 struct Monster {
     id: String,
+    template: String,
     zone: String,
     home: (f64, f64),
     /// 游荡活动半径 (来自刷新点)
@@ -415,6 +463,7 @@ struct PlayerState {
     cooldowns: HashMap<String, Instant>,
     inventory: Vec<protocol::ItemInfo>,
     equipment: HashMap<String, protocol::ItemInfo>,
+    quests: HashMap<String, QuestProgress>,
 }
 
 impl PlayerState {
@@ -487,6 +536,7 @@ impl Game {
                     let (x, y) = nearest_walkable(&zone.walk, want.0, want.1);
                     monsters.push(Monster {
                         id: format!("mon_{}_{}_{}", sp.image, sp.template, i),
+                        template: sp.template.clone(),
                         zone: zone.id.clone(),
                         home: (x, y),
                         roam: sp.radius,
@@ -775,6 +825,15 @@ impl Game {
             ClientMessage::Attack { target_id, .. } => {
                 self.handle_attack(&conn_id, &target_id).await;
             }
+            ClientMessage::AcceptQuest { quest_id } => {
+                self.handle_accept_quest(&conn_id, &quest_id).await;
+            }
+            ClientMessage::CompleteQuest { quest_id } => {
+                self.handle_complete_quest(&conn_id, &quest_id).await;
+            }
+            ClientMessage::AbandonQuest { quest_id } => {
+                self.handle_abandon_quest(&conn_id, &quest_id).await;
+            }
             ClientMessage::Equip { item_id, .. } => {
                 self.handle_equip(&conn_id, &item_id).await;
             }
@@ -832,7 +891,8 @@ impl Game {
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
         let (level, exp) = (c.level, c.exp);
-        let (c_inventory, c_equipment) = (c.inventory.clone(), c.equipment.clone());
+        let (c_inventory, c_equipment, c_quests) =
+            (c.inventory.clone(), c.equipment.clone(), c.quests.clone());
         self.players.insert(
             character_id.clone(),
             PlayerState {
@@ -857,6 +917,7 @@ impl Game {
                 cooldowns: HashMap::new(),
                 inventory: c_inventory,
                 equipment: c_equipment,
+                quests: c_quests,
             },
         );
         self.players.get_mut(&character_id).unwrap().recalc();
@@ -869,6 +930,7 @@ impl Game {
         self.send_player_status(&character_id).await;
         self.send_skill_list(&character_id).await;
         self.send_inventory(&character_id).await;
+        self.send_quests(&character_id).await;
     }
 
     /// 推送 HUD 状态 (等级/经验/HP/MP)
@@ -1091,10 +1153,180 @@ impl Game {
         )
         .await;
         if killed {
+            let template = self
+                .monsters
+                .iter()
+                .find(|m| m.id == mon_id)
+                .map(|m| m.template.clone())
+                .unwrap_or_default();
             self.award_exp(char_id, exp_gain).await;
             self.roll_drops(char_id, mon_id).await;
+            self.progress_quests(char_id, &template).await;
         }
         killed
+    }
+
+    /// 击杀怪物 → 推进进行中任务的对应目标
+    async fn progress_quests(&mut self, char_id: &str, template: &str) {
+        let Some(p) = self.players.get_mut(char_id) else {
+            return;
+        };
+        let mut changed = false;
+        for (qid, prog) in p.quests.iter_mut() {
+            if prog.state != 1 {
+                continue;
+            }
+            let Some(def) = quest_def(qid) else { continue };
+            for (i, (target, required)) in def.objectives.iter().enumerate() {
+                if target == &template && prog.counts[i] < *required {
+                    prog.counts[i] += 1;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.send_quests(char_id).await;
+        }
+    }
+
+    /// 推送任务面板全量态 (可接/进行中/已完成)
+    async fn send_quests(&self, char_id: &str) {
+        let Some(p) = self.players.get(char_id) else {
+            return;
+        };
+        let quests = QUEST_DEFS
+            .iter()
+            .filter_map(|def| {
+                let prog = p.quests.get(def.id);
+                let state = match prog {
+                    Some(q) if q.state == 2 => "completed",
+                    Some(_) => "active",
+                    None => {
+                        // 前置完成才可接
+                        let ok = def
+                            .prereq
+                            .is_none_or(|pr| p.quests.get(pr).is_some_and(|q| q.state == 2));
+                        if !ok {
+                            return None;
+                        }
+                        "available"
+                    }
+                };
+                Some(protocol::QuestInfo {
+                    id: def.id.to_string(),
+                    name: def.name.to_string(),
+                    state: state.to_string(),
+                    objectives: def
+                        .objectives
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (target, required))| protocol::QuestObjectiveInfo {
+                            target_id: target.to_string(),
+                            current: prog.map(|q| q.counts[i]).unwrap_or(0).min(*required),
+                            required: *required,
+                        })
+                        .collect(),
+                    exp_reward: def.exp_reward,
+                })
+            })
+            .collect();
+        send_to(
+            &self.sessions,
+            &p.conn_id,
+            ServerMessage::QuestState { quests },
+        )
+        .await;
+    }
+
+    async fn handle_accept_quest(&mut self, conn_id: &str, quest_id: &str) {
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let Some(def) = quest_def(quest_id) else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            if p.quests.contains_key(quest_id) {
+                return;
+            }
+            let prereq_ok = def
+                .prereq
+                .is_none_or(|pr| p.quests.get(pr).is_some_and(|q| q.state == 2));
+            if !prereq_ok {
+                return;
+            }
+            p.quests.insert(
+                quest_id.to_string(),
+                QuestProgress {
+                    state: 1,
+                    counts: vec![0; def.objectives.len()],
+                },
+            );
+        }
+        self.send_quests(&char_id).await;
+    }
+
+    async fn handle_complete_quest(&mut self, conn_id: &str, quest_id: &str) {
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let Some(def) = quest_def(quest_id) else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(prog) = p.quests.get_mut(quest_id) else {
+                return;
+            };
+            if prog.state != 1 {
+                return;
+            }
+            let done = def
+                .objectives
+                .iter()
+                .enumerate()
+                .all(|(i, (_, required))| prog.counts[i] >= *required);
+            if !done {
+                return;
+            }
+            prog.state = 2;
+        }
+        let conn = self.players[&char_id].conn_id.clone();
+        send_to(
+            &self.sessions,
+            &conn,
+            ServerMessage::Notification {
+                message: format!("任务完成: {}", def.name),
+                notification_type: "quest".into(),
+            },
+        )
+        .await;
+        self.award_exp(&char_id, def.exp_reward).await;
+        self.send_quests(&char_id).await;
+    }
+
+    async fn handle_abandon_quest(&mut self, conn_id: &str, quest_id: &str) {
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            match p.quests.get(quest_id) {
+                Some(q) if q.state == 1 => {
+                    p.quests.remove(quest_id);
+                }
+                _ => return,
+            }
+        }
+        self.send_quests(&char_id).await;
+    }
+
+    fn char_by_conn(&self, conn_id: &str) -> Option<String> {
+        self.players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id)
+            .map(|(id, _)| id.clone())
     }
 
     /// 击杀掷落: 命中的物品直接入包 (经典拾取交互后续再做)
@@ -1421,6 +1653,7 @@ impl Game {
                 let _ = self.db.save_position(&id, &p.zone, p.x, p.y).await;
                 let _ = self.db.save_progress(&id, p.level, p.exp).await;
                 let _ = self.db.save_items(&id, &p.inventory, &p.equipment).await;
+                let _ = self.db.save_quests(&id, &p.quests).await;
                 info!("重连窗过期, 存档并移除: {id}");
             }
         }
@@ -1430,6 +1663,7 @@ impl Game {
                 let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
                 let _ = self.db.save_progress(id, p.level, p.exp).await;
                 let _ = self.db.save_items(id, &p.inventory, &p.equipment).await;
+                let _ = self.db.save_quests(id, &p.quests).await;
             }
         }
         // 怪物 AI (有玩家在线才跑)

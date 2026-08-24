@@ -74,6 +74,7 @@ fn main() {
                 login_ui.run_if(in_state(Screen::Login)),
                 charselect_ui.run_if(in_state(Screen::CharSelect)),
                 inventory_ui.run_if(in_state(Screen::InGame)),
+                quest_ui.run_if(in_state(Screen::InGame)),
             )
                 .chain(),
         )
@@ -116,6 +117,7 @@ struct Net {
     skills: Vec<protocol::SkillInfo>,
     inventory: Vec<protocol::ItemInfo>,
     equipment: HashMap<String, protocol::ItemInfo>,
+    quests: Vec<protocol::QuestInfo>,
     status: String,
     /// HUD 状态行 (PlayerStatus 驱动, F3 面板显示)
     hud: String,
@@ -1035,6 +1037,7 @@ fn net_pump(
                     next.set(Screen::Login);
                 }
                 ServerMessage::SkillList { skills } => net.skills = skills,
+                ServerMessage::QuestState { quests } => net.quests = quests,
                 ServerMessage::InventoryState {
                     inventory,
                     equipment,
@@ -1535,6 +1538,78 @@ fn inventory_ui(
                 }
             });
     }
+}
+
+/// 过渡版任务面板 (L)
+fn quest_ui(
+    mut ctx: EguiContexts,
+    keys: Res<ButtonInput<KeyCode>>,
+    net: Res<Net>,
+    mut show: Local<bool>,
+) {
+    if keys.just_pressed(KeyCode::KeyL) {
+        *show = !*show;
+    }
+    if !*show {
+        return;
+    }
+    fn mob_name(t: &str) -> &str {
+        match t {
+            "chicken" => "鸡",
+            "deer" => "鹿",
+            "scarecrow" => "稻草人",
+            other => other,
+        }
+    }
+    let quests = net.quests.clone();
+    egui::Window::new("任务 (L)")
+        .default_pos((1500.0, 60.0))
+        .show(ctx.ctx_mut(), |ui| {
+            if quests.is_empty() {
+                ui.label("暂无可接任务");
+            }
+            for q in &quests {
+                let tag = match q.state.as_str() {
+                    "active" => "[进行中]",
+                    "completed" => "[已完成]",
+                    _ => "[可接取]",
+                };
+                ui.horizontal(|ui| {
+                    ui.label(format!("{tag} {}  (经验 {})", q.name, q.exp_reward));
+                    match q.state.as_str() {
+                        "available" if ui.small_button("接取").clicked() => {
+                            net.send(ClientMessage::AcceptQuest {
+                                quest_id: q.id.clone(),
+                            });
+                        }
+                        "active" => {
+                            let done = q.objectives.iter().all(|o| o.current >= o.required);
+                            if done && ui.small_button("交付").clicked() {
+                                net.send(ClientMessage::CompleteQuest {
+                                    quest_id: q.id.clone(),
+                                });
+                            }
+                            if ui.small_button("放弃").clicked() {
+                                net.send(ClientMessage::AbandonQuest {
+                                    quest_id: q.id.clone(),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+                if q.state == "active" {
+                    for o in &q.objectives {
+                        ui.label(format!(
+                            "    击杀{}: {}/{}",
+                            mob_name(&o.target_id),
+                            o.current,
+                            o.required
+                        ));
+                    }
+                }
+            }
+        });
 }
 
 // ─────────── 过渡版登录/选角 UI (egui 素排版, M4 换 Bevy UI 皮肤) ───────────
