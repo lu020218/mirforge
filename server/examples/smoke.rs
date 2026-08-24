@@ -10,7 +10,7 @@ type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn send(ws: &mut Ws, msg: &ClientMessage) {
-    ws.send(Message::Text(protocol::encode(msg).unwrap().into()))
+    ws.send(Message::Text(protocol::encode(msg).unwrap()))
         .await
         .unwrap();
 }

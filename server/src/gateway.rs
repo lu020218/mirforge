@@ -101,7 +101,7 @@ impl Gateway {
                 let Ok(json) = protocol::encode(&msg) else {
                     continue;
                 };
-                if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                if ws_tx.send(Message::Text(json)).await.is_err() {
                     break;
                 }
             }
