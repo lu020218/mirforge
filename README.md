@@ -28,11 +28,47 @@ server/          权威服务器
 client/          Bevy 客户端
 ```
 
-## 快速开始（占位，随里程碑完善）
+## 快速开始
+
+需要一套市面上已有的传奇客户端资源（含 `Map/` 与 `Data/` 图库，本仓库不含任何游戏资源）。
+所有命令通过 `MIRFORGE_RES` 环境变量找到资源目录。
+
+**Windows (PowerShell) 一键脚本：**
+
+```powershell
+# 联机 (两个窗口)
+tools\dev-server.ps1                 # 窗口 1: 服务器
+tools\dev-client.ps1                 # 窗口 2: 客户端 (注册→建角→进游戏)
+
+# 离线单机漫游 (不需要服务器)
+tools\dev-client.ps1 -Offline
+
+# 资源目录不在默认位置时
+tools\dev-server.ps1 -Res D:\mir-res
+```
+
+**bash / CI：**
 
 ```bash
-cargo test          # 运行全部测试
+export MIRFORGE_RES=/path/to/mir-res
+cargo run -p mirforge-server                                       # 服务器
+MIRFORGE_SERVER=ws://127.0.0.1:4000 cargo run -p mirforge-client   # 客户端
+cargo run -p mirforge-client                                       # 或离线单机
 ```
+
+**游戏内操作**：左键按住空地 = 走路，右键 = 跑步，左键点怪 = 普攻，`1/2/3` = 技能，
+`B` 背包 / `C` 装备 / `L` 任务 / `F3` 调试面板，`F` = 1x/2x/3x 整数缩放。
+
+**测试与回归：**
+
+```bash
+cargo test --workspace                # 单元/逻辑测试 (不需要资源)
+MIRFORGE_RES=... tools/run-smokes.sh  # 五套协议级端到端冒烟 (需要资源)
+```
+
+常用环境变量：`MIRFORGE_MAP`(默认 0.map)、`MIRFORGE_ADDR`(默认 127.0.0.1:4000)、
+`MIRFORGE_DB`(SQLite 路径)、`MIRFORGE_LIBSET`(默认 WemadeMir2)。
+区域/刷怪/掉落/传送门由 `server/zones/*.json` 边车配置驱动。
 
 ## 许可
 
