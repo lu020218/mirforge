@@ -225,14 +225,16 @@ async fn main() {
         _ => unreachable!(),
     }
 
-    // ── 传送门: 走向 0.map (334.5,154.5) 的门 → 应切区到盟重省 ──
-    let d = (334.5 - pos_clamped.x, 154.5 - pos_clamped.y);
-    let len = (d.0 * d.0 + d.1 * d.1).sqrt();
-    let step = Position {
-        x: d.0 / len * 0.15,
-        y: d.1 / len * 0.15,
-    };
-    let (zone, arrive) = walk_until_zone(&mut ws2, step, 80, "去程传送").await;
+    // ── 传送门: 走向 0.map (330.5,158.5) 的门 → 应切区到盟重省 ──
+    let (zone, arrive) = walk_until_zone(
+        &mut ws2,
+        &character_id,
+        pos_clamped,
+        (330.5, 158.5),
+        120,
+        "去程传送",
+    )
+    .await;
     assert_eq!(zone, "盟重省", "传送目的地错误");
     println!(
         "[7/8] 传送门去程 ok: {zone} @({:.1},{:.1})",
@@ -240,13 +242,15 @@ async fn main() {
     );
 
     // ── 回程: 从盟重出生点走向 (303.5,300.5) 的门 → 应回比奇省 ──
-    let d = (303.5 - arrive.x, 300.5 - arrive.y);
-    let len = (d.0 * d.0 + d.1 * d.1).sqrt();
-    let step = Position {
-        x: d.0 / len * 0.15,
-        y: d.1 / len * 0.15,
-    };
-    let (zone, back) = walk_until_zone(&mut ws2, step, 80, "回程传送").await;
+    let (zone, back) = walk_until_zone(
+        &mut ws2,
+        &character_id,
+        arrive,
+        (303.5, 300.5),
+        120,
+        "回程传送",
+    )
+    .await;
     assert_eq!(zone, "比奇省", "回程目的地错误");
     assert!(
         (back.x - 330.5).abs() < 1.0 && (back.y - 150.5).abs() < 1.0,
@@ -258,25 +262,49 @@ async fn main() {
     println!("冒烟全过 ✓");
 }
 
-/// 按固定方向持续走, 边走边等 ZoneChanged (传送门触发)
+/// 朝目标点持续走 (按服务器广播的实际位置每步修正方向, 阻挡滑行也不走丢),
+/// 直到 ZoneChanged (传送门触发)
 async fn walk_until_zone(
     ws: &mut Ws,
-    dir: Position,
+    my_id: &str,
+    start: Position,
+    target: (f64, f64),
     max_steps: usize,
     what: &str,
 ) -> (String, Position) {
+    let mut pos = start;
     for _ in 0..max_steps {
-        send(ws, &ClientMessage::Move { direction: dir }).await;
+        let d = (target.0 - pos.x, target.1 - pos.y);
+        let len = (d.0 * d.0 + d.1 * d.1).sqrt().max(1e-6);
+        send(
+            ws,
+            &ClientMessage::Move {
+                direction: Position {
+                    x: d.0 / len * 0.15,
+                    y: d.1 / len * 0.15,
+                },
+            },
+        )
+        .await;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
         while let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws.next()).await {
             if let Message::Text(text) = msg {
-                if let Ok(ServerMessage::ZoneChanged {
-                    zone_name,
-                    position,
-                    ..
-                }) = protocol::decode_server(&text)
-                {
-                    return (zone_name, position);
+                match protocol::decode_server(&text) {
+                    Ok(ServerMessage::ZoneChanged {
+                        zone_name,
+                        position,
+                        ..
+                    }) => return (zone_name, position),
+                    Ok(ServerMessage::StateUpdate { entities, .. }) => {
+                        if let Some(p) = entities
+                            .iter()
+                            .find(|e| e.id == my_id)
+                            .and_then(|e| e.position)
+                        {
+                            pos = p;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

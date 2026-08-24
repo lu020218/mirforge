@@ -16,6 +16,7 @@ pub struct CharacterRow {
     pub class: CharacterClass,
     pub gender: String,
     pub level: u32,
+    pub exp: u64,
     pub zone: String,
     pub x: f64,
     pub y: f64,
@@ -70,6 +71,7 @@ impl Db {
                 class TEXT NOT NULL,
                 gender TEXT NOT NULL DEFAULT 'male',
                 level INTEGER NOT NULL DEFAULT 1,
+                exp INTEGER NOT NULL DEFAULT 0,
                 zone TEXT NOT NULL DEFAULT '0.map',
                 x REAL NOT NULL,
                 y REAL NOT NULL
@@ -78,6 +80,9 @@ impl Db {
         .execute(&pool)
         .await?;
         // 旧开发库升级 (列已存在则忽略)
+        let _ = sqlx::query("ALTER TABLE characters ADD COLUMN exp INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool)
+            .await;
         let _ = sqlx::query("ALTER TABLE characters ADD COLUMN zone TEXT NOT NULL DEFAULT '0.map'")
             .execute(&pool)
             .await;
@@ -179,7 +184,7 @@ impl Db {
         character_id: &str,
     ) -> Result<Option<CharacterRow>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, name, class, gender, level, zone, x, y FROM characters WHERE id = ? AND account_id = ?",
+            "SELECT id, name, class, gender, level, exp, zone, x, y FROM characters WHERE id = ? AND account_id = ?",
         )
         .bind(character_id)
         .bind(account_id)
@@ -191,6 +196,7 @@ impl Db {
             class: class_from_str(&r.get::<String, _>("class")),
             gender: r.get("gender"),
             level: r.get::<i64, _>("level") as u32,
+            exp: r.get::<i64, _>("exp") as u64,
             zone: r.get("zone"),
             x: r.get("x"),
             y: r.get("y"),
@@ -208,6 +214,21 @@ impl Db {
             .bind(zone)
             .bind(x)
             .bind(y)
+            .bind(character_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn save_progress(
+        &self,
+        character_id: &str,
+        level: u32,
+        exp: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE characters SET level = ?, exp = ? WHERE id = ?")
+            .bind(level as i64)
+            .bind(exp as i64)
             .bind(character_id)
             .execute(&self.pool)
             .await?;

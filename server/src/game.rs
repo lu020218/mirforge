@@ -53,6 +53,27 @@ pub struct MonsterSpawn {
     pub radius: f64,
     /// 被动怪不主动仇恨/攻击
     pub passive: bool,
+    pub hp: i32,
+    pub damage: i32,
+    pub exp: u64,
+}
+
+// ── 战斗参数 (M3.2 基础值; 装备加成随 3.4 接入) ──
+const PLAYER_ATTACK_RANGE: f64 = 2.5;
+const PLAYER_ATTACK_CD: Duration = Duration::from_millis(600);
+const MONSTER_HIT_RANGE: f64 = 2.2;
+const DYING_TIME: Duration = Duration::from_millis(1300);
+const RESPAWN_TIME: Duration = Duration::from_secs(30);
+
+fn max_hp_for(level: u32) -> i32 {
+    40 + level as i32 * 12
+}
+fn attack_for(level: u32) -> i32 {
+    4 + level as i32 * 2
+}
+/// 升到下一级所需累计经验
+fn exp_required(level: u32) -> u64 {
+    level as u64 * 100
 }
 
 // ── 怪物 AI 参数 (对齐旧服务器实测值) ──
@@ -78,9 +99,27 @@ struct Monster {
     target: Option<(f64, f64)>,
     chasing: bool,
     attack_until: Option<Instant>,
+    /// 攻击动画结束时结算伤害的目标角色
+    pending_hit: Option<String>,
     next_attack: Instant,
     next_decide: Instant,
     passive: bool,
+    hp: i32,
+    max_hp: i32,
+    damage: i32,
+    exp: u64,
+    /// 死亡动画播放中 (到点转入等待重生)
+    dying_until: Option<Instant>,
+    /// 等待重生 (期间不广播不参与 AI)
+    respawn_at: Option<Instant>,
+    /// removed=true 是否已广播过
+    removed_sent: bool,
+}
+
+impl Monster {
+    fn alive(&self) -> bool {
+        self.dying_until.is_none() && self.respawn_at.is_none()
+    }
 }
 
 /// 从 (x,y) 就近找可站立点（螺旋外扩, 最远 60 格）
@@ -125,6 +164,11 @@ struct PlayerState {
     last_move: Instant,
     connected: bool,
     disconnected_at: Option<Instant>,
+    hp: i32,
+    max_hp: i32,
+    level: u32,
+    exp: u64,
+    last_attack: Instant,
 }
 
 pub struct Game {
@@ -186,9 +230,17 @@ impl Game {
                         target: None,
                         chasing: false,
                         attack_until: None,
+                        pending_hit: None,
                         next_attack: now,
                         next_decide: now,
                         passive: sp.passive,
+                        hp: sp.hp,
+                        max_hp: sp.hp,
+                        damage: sp.damage,
+                        exp: sp.exp,
+                        dying_until: None,
+                        respawn_at: None,
+                        removed_sent: false,
                     });
                 }
             }
@@ -452,6 +504,9 @@ impl Game {
                     self.send_enter_zone_only(&cid, &character_id, x, y).await;
                 }
             }
+            ClientMessage::Attack { target_id, .. } => {
+                self.handle_attack(&conn_id, &target_id).await;
+            }
             other => {
                 // M3 玩法消息占位
                 warn!("暂未实现的消息: {other:?}");
@@ -495,6 +550,7 @@ impl Game {
         };
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
+        let (level, exp) = (c.level, c.exp);
         self.players.insert(
             character_id.clone(),
             PlayerState {
@@ -509,10 +565,46 @@ impl Game {
                 last_move: Instant::now(),
                 connected: true,
                 disconnected_at: None,
+                hp: max_hp_for(level),
+                max_hp: max_hp_for(level),
+                level,
+                exp,
+                last_attack: Instant::now() - PLAYER_ATTACK_CD,
             },
         );
         info!("进入游戏: {character_id} {zone} @({x:.1},{y:.1})");
         self.send_enter_payload(conn_id, &character_id, x, y).await;
+        self.send_player_status(&character_id).await;
+    }
+
+    /// 推送 HUD 状态 (等级/经验/HP/MP)
+    async fn send_player_status(&self, character_id: &str) {
+        let Some(p) = self.players.get(character_id) else {
+            return;
+        };
+        send_to(
+            &self.sessions,
+            &p.conn_id,
+            ServerMessage::PlayerStatus {
+                level: p.level,
+                experience: p.exp,
+                required_experience: exp_required(p.level),
+                hp: p.hp,
+                max_hp: p.max_hp,
+                mp: 30,
+                max_mp: 30,
+            },
+        )
+        .await;
+    }
+
+    /// 区域内所有在线玩家的连接 id
+    fn zone_conns(&self, zone: &str) -> Vec<String> {
+        self.players
+            .values()
+            .filter(|p| p.connected && p.zone == zone)
+            .map(|p| p.conn_id.clone())
+            .collect()
     }
 
     async fn send_enter_payload(&self, conn_id: &str, character_id: &str, x: f64, y: f64) {
@@ -614,6 +706,100 @@ impl Game {
         Some((conn_id.to_string(), id.clone(), tx, ty))
     }
 
+    /// 普攻结算：射程/冷却校验 → 扣血 → 飘字广播 → 击杀经验/升级/尸体与重生
+    async fn handle_attack(&mut self, conn_id: &str, target_id: &str) {
+        let now = Instant::now();
+        // 攻击者
+        let Some((char_id, zone, px, py, level)) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id)
+            .map(|(id, p)| (id.clone(), p.zone.clone(), p.x, p.y, p.level))
+        else {
+            return;
+        };
+        {
+            let p = self.players.get_mut(&char_id).unwrap();
+            if now.duration_since(p.last_attack) < PLAYER_ATTACK_CD {
+                return;
+            }
+            p.last_attack = now;
+        }
+        // 目标怪
+        let Some(m) = self
+            .monsters
+            .iter_mut()
+            .find(|m| m.id == target_id && m.zone == zone && m.alive())
+        else {
+            return;
+        };
+        let dist = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+        if dist > PLAYER_ATTACK_RANGE {
+            return;
+        }
+        let dmg = attack_for(level);
+        m.hp -= dmg;
+        let (mon_id, killed, exp_gain) = (m.id.clone(), m.hp <= 0, m.exp);
+        if killed {
+            m.dying_until = Some(now + DYING_TIME);
+            m.target = None;
+            m.attack_until = None;
+            m.pending_hit = None;
+        }
+        let conns = self.zone_conns(&zone);
+        broadcast_to(
+            &self.sessions,
+            &conns,
+            ServerMessage::DamageNumber {
+                target_id: mon_id.clone(),
+                amount: dmg,
+                is_critical: false,
+            },
+        )
+        .await;
+        if killed {
+            self.award_exp(&char_id, exp_gain).await;
+        }
+    }
+
+    /// 经验入账 + 升级结算
+    async fn award_exp(&mut self, char_id: &str, gain: u64) {
+        let Some(p) = self.players.get_mut(char_id) else {
+            return;
+        };
+        p.exp += gain;
+        let mut leveled = false;
+        while p.exp >= exp_required(p.level) {
+            p.exp -= exp_required(p.level);
+            p.level += 1;
+            p.max_hp = max_hp_for(p.level);
+            p.hp = p.max_hp;
+            leveled = true;
+        }
+        let (conn, level) = (p.conn_id.clone(), p.level);
+        send_to(
+            &self.sessions,
+            &conn,
+            ServerMessage::Notification {
+                message: format!("获得经验 {gain}"),
+                notification_type: "exp".into(),
+            },
+        )
+        .await;
+        if leveled {
+            send_to(
+                &self.sessions,
+                &conn,
+                ServerMessage::Notification {
+                    message: format!("升级! 现在 Lv.{level}"),
+                    notification_type: "levelup".into(),
+                },
+            )
+            .await;
+        }
+        self.send_player_status(char_id).await;
+    }
+
     /// 只发 ZoneChanged（切区通知）
     async fn send_enter_zone_only(&self, conn_id: &str, character_id: &str, x: f64, y: f64) {
         let Some(p) = self.players.get(character_id) else {
@@ -668,6 +854,7 @@ impl Game {
         for id in expired {
             if let Some(p) = self.players.remove(&id) {
                 let _ = self.db.save_position(&id, &p.zone, p.x, p.y).await;
+                let _ = self.db.save_progress(&id, p.level, p.exp).await;
                 info!("重连窗过期, 存档并移除: {id}");
             }
         }
@@ -675,11 +862,28 @@ impl Game {
             self.last_save = now;
             for (id, p) in &self.players {
                 let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
+                let _ = self.db.save_progress(id, p.level, p.exp).await;
             }
         }
         // 怪物 AI (有玩家在线才跑)
         if !self.players.is_empty() {
-            self.monster_ai(now);
+            let hits = self.monster_ai(now);
+            self.apply_monster_hits(hits).await;
+        }
+        // 怪物生命周期: 死亡动画到点 → 等重生; 重生到点 → 回家满血复活
+        for m in self.monsters.iter_mut() {
+            if m.dying_until.is_some_and(|t| now >= t) {
+                m.dying_until = None;
+                m.respawn_at = Some(now + RESPAWN_TIME);
+            }
+            if m.respawn_at.is_some_and(|t| now >= t) {
+                m.respawn_at = None;
+                m.hp = m.max_hp;
+                m.x = m.home.0;
+                m.y = m.home.1;
+                m.dir = 4;
+                m.removed_sent = false;
+            }
         }
         // 20Hz 广播, 按区域分组 (只看得见同区域的人)
         if self.players.is_empty() {
@@ -712,24 +916,41 @@ impl Game {
             }
             entities.extend(
                 self.monsters
-                    .iter()
+                    .iter_mut()
                     .filter(|m| &m.zone == zone_id)
-                    .map(|m| EntityUpdate {
-                        id: m.id.clone(),
-                        position: Some(Position { x: m.x, y: m.y }),
-                        hp: None,
-                        animation: Some(
-                            if m.attack_until.is_some() {
-                                "attack"
-                            } else if m.target.is_some() {
-                                "walk"
-                            } else {
-                                "stand"
+                    .filter_map(|m| {
+                        // 等重生: removed 只广播一次
+                        if m.respawn_at.is_some() {
+                            if m.removed_sent {
+                                return None;
                             }
-                            .into(),
-                        ),
-                        dir: Some(m.dir),
-                        removed: None,
+                            m.removed_sent = true;
+                            return Some(EntityUpdate {
+                                id: m.id.clone(),
+                                position: None,
+                                hp: None,
+                                animation: None,
+                                dir: None,
+                                removed: Some(true),
+                            });
+                        }
+                        let anim = if m.dying_until.is_some() {
+                            "die"
+                        } else if m.attack_until.is_some() {
+                            "attack"
+                        } else if m.target.is_some() {
+                            "walk"
+                        } else {
+                            "stand"
+                        };
+                        Some(EntityUpdate {
+                            id: m.id.clone(),
+                            position: Some(Position { x: m.x, y: m.y }),
+                            hp: Some(m.hp.max(0)),
+                            animation: Some(anim.into()),
+                            dir: Some(m.dir),
+                            removed: None,
+                        })
                     }),
             );
             let targets: Vec<String> = self
@@ -750,15 +971,17 @@ impl Game {
         }
     }
 
-    /// 怪物 AI: 0.5s 决策 (仇恨/追击/拴绳/游荡) + 每 tick 连续移动
-    fn monster_ai(&mut self, now: Instant) {
+    /// 怪物 AI: 0.5s 决策 (仇恨/追击/拴绳/游荡) + 每 tick 连续移动。
+    /// 返回攻击动画到点的命中结算 (角色 id, 伤害)。
+    fn monster_ai(&mut self, now: Instant) -> Vec<(String, i32)> {
+        let mut hits = Vec::new();
         let dt = TICK.as_secs_f64();
         // 决策所需的玩家位置快照 (避免与 monsters 可变借用冲突)
-        let players: Vec<(String, f64, f64)> = self
+        let players: Vec<(String, String, f64, f64)> = self
             .players
-            .values()
-            .filter(|p| p.connected)
-            .map(|p| (p.zone.clone(), p.x, p.y))
+            .iter()
+            .filter(|(_, p)| p.connected)
+            .map(|(id, p)| (id.clone(), p.zone.clone(), p.x, p.y))
             .collect();
         let mut rolls: Vec<f64> = Vec::with_capacity(self.monsters.len());
         for _ in 0..self.monsters.len() {
@@ -766,42 +989,53 @@ impl Game {
             rolls.push(r);
         }
         for (mi, m) in self.monsters.iter_mut().enumerate() {
+            if !m.alive() {
+                continue;
+            }
             let Some(zone) = self.zones.get(&m.zone) else {
                 continue;
             };
-            // 攻击动画期间原地不动
+            // 攻击动画期间原地不动; 到点结算命中 (目标仍在范围内才算打中)
             if let Some(t) = m.attack_until {
                 if now < t {
                     continue;
                 }
                 m.attack_until = None;
+                if let Some(target) = m.pending_hit.take() {
+                    if let Some((_, _, px, py)) = players.iter().find(|(id, ..)| id == &target) {
+                        let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+                        if d <= MONSTER_HIT_RANGE {
+                            hits.push((target, m.damage));
+                        }
+                    }
+                }
             }
             if now >= m.next_decide {
                 m.next_decide = now + Duration::from_millis(500);
                 let home_d = ((m.x - m.home.0).powi(2) + (m.y - m.home.1).powi(2)).sqrt();
                 let nearest = players
                     .iter()
-                    .filter(|(z, _, _)| z == &m.zone)
-                    .map(|(_, px, py)| {
+                    .filter(|(_, z, _, _)| z == &m.zone)
+                    .map(|(id, _, px, py)| {
                         let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
-                        (d, *px, *py)
+                        (d, id.clone(), *px, *py)
                     })
                     .min_by(|a, b| a.0.total_cmp(&b.0));
                 if home_d > LEASH_RANGE {
                     // 拉离过远 → 脱战回家
                     m.chasing = false;
                     m.target = Some(m.home);
-                } else if let Some((d, px, py)) =
-                    nearest.filter(|(d, _, _)| *d < AGGRO_RANGE && !m.passive)
+                } else if let Some((d, pid, px, py)) =
+                    nearest.filter(|(d, ..)| *d < AGGRO_RANGE && !m.passive)
                 {
                     if d < ATTACK_RANGE {
-                        // 出手 (伤害结算 M3.2 接入)
                         m.dir = dir8_from(px - m.x, py - m.y) as u8;
                         m.target = None;
                         m.chasing = false;
                         if now >= m.next_attack {
                             m.attack_until = Some(now + ATTACK_ANIM);
                             m.next_attack = now + ATTACK_COOLDOWN;
+                            m.pending_hit = Some(pid);
                         }
                     } else {
                         m.chasing = true;
@@ -835,6 +1069,53 @@ impl Game {
                     m.y = ny;
                 }
             }
+        }
+        hits
+    }
+
+    /// 怪物命中玩家: 扣血/飘字/死亡回城
+    async fn apply_monster_hits(&mut self, hits: Vec<(String, i32)>) {
+        for (char_id, dmg) in hits {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                continue;
+            };
+            p.hp -= dmg;
+            let (zone, conn, dead) = (p.zone.clone(), p.conn_id.clone(), p.hp <= 0);
+            let conns = self.zone_conns(&zone);
+            broadcast_to(
+                &self.sessions,
+                &conns,
+                ServerMessage::DamageNumber {
+                    target_id: char_id.clone(),
+                    amount: dmg,
+                    is_critical: false,
+                },
+            )
+            .await;
+            if dead {
+                // 死亡: 回本区域出生点满血复活 (惩罚机制后续)
+                let spawn = self
+                    .zones
+                    .get(&zone)
+                    .map(|z| z.spawn)
+                    .unwrap_or((330.5, 150.5));
+                let p = self.players.get_mut(&char_id).unwrap();
+                p.hp = p.max_hp;
+                p.x = spawn.0;
+                p.y = spawn.1;
+                send_to(
+                    &self.sessions,
+                    &conn,
+                    ServerMessage::Notification {
+                        message: "你死了, 已在出生点复活".into(),
+                        notification_type: "death".into(),
+                    },
+                )
+                .await;
+                self.send_enter_zone_only(&conn, &char_id, spawn.0, spawn.1)
+                    .await;
+            }
+            self.send_player_status(&char_id).await;
         }
     }
 }

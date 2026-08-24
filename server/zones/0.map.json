@@ -2,11 +2,11 @@
   "name": "比奇省",
   "spawn": [330.5, 150.5],
   "portals": [
-    { "x": 334.5, "y": 154.5, "to": "2.map" }
+    { "x": 330.5, "y": 158.5, "to": "2.map" }
   ],
   "monsters": [
-    { "template": "chicken", "image": 3, "x": 333.0, "y": 148.0, "count": 4, "radius": 3, "passive": true },
-    { "template": "deer", "image": 4, "x": 338.0, "y": 152.0, "count": 2, "radius": 4, "passive": true },
-    { "template": "scarecrow", "image": 5, "x": 342.0, "y": 157.0, "count": 3, "radius": 4 }
+    { "template": "chicken", "image": 3, "x": 333.0, "y": 148.0, "count": 4, "radius": 3, "passive": true, "hp": 12, "exp": 5 },
+    { "template": "deer", "image": 4, "x": 338.0, "y": 152.0, "count": 2, "radius": 4, "passive": true, "hp": 30, "exp": 8 },
+    { "template": "scarecrow", "image": 5, "x": 342.0, "y": 157.0, "count": 3, "radius": 4, "hp": 90, "damage": 4, "exp": 20 }
   ]
 }

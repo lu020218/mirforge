@@ -85,6 +85,7 @@ fn main() {
                 stream_chunks,
                 player_sprite,
                 remote_step,
+                float_damage,
                 upload_dirty_pages,
                 net_send,
                 debug_panel,
@@ -110,6 +111,8 @@ struct Net {
     my_id: Option<String>,
     characters: Vec<CharacterSummary>,
     status: String,
+    /// HUD 状态行 (PlayerStatus 驱动, F3 面板显示)
+    hud: String,
     /// 未上报的本地位移累计（20Hz 打包发送）
     acc: DVec2,
     last_send: f64,
@@ -374,6 +377,7 @@ fn setup(
                 moving: false,
                 running: false,
                 anim_t: 0.0,
+                attack_start: None,
             },
             Sprite::default(),
             Transform::default(),
@@ -477,6 +481,20 @@ struct Player {
     moving: bool,
     running: bool,
     anim_t: f64,
+    /// 普攻动作开始时刻 (Time::elapsed_secs_f64; 动作期间站桩)
+    attack_start: Option<f64>,
+}
+
+/// 普攻动作时长 (6 帧 × 90ms) 与客户端侧冷却
+const ATTACK_ANIM_SECS: f64 = 0.54;
+const ATTACK_CD_SECS: f64 = 0.6;
+/// 攻击射程 (格)
+const ATTACK_RANGE: f64 = 2.4;
+
+/// 伤害飘字
+#[derive(Component)]
+struct Floater {
+    born: f64,
 }
 
 // 速度对齐原版节奏: 走路一步(1 格)≈0.6s, 跑步一个周期跨 2 格
@@ -488,7 +506,7 @@ const RUN_FRAME_DT: f64 = 2.0 / (RUN_SPEED * 6.0);
 /// 光标离角色近于此距离(格)时不再追(防原地抖动)
 const CURSOR_DEADZONE: f64 = 0.4;
 
-/// 经典传奇操作: 左键按住=朝光标走路, 右键按住=跑步 (点到 NPC/怪的分流留待后续实体系统)
+/// 经典传奇操作: 左键点怪=普攻, 左键按住空地=走路, 右键按住=跑步
 #[allow(clippy::too_many_arguments)]
 fn player_move(
     time: Res<Time>,
@@ -497,8 +515,10 @@ fn player_move(
     q_cam: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     world: Res<World>,
     mut net: ResMut<Net>,
+    remotes: Res<Remotes>,
     mut egui_ctx: EguiContexts,
     mut last_cursor: Local<Option<Vec2>>,
+    mut last_atk: Local<f64>,
     mut q: Query<&mut Player>,
 ) {
     let Ok(mut p) = q.get_single_mut() else {
@@ -513,28 +533,62 @@ fn player_move(
     if egui_ctx.ctx_mut().wants_pointer_input() {
         return;
     }
+    let dt = time.delta_secs_f64();
+    let now_t = time.elapsed_secs_f64();
+    // 攻击动作期间站桩
+    if p.attack_start.is_some_and(|t| now_t - t < ATTACK_ANIM_SECS) {
+        p.moving = false;
+        p.anim_t += dt;
+        return;
+    }
+    // 光标世界格坐标 (Bevy y 向上, 世界 y 向下取负还原); 每帧换算,
+    // 镜头滚动时朝向随光标屏幕位置更新
+    let cursor_cell = last_cursor
+        .and_then(|c| {
+            let (cam, cam_tf) = q_cam.get_single().ok()?;
+            cam.viewport_to_world_2d(cam_tf, c).ok()
+        })
+        .map(|w| DVec2::new(w.x as f64 / CELL_W as f64, -(w.y as f64) / CELL_H as f64));
     let run = buttons.pressed(MouseButton::Right);
     let held = buttons.pressed(MouseButton::Left) || run;
-    let mut v = DVec2::ZERO;
-    if held {
-        if let (Some(cursor), Ok((cam, cam_tf))) = (*last_cursor, q_cam.get_single()) {
-            if let Ok(wpt) = cam.viewport_to_world_2d(cam_tf, cursor) {
-                // 世界像素 → 格坐标 (Bevy y 向上, 世界 y 向下取负还原); 每帧换算,
-                // 镜头滚动时朝向随光标屏幕位置更新
-                let target = DVec2::new(
-                    wpt.x as f64 / CELL_W as f64,
-                    -(wpt.y as f64) / CELL_H as f64,
-                );
-                let d = target - p.pos;
-                if d.length() > CURSOR_DEADZONE {
-                    // 方向吸附 8 向: 身体走向与精灵朝向结构上一致 (阶梯路径, 经典手感)
-                    let dir = dir8_from(d.x, d.y);
-                    v = DVec2::new(sim::DIR8[dir].0, sim::DIR8[dir].1);
+    // 左键按在怪身上 = 普攻 (光标 bbox 近似命中, 死亡中的怪忽略)
+    if buttons.pressed(MouseButton::Left) && !run {
+        if let Some(cc) = cursor_cell {
+            let hit = remotes
+                .0
+                .iter()
+                .filter(|(_, r)| r.image.is_some() && r.anim != 4)
+                .find(|(_, r)| (r.pos.x - cc.x).abs() < 0.8 && (r.pos.y - cc.y).abs() < 1.1);
+            if let Some((mid, m)) = hit {
+                let d = m.pos - p.pos;
+                p.dir = dir8_from(d.x, d.y);
+                p.moving = false;
+                if d.length() <= ATTACK_RANGE && now_t - *last_atk > ATTACK_CD_SECS {
+                    *last_atk = now_t;
+                    p.attack_start = Some(now_t);
+                    p.anim_t = 0.0;
+                    net.send(ClientMessage::Attack {
+                        target_id: mid.clone(),
+                        skill_id: "basic".into(),
+                    });
+                } else {
+                    p.anim_t += dt;
                 }
+                return;
             }
         }
     }
-    let dt = time.delta_secs_f64();
+    let mut v = DVec2::ZERO;
+    if held {
+        if let Some(cc) = cursor_cell {
+            let d = cc - p.pos;
+            if d.length() > CURSOR_DEADZONE {
+                // 方向吸附 8 向: 身体走向与精灵朝向结构上一致 (阶梯路径, 经典手感)
+                let dir = dir8_from(d.x, d.y);
+                v = DVec2::new(sim::DIR8[dir].0, sim::DIR8[dir].1);
+            }
+        }
+    }
     if v == DVec2::ZERO {
         if p.moving {
             p.moving = false;
@@ -574,6 +628,7 @@ fn debug_panel(
     world: Res<World>,
     q_player: Query<&Player>,
     q_proj: Query<&OrthographicProjection, With<Camera2d>>,
+    net: Res<Net>,
 ) {
     if keys.just_pressed(KeyCode::F3) {
         *show = !*show;
@@ -589,6 +644,9 @@ fn debug_panel(
         .default_pos((8.0, 8.0))
         .show(ctx.ctx_mut(), |ui| {
             ui.label(format!("FPS: {fps:.0}"));
+            if !net.hud.is_empty() {
+                ui.label(net.hud.clone());
+            }
             if let Ok(p) = q_player.get_single() {
                 let state = match (p.moving, p.running) {
                     (true, true) => "run",
@@ -624,12 +682,19 @@ fn debug_panel(
 }
 
 /// 按动作/方向/时间挑帧并更新精灵与变换
-fn player_sprite(mut world: ResMut<World>, mut q: Query<(&Player, &mut Sprite, &mut Transform)>) {
+fn player_sprite(
+    time: Res<Time>,
+    mut world: ResMut<World>,
+    mut q: Query<(&Player, &mut Sprite, &mut Transform)>,
+) {
     let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
         return;
     };
-    // 帧表 (男, CArmour 实证布局): 站 0 + dir*4 + f(4, 200ms); 走 32 + dir*6; 跑 80 + dir*6
-    let frame_idx = if p.moving && p.running {
+    let now_t = time.elapsed_secs_f64();
+    // 帧表 (男, CArmour 实证布局): 站 0+dir*4 (4帧); 走 32+dir*6; 跑 80+dir*6; 攻 128+dir*6 (一次性)
+    let frame_idx = if let Some(t) = p.attack_start.filter(|t| now_t - t < ATTACK_ANIM_SECS) {
+        128 + p.dir * 6 + (((now_t - t) / 0.09) as usize).min(5)
+    } else if p.moving && p.running {
         80 + p.dir * 6 + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
     } else if p.moving {
         32 + p.dir * 6 + ((p.anim_t / WALK_FRAME_DT) as usize % 6)
@@ -945,6 +1010,7 @@ fn net_pump(
                                 moving: false,
                                 running: false,
                                 anim_t: 0.0,
+                                attack_start: None,
                             },
                             Sprite::default(),
                             Transform::default(),
@@ -961,6 +1027,51 @@ fn net_pump(
                     net.my_id = None;
                     net.status = format!("恢复失败: {message}");
                     next.set(Screen::Login);
+                }
+                ServerMessage::PlayerStatus {
+                    level,
+                    experience,
+                    required_experience,
+                    hp,
+                    max_hp,
+                    ..
+                } => {
+                    net.hud = format!(
+                        "Lv{level}  exp {experience}/{required_experience}  hp {hp}/{max_hp}"
+                    );
+                }
+                ServerMessage::Notification { message, .. } => {
+                    info!("通知: {message}");
+                }
+                ServerMessage::DamageNumber {
+                    target_id, amount, ..
+                } => {
+                    let mine = net.my_id.as_deref() == Some(target_id.as_str());
+                    let pos = if mine {
+                        q_player.get_single().ok().map(|p| p.pos)
+                    } else {
+                        remotes.0.get(&target_id).map(|r| r.pos)
+                    };
+                    if let Some(pos) = pos {
+                        let px = pos.x as f32 * CELL_W - CELL_W / 2.0;
+                        let py = pos.y as f32 * CELL_H - CELL_H / 2.0 - 44.0;
+                        commands.spawn((
+                            Text2d::new(format!("-{amount}")),
+                            TextFont {
+                                font_size: 22.0,
+                                ..default()
+                            },
+                            TextColor(if mine {
+                                Color::srgb(1.0, 0.3, 0.25) // 挨打红字
+                            } else {
+                                Color::srgb(1.0, 0.88, 0.35) // 输出黄字
+                            }),
+                            Transform::from_xyz(px, -py, 800.0),
+                            Floater {
+                                born: time.elapsed_secs_f64(),
+                            },
+                        ));
+                    }
                 }
                 ServerMessage::StateUpdate { entities, .. } => {
                     let now = time.elapsed_secs_f64();
@@ -998,12 +1109,17 @@ fn net_pump(
                             }
                             r.target = t;
                         }
-                        r.anim = match e.animation.as_deref() {
+                        let anim = match e.animation.as_deref() {
                             Some("run") => 2,
                             Some("walk") => 1,
                             Some("attack") => 3,
+                            Some("die") => 4,
                             _ => 0,
                         };
+                        if anim != r.anim {
+                            r.anim_t = 0.0; // 动作切换从头播 (攻击/死亡一次性动画)
+                        }
+                        r.anim = anim;
                         if let Some(d) = e.dir {
                             r.dir = (d as usize) % 8;
                         }
@@ -1073,17 +1189,18 @@ fn remote_step(
             _ => 0.0,
         };
         let step = (speed * dt).max(dist * 4.0 * dt);
-        let moving = dist > 0.02 && r.anim != 3;
+        let moving = dist > 0.02 && r.anim < 3;
         if moving {
             r.dir = dir8_from(d.x, d.y);
             r.pos += if dist <= step { d } else { d / dist * step };
-        } else if r.anim != 3 {
+        } else if r.anim < 3 {
             r.pos = r.target;
         }
         r.anim_t += dt;
-        // 帧表: 玩家=CArmour (站/走/跑), 怪物=Mon 库 (站/走/攻)
+        // 帧表: 玩家=CArmour (站/走/跑), 怪物=Mon 库 (站/走/攻/死)
         let (layer, frame_idx) = if let Some(n) = r.image {
             let idx = match r.anim {
+                4 => 144 + r.dir * 10 + (((r.anim_t / 0.13) as usize).min(9)), // 死亡一次性, 停在末帧
                 3 => 80 + r.dir * 6 + ((r.anim_t / 0.15) as usize % 6),
                 _ if moving => 32 + r.dir * 6 + ((r.anim_t / 0.12) as usize % 6),
                 _ => r.dir * 4 + ((r.anim_t / 0.25) as usize % 4),
@@ -1179,6 +1296,24 @@ fn dev_autologin(
             }
         }
         _ => {}
+    }
+}
+
+/// 伤害飘字上浮渐隐
+fn float_damage(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut Transform, &mut TextColor, &Floater)>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (e, mut tf, mut color, f) in q.iter_mut() {
+        let age = (now - f.born) as f32;
+        if age > 1.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        tf.translation.y += 38.0 * time.delta_secs();
+        color.0.set_alpha(1.0 - (age - 0.5).max(0.0) * 2.0);
     }
 }
 

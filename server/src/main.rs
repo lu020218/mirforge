@@ -60,6 +60,12 @@ struct MonsterSidecar {
     /// 被动怪 (不主动仇恨, 如鸡/鹿)
     #[serde(default)]
     passive: bool,
+    #[serde(default = "default_hp")]
+    hp: i32,
+    #[serde(default)]
+    damage: i32,
+    #[serde(default = "default_exp")]
+    exp: u64,
     #[serde(default = "default_radius")]
     radius: f64,
 }
@@ -69,6 +75,12 @@ fn one() -> u32 {
 }
 fn default_radius() -> f64 {
     5.0
+}
+fn default_hp() -> i32 {
+    30
+}
+fn default_exp() -> u64 {
+    10
 }
 
 fn zones_dir() -> PathBuf {
@@ -139,6 +151,9 @@ fn load_zone(
                 count: m.count,
                 radius: m.radius,
                 passive: m.passive,
+                hp: m.hp,
+                damage: m.damage,
+                exp: m.exp,
             })
             .collect(),
     })
