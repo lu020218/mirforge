@@ -15,11 +15,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::math::DVec2;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
 use bevy::window::PresentMode;
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use mir_atlas::{AtlasCpu, PAGE_SIZE};
 use mir_formats::crystal_lib::CrystalLib;
 use mir_formats::map::MirMap;
@@ -44,6 +46,7 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_plugins((EguiPlugin, FrameTimeDiagnosticsPlugin))
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -54,6 +57,7 @@ fn main() {
                 stream_chunks,
                 player_sprite,
                 upload_dirty_pages,
+                debug_panel,
             )
                 .chain(),
         )
@@ -381,6 +385,65 @@ fn player_move(
     if moved {
         p.anim_t += dt;
     }
+}
+
+/// F3 调试面板 (egui 默认字体无中文, 面板用英文)
+#[allow(clippy::too_many_arguments)]
+fn debug_panel(
+    mut ctx: EguiContexts,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut show: Local<bool>,
+    diag: Res<DiagnosticsStore>,
+    world: Res<World>,
+    q_player: Query<&Player>,
+    q_proj: Query<&OrthographicProjection, With<Camera2d>>,
+) {
+    if keys.just_pressed(KeyCode::F3) {
+        *show = !*show;
+    }
+    if !*show {
+        return;
+    }
+    let fps = diag
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
+    egui::Window::new("Debug (F3)")
+        .default_pos((8.0, 8.0))
+        .show(ctx.ctx_mut(), |ui| {
+            ui.label(format!("FPS: {fps:.0}"));
+            if let Ok(p) = q_player.get_single() {
+                let state = match (p.moving, p.running) {
+                    (true, true) => "run",
+                    (true, false) => "walk",
+                    _ => "stand",
+                };
+                ui.label(format!(
+                    "player: ({:.2}, {:.2}) dir={} {state}",
+                    p.pos.x, p.pos.y, p.dir
+                ));
+            }
+            if let Ok(proj) = q_proj.get_single() {
+                ui.label(format!("zoom: {:.2}x", 1.0 / proj.scale));
+            }
+            ui.label(format!(
+                "map: {:?} {}x{}",
+                world.map.kind, world.map.width, world.map.height
+            ));
+            ui.separator();
+            ui.label(format!(
+                "chunks: {}  frame cache: {}",
+                world.chunks.len(),
+                world.frames.len()
+            ));
+            ui.label(format!("atlas pages: {}", world.atlas.pages.len()));
+            for i in 0..world.atlas.pages.len() {
+                ui.label(format!(
+                    "  page {i}: {:.0}% full",
+                    world.atlas.fill_ratio(i) * 100.0
+                ));
+            }
+        });
 }
 
 /// 按动作/方向/时间挑帧并更新精灵与变换

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 bevy = "0.15"
+bevy_egui = "0.31"
 mir-formats = { path = "../crates/mir-formats" }
 mir-atlas = { path = "../crates/mir-atlas" }
 sim = { path = "../crates/sim" }
