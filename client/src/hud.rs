@@ -183,7 +183,7 @@ fn spawn_skill_slot(parent: &mut ChildBuilder, skin: &Skin, idx: Option<usize>, 
         });
 }
 
-/// HP/MP 行: 标签 + 280×14 圆角条 (烘焙渐变填充) + 数值
+/// HP/MP 行: 标签在外侧, 280×14 圆角条 (烘焙渐变填充), 数值居中叠在条上
 fn spawn_stat_bar(
     parent: &mut ChildBuilder,
     skin: &Skin,
@@ -202,8 +202,6 @@ fn spawn_stat_bar(
         .with_children(|row| {
             if label_first {
                 row.spawn(text(&skin.font, label, 10.0, TEXT_DIM));
-            } else {
-                row.spawn((text(&skin.font, "", 11.0, TEXT_SUB), text_marker));
             }
             row.spawn((
                 Node {
@@ -228,22 +226,26 @@ fn spawn_stat_bar(
                     BorderRadius::all(Val::Px(6.0)),
                     fill_marker,
                 ));
+                // 数值居中叠在条上
+                b.spawn((Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    right: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    bottom: Val::Px(0.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },))
+                    .with_children(|overlay| {
+                        overlay.spawn((text(&skin.font, "", 11.0, TEXT_MAIN), text_marker));
+                    });
             });
-            if label_first {
-                row.spawn((text(&skin.font, "", 11.0, TEXT_SUB), text_marker_stub()));
-            } else {
+            if !label_first {
                 row.spawn(text(&skin.font, label, 10.0, TEXT_DIM));
             }
         });
 }
-
-/// spawn_stat_bar 里 label_first 分支需要两处挂 text_marker——用泛型没法复用同一
-/// 实例, 因此左翼(HP)固定数值在右、右翼(MP)数值在左, 由调用方分别挂标记。
-fn text_marker_stub() -> impl Component {
-    StatValueSlot
-}
-#[derive(Component)]
-pub struct StatValueSlot;
 
 /// 进入游戏时构建 HUD (全部绝对定位, 对齐设计稿)
 pub fn setup(mut commands: Commands, skin: Res<Skin>) {
@@ -693,7 +695,6 @@ pub fn update(
         Option<&NoticeLine>,
         Option<&ZoneNameText>,
         Option<&CoordText>,
-        Option<&StatValueSlot>,
     )>,
     q_tracker: Query<Entity, With<TrackerBody>>,
     q_chat: Query<Entity, With<ChatBody>>,
@@ -753,9 +754,8 @@ pub fn update(
         }
     }
 
-    for (mut t, mut color, hp, mp, lv, sname, notice, zone, coord, stub) in q_texts.iter_mut() {
-        if hp.is_some() || stub.is_some() {
-            // HP 数值在条右侧 (stub 槽位), MP 数值挂 MpText
+    for (mut t, mut color, hp, mp, lv, sname, notice, zone, coord) in q_texts.iter_mut() {
+        if hp.is_some() {
             if let Some(s) = stat {
                 **t = format!("{}/{}", s.hp, s.max_hp);
             }
