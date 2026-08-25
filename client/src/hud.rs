@@ -248,7 +248,7 @@ fn spawn_stat_bar(
 }
 
 /// 进入游戏时构建 HUD (全部绝对定位, 对齐设计稿)
-pub fn setup(mut commands: Commands, skin: Res<Skin>) {
+pub fn setup(mut commands: Commands, skin: Res<Skin>, net: Res<Net>) {
     // ── 底部中央动作条 (透明背景, gap 22) ──
     commands
         .spawn((
@@ -279,10 +279,10 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
                     ..default()
                 })
                 .with_children(|row| {
-                    spawn_skill_slot(row, &skin, Some(0), "1");
-                    spawn_skill_slot(row, &skin, Some(1), "2");
-                    spawn_skill_slot(row, &skin, Some(2), "3");
-                    spawn_skill_slot(row, &skin, None, "4");
+                    for (i, key) in ["1", "2", "3", "4", "5"].iter().enumerate() {
+                        let idx = (i < net.skills.len().clamp(3, 5)).then_some(i);
+                        spawn_skill_slot(row, &skin, if i < 3 { idx } else { None }, key);
+                    }
                 });
             });
             // 中央: 92px 圆形头像 + 等级胶囊 (高出两翼 14px)
@@ -349,7 +349,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
                     ..default()
                 })
                 .with_children(|row| {
-                    for key in ["Q", "W", "E", "R"] {
+                    for key in ["Q", "W", "E", "R", "T"] {
                         spawn_skill_slot(row, &skin, None, key);
                     }
                 });

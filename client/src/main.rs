@@ -1525,6 +1525,10 @@ fn cast_skills(
         1
     } else if keys.just_pressed(KeyCode::Digit3) {
         2
+    } else if keys.just_pressed(KeyCode::Digit4) {
+        3
+    } else if keys.just_pressed(KeyCode::Digit5) {
+        4
     } else {
         return;
     };
