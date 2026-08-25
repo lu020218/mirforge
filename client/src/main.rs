@@ -14,6 +14,7 @@
 mod hud;
 mod net;
 mod panels;
+mod screens;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,10 @@ fn main() {
                     primary_window: Some(Window {
                         title: "MirForge".into(),
                         present_mode: PresentMode::AutoVsync,
+                        // 覆盖系统 DPI 使 UI 与设计稿 (1920×1080 基准) 1:1;
+                        // 启动后最大化适配屏幕 (见 setup)
+                        resolution: bevy::window::WindowResolution::new(1600.0, 900.0)
+                            .with_scale_factor_override(1.0),
                         ..default()
                     }),
                     ..default()
@@ -79,16 +84,30 @@ fn main() {
         .add_systems(Startup, (hud::load_skin, setup))
         .add_systems(OnEnter(Screen::InGame), (hud::setup, panels::setup))
         .add_systems(OnExit(Screen::InGame), (hud::teardown, panels::teardown))
+        .add_systems(OnEnter(Screen::Login), screens::login_setup)
+        .add_systems(OnExit(Screen::Login), screens::login_teardown)
+        .add_systems(OnEnter(Screen::CharSelect), screens::charselect_setup)
+        .add_systems(OnExit(Screen::CharSelect), screens::charselect_teardown)
         .init_resource::<panels::Drag>()
+        .init_resource::<screens::CharSelectState>()
         .add_systems(
             Update,
             (
+                screens::adapt_scale,
                 egui_cjk_font,
                 net_pump,
                 net_reconnect,
                 dev_autologin,
-                login_ui.run_if(in_state(Screen::Login)),
-                charselect_ui.run_if(in_state(Screen::CharSelect)),
+                (screens::text_input, screens::login_update)
+                    .chain()
+                    .run_if(in_state(Screen::Login)),
+                (
+                    screens::text_input,
+                    screens::charselect_update,
+                    screens::create_panel_update,
+                )
+                    .chain()
+                    .run_if(in_state(Screen::CharSelect)),
             )
                 .chain(),
         )
@@ -339,7 +358,11 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut net: ResMut<Net>,
     mut next: ResMut<NextState<Screen>>,
+    mut windows: Query<&mut Window>,
 ) {
+    if let Ok(mut w) = windows.get_single_mut() {
+        w.set_maximized(true);
+    }
     let root = std::env::var("MIRFORGE_RES").unwrap_or_else(|_| {
         error!("请设置 MIRFORGE_RES 指向传奇资源目录");
         std::process::exit(2);
@@ -1603,117 +1626,4 @@ fn float_damage(
         tf.translation.y += 38.0 * time.delta_secs();
         color.0.set_alpha(1.0 - (age - 0.5).max(0.0) * 2.0);
     }
-}
-
-// ─────────── 过渡版登录/选角 UI (egui 素排版, M4 换 Bevy UI 皮肤) ───────────
-
-fn login_ui(
-    mut ctx: EguiContexts,
-    mut net: ResMut<Net>,
-    mut user: Local<String>,
-    mut pass: Local<String>,
-) {
-    egui::Window::new("MirForge 登录")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, (0.0, 0.0))
-        .show(ctx.ctx_mut(), |ui| {
-            ui.set_width(260.0);
-            ui.horizontal(|ui| {
-                ui.label("账号");
-                ui.text_edit_singleline(&mut *user);
-            });
-            ui.horizontal(|ui| {
-                ui.label("密码");
-                ui.add(egui::TextEdit::singleline(&mut *pass).password(true));
-            });
-            ui.add_space(8.0);
-            let ready = net.connected && !user.is_empty() && !pass.is_empty();
-            ui.horizontal(|ui| {
-                if ui.add_enabled(ready, egui::Button::new("登录")).clicked() {
-                    net.send(ClientMessage::Login {
-                        username: user.clone(),
-                        password: pass.clone(),
-                    });
-                    net.status = "登录中...".into();
-                }
-                if ui.add_enabled(ready, egui::Button::new("注册")).clicked() {
-                    net.send(ClientMessage::Register {
-                        username: user.clone(),
-                        password: pass.clone(),
-                    });
-                    net.status = "注册中...".into();
-                }
-            });
-            if !net.status.is_empty() {
-                ui.add_space(4.0);
-                ui.label(net.status.clone());
-            }
-        });
-}
-
-fn charselect_ui(
-    mut ctx: EguiContexts,
-    mut net: ResMut<Net>,
-    mut name: Local<String>,
-    mut class_idx: Local<usize>,
-) {
-    const CLASSES: [(&str, CharacterClass); 3] = [
-        ("战士", CharacterClass::Warrior),
-        ("法师", CharacterClass::Mage),
-        ("道士", CharacterClass::Taoist),
-    ];
-    egui::Window::new("选择角色")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, (0.0, 0.0))
-        .show(ctx.ctx_mut(), |ui| {
-            ui.set_width(300.0);
-            let characters = net.characters.clone();
-            if characters.is_empty() {
-                ui.label("暂无角色, 先创建一个:");
-            }
-            for c in &characters {
-                let cls = CLASSES
-                    .iter()
-                    .find(|(_, k)| *k == c.class)
-                    .map(|(n, _)| *n)
-                    .unwrap_or("?");
-                if ui
-                    .button(format!("{}  Lv.{}  {cls}", c.name, c.level))
-                    .clicked()
-                {
-                    net.character_id = Some(c.id.clone());
-                    net.send(ClientMessage::SelectCharacter {
-                        character_id: c.id.clone(),
-                    });
-                    net.status = "进入游戏...".into();
-                }
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("角色名");
-                ui.text_edit_singleline(&mut *name);
-            });
-            ui.horizontal(|ui| {
-                for (i, (label, _)) in CLASSES.iter().enumerate() {
-                    ui.selectable_value(&mut *class_idx, i, *label);
-                }
-            });
-            if ui
-                .add_enabled(!name.is_empty(), egui::Button::new("创建角色"))
-                .clicked()
-            {
-                net.send(ClientMessage::CreateCharacter {
-                    name: name.clone(),
-                    class: CLASSES[*class_idx].1,
-                    gender: "male".into(),
-                });
-                name.clear();
-            }
-            if !net.status.is_empty() {
-                ui.add_space(4.0);
-                ui.label(net.status.clone());
-            }
-        });
 }
