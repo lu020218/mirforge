@@ -603,6 +603,16 @@ fn setup(
 impl World {
     /// 切区: 按地图名重载地图与行走网格; 旧分块由调用方回收。
     /// 图集与帧缓存保留 (同一套图库, 跨图复用)。
+    /// 图集与 GPU 页句柄同步。frame() 解码可能开新图集页, 而页纹理要到
+    /// upload_dirty_pages 才补建 —— 消费 FrameRef 前必须调用本方法, 否则
+    /// 新页上的帧会绑定到旧页纹理 (显示别的图案: 地图碎片/精灵闪烁的根源)。
+    fn ensure_pages(&mut self, images: &mut Assets<Image>) {
+        while self.pages.len() < self.atlas.pages.len() {
+            let h = images.add(blank_page());
+            self.pages.push(h);
+        }
+    }
+
     fn switch_map(&mut self, zone_id: &str) -> bool {
         let key = zone_id.to_lowercase();
         if key == self.map_name {
@@ -865,6 +875,7 @@ fn debug_panel(
 fn player_sprite(
     time: Res<Time>,
     mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
     mut q: Query<(&Player, &mut Sprite, &mut Transform)>,
 ) {
     let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
@@ -885,7 +896,8 @@ fn player_sprite(
         warn_once!("角色帧 {frame_idx} 不可用");
         return;
     };
-    sprite.image = world.pages[f.page.min(world.pages.len() - 1)].clone();
+    world.ensure_pages(&mut images);
+    sprite.image = world.pages[f.page].clone();
     sprite.rect = Some(f.rect);
     sprite.anchor = Anchor::TopLeft;
     // Mir 角色帧偏移相对所在格左上角; 位置取格坐标向下取整的格原点 + 帧内偏移 + 连续余量
@@ -940,6 +952,7 @@ fn camera_control(
 fn stream_chunks(
     mut commands: Commands,
     mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
     q_cam: Query<(&Transform, &OrthographicProjection), With<Camera2d>>,
     windows: Query<&Window>,
 ) {
@@ -979,7 +992,7 @@ fn stream_chunks(
             if world.chunks.contains_key(&(kx, ky)) {
                 continue;
             }
-            let e = spawn_chunk(&mut commands, &mut world, kx, ky);
+            let e = spawn_chunk(&mut commands, &mut world, &mut images, kx, ky);
             world.chunks.insert((kx, ky), e);
             budget -= 1;
         }
@@ -991,8 +1004,16 @@ fn is_floor_size(size: Vec2) -> bool {
     (size.x == CELL_W && size.y == CELL_H) || (size.x == CELL_W * 2.0 && size.y == CELL_H * 2.0)
 }
 
-fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> Entity {
-    let mut sprites: Vec<(Sprite, Transform)> = Vec::new();
+fn spawn_chunk(
+    commands: &mut Commands,
+    world: &mut World,
+    images: &mut Assets<Image>,
+    kx: i32,
+    ky: i32,
+) -> Entity {
+    // 先解码收集帧 (期间图集可能开新页), 全部到位后统一补页再构造精灵,
+    // 避免帧绑定到尚未建立的页纹理
+    let mut placed: Vec<(FrameRef, i32, i32, f32, bool)> = Vec::new();
     let mut anims: Vec<AnimatedTile> = Vec::new();
     let (w, h) = (world.map.width as i32, world.map.height as i32);
     for cy in ky * CHUNK..(ky + 1) * CHUNK {
@@ -1004,17 +1025,17 @@ fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> 
             // back: 96×64 大砖只画偶数格 (覆盖 2×2)
             if cell.back >= 0 && cx % 2 == 0 && cy % 2 == 0 {
                 if let Some(f) = world.frame(Layer::Back, cell.back_lib, cell.back) {
-                    sprites.push(sprite_at(world, f, cx, cy, 0.0, false));
+                    placed.push((f, cx, cy, 0.0, false));
                 }
             }
             // mid: 标准尺寸入地板层; 其余锚底进对象层按行遮挡 (Crystal DrawObjects mir3 middle)
             if cell.mid >= 0 {
                 if let Some(f) = world.frame(Layer::Mid, cell.mid_lib, cell.mid) {
                     if is_floor_size(f.size) {
-                        sprites.push(sprite_at(world, f, cx, cy, 1.0, false));
+                        placed.push((f, cx, cy, 1.0, false));
                     } else {
                         let z = 10.0 + cy as f32 * 0.01;
-                        sprites.push(sprite_at(world, f, cx, cy, z, true));
+                        placed.push((f, cx, cy, z, true));
                     }
                 }
             }
@@ -1024,7 +1045,7 @@ fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> 
                 if let Some(f) = world.frame(Layer::Front, cell.front_lib, cell.front) {
                     let frames = cell.ani_frame & 0x7F;
                     if is_floor_size(f.size) {
-                        sprites.push(sprite_at(world, f, cx, cy, 2.0, false));
+                        placed.push((f, cx, cy, 2.0, false));
                     }
                     if !is_floor_size(f.size) || frames > 0 {
                         let z = 10.0 + cy as f32 * 0.01 + 0.002;
@@ -1039,21 +1060,22 @@ fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> 
                                 z,
                             });
                         } else {
-                            sprites.push(sprite_at(world, f, cx, cy, z, true));
+                            placed.push((f, cx, cy, z, true));
                         }
                     }
                 }
             }
         }
     }
+    world.ensure_pages(images);
     let mut parent = commands.spawn((Transform::default(), Visibility::default()));
     parent.with_children(|p| {
-        for (s, t) in sprites {
-            p.spawn((s, t));
+        for (f, cx, cy, z, ab) in placed {
+            p.spawn(sprite_at(world, f, cx, cy, z, ab));
         }
         for a in anims {
             let t = Transform::from_xyz(a.cx as f32 * CELL_W, -(a.cy as f32 * CELL_H), a.z);
-            p.spawn((Sprite::default(), t, a));
+            p.spawn((Sprite::default(), Visibility::Hidden, t, a));
         }
     });
     parent.id()
@@ -1076,7 +1098,7 @@ fn sprite_at(
     };
     (
         Sprite {
-            image: world.pages[f.page.min(world.pages.len() - 1)].clone(),
+            image: world.pages[f.page].clone(),
             rect: Some(f.rect),
             anchor: Anchor::TopLeft,
             ..default()
@@ -1103,8 +1125,9 @@ struct AnimatedTile {
 fn animate_tiles(
     time: Res<Time>,
     mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
     mut state: Local<(f64, u32)>,
-    mut q: Query<(&AnimatedTile, &mut Sprite, &mut Transform)>,
+    mut q: Query<(&AnimatedTile, &mut Sprite, &mut Transform, &mut Visibility)>,
 ) {
     let now = time.elapsed_secs_f64();
     if now - state.0 < 0.1 {
@@ -1113,14 +1136,16 @@ fn animate_tiles(
     state.0 = now;
     state.1 = state.1.wrapping_add(1);
     let count = state.1;
-    for (a, mut sp, mut tf) in q.iter_mut() {
+    for (a, mut sp, mut tf, mut vis) in q.iter_mut() {
         let (n, k) = (a.frames as u32, a.tick as u32);
         let idx = a.base + ((count % (n + n * k)) / (1 + k)) as i32;
         if let Some(f) = world.frame(Layer::Front, a.lib, idx) {
-            sp.image = world.pages[f.page.min(world.pages.len() - 1)].clone();
+            world.ensure_pages(&mut images);
+            sp.image = world.pages[f.page].clone();
             sp.rect = Some(f.rect);
             sp.anchor = Anchor::TopLeft;
             tf.translation.y = -((a.cy + 1) as f32 * CELL_H - f.size.y);
+            *vis = Visibility::Inherited;
         }
     }
 }
@@ -1505,6 +1530,7 @@ fn remote_step(
     mut commands: Commands,
     time: Res<Time>,
     mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
     mut remotes: ResMut<Remotes>,
 ) {
     let dt = time.delta_secs_f64();
@@ -1562,11 +1588,12 @@ fn remote_step(
         let Some(f) = world.frame(layer, 0, frame_idx as i32) else {
             continue;
         };
+        world.ensure_pages(&mut images);
         let px = r.pos.x as f32 * CELL_W - CELL_W / 2.0 + f.off.x;
         let py = r.pos.y as f32 * CELL_H - CELL_H / 2.0 + f.off.y;
         let z = 10.0 + r.pos.y as f32 * 0.01 + 0.004; // 略低于本地玩家
         let sprite = Sprite {
-            image: world.pages[f.page.min(world.pages.len() - 1)].clone(),
+            image: world.pages[f.page].clone(),
             rect: Some(f.rect),
             anchor: Anchor::TopLeft,
             ..default()
