@@ -109,6 +109,7 @@ fn main() {
                 hud::update.run_if(in_state(Screen::InGame)),
                 (
                     panels::toggle,
+                    hud::menu_clicks,
                     panels::drag,
                     panels::button_skin,
                     panels::clicks,
@@ -152,6 +153,11 @@ struct Net {
     inv_rev: u32,
     quest_rev: u32,
     stat_rev: u32,
+    notice_rev: u32,
+    /// 当前区域显示名 (小地图)
+    zone_name: String,
+    /// 系统消息滚动 (聊天框)
+    chatlog: Vec<String>,
     /// 未上报的本地位移累计（20Hz 打包发送）
     acc: DVec2,
     last_send: f64,
@@ -1044,8 +1050,11 @@ fn net_pump(
                 }
                 ServerMessage::LoginSuccess { player_id, .. } => net.my_id = Some(player_id),
                 ServerMessage::ZoneChanged {
-                    zone_id, position, ..
+                    zone_id,
+                    zone_name,
+                    position,
                 } => {
+                    net.zone_name = zone_name;
                     // 跨地图: 重载地图/行走网格, 回收旧分块与远程玩家
                     if zone_id.to_lowercase() != world.map_name && world.switch_map(&zone_id) {
                         for (_, e) in world.chunks.drain() {
@@ -1129,10 +1138,15 @@ fn net_pump(
                 } => {
                     info!("通知: {message}");
                     let now = time.elapsed_secs_f64();
-                    net.notices.push((message, notification_type, now));
+                    net.notices.push((message.clone(), notification_type, now));
                     if net.notices.len() > 6 {
                         net.notices.remove(0);
                     }
+                    net.chatlog.push(message);
+                    if net.chatlog.len() > 30 {
+                        net.chatlog.remove(0);
+                    }
+                    net.notice_rev += 1;
                 }
                 ServerMessage::SkillEffect {
                     skill_id,
