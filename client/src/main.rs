@@ -11,6 +11,7 @@
 //! 操作（经典传奇）：鼠标左键按住 = 朝光标走路，右键按住 = 跑步（均沿墙滑行）；
 //! PageUp/PageDown 或 +/- 缩放，F 键 1x/2x/3x 整数缩放循环。
 
+mod hud;
 mod net;
 
 use std::collections::HashMap;
@@ -49,6 +50,17 @@ fn main() {
     App::new()
         .add_plugins(
             DefaultPlugins
+                .set(AssetPlugin {
+                    // Bevy 的相对 file_path 基于 exe 目录 (或 CARGO_MANIFEST_DIR),
+                    // 从仓库根直接跑 exe 时找不到 client/assets —— 用 cwd 绝对化
+                    file_path: std::env::current_dir()
+                        .ok()
+                        .map(|d| d.join("client/assets"))
+                        .filter(|p| p.is_dir())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "assets".into()),
+                    ..default()
+                })
                 .set(ImagePlugin::default_nearest())
                 .set(WindowPlugin {
                     primary_window: Some(Window {
@@ -63,7 +75,9 @@ fn main() {
         .init_state::<Screen>()
         .init_resource::<Net>()
         .init_resource::<Remotes>()
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (hud::load_skin, setup))
+        .add_systems(OnEnter(Screen::InGame), hud::setup)
+        .add_systems(OnExit(Screen::InGame), hud::teardown)
         .add_systems(
             Update,
             (
@@ -75,7 +89,6 @@ fn main() {
                 charselect_ui.run_if(in_state(Screen::CharSelect)),
                 inventory_ui.run_if(in_state(Screen::InGame)),
                 quest_ui.run_if(in_state(Screen::InGame)),
-                hud_ui.run_if(in_state(Screen::InGame)),
             )
                 .chain(),
         )
@@ -93,6 +106,7 @@ fn main() {
                 fx_step,
                 upload_dirty_pages,
                 net_send,
+                hud::update.run_if(in_state(Screen::InGame)),
                 debug_panel,
             )
                 .chain(),
@@ -1635,110 +1649,6 @@ fn inventory_ui(
                 }
             });
     }
-}
-
-/// 过渡版 HUD: 底部血蓝经验条 + 技能栏冷却 + 右上通知堆栈
-fn hud_ui(mut ctx: EguiContexts, time: Res<Time>, mut net: ResMut<Net>) {
-    let now = time.elapsed_secs_f64();
-    // 通知堆栈 (右上, 4s 过期)
-    net.notices.retain(|(_, _, born)| now - born < 4.0);
-    if !net.notices.is_empty() {
-        egui::Area::new(egui::Id::new("notices"))
-            .anchor(egui::Align2::RIGHT_TOP, (-16.0, 60.0))
-            .show(ctx.ctx_mut(), |ui| {
-                for (msg, kind, born) in &net.notices {
-                    let age = (now - born) as f32;
-                    let alpha = (1.0 - (age - 3.0).max(0.0)).clamp(0.0, 1.0);
-                    let color = match kind.as_str() {
-                        "exp" | "quest" => egui::Color32::from_rgb(238, 205, 82),
-                        "loot" => egui::Color32::from_rgb(123, 216, 143),
-                        "levelup" => egui::Color32::from_rgb(255, 216, 118),
-                        "warn" | "death" => egui::Color32::from_rgb(224, 64, 64),
-                        _ => egui::Color32::from_rgb(232, 226, 208),
-                    };
-                    ui.label(
-                        egui::RichText::new(msg)
-                            .color(color.gamma_multiply(alpha))
-                            .size(16.0),
-                    );
-                }
-            });
-    }
-    // 底部状态条
-    let Some(s) = net.stat else { return };
-    egui::TopBottomPanel::bottom("hud")
-        .frame(
-            egui::Frame::none()
-                .fill(egui::Color32::from_rgba_unmultiplied(10, 10, 18, 200))
-                .inner_margin(egui::Margin::symmetric(12.0, 6.0)),
-        )
-        .show(ctx.ctx_mut(), |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("Lv{}", s.level))
-                        .color(egui::Color32::from_rgb(255, 216, 118))
-                        .size(20.0)
-                        .strong(),
-                );
-                ui.vertical(|ui| {
-                    ui.spacing_mut().interact_size.y = 14.0;
-                    let hp_frac = s.hp.max(0) as f32 / s.max_hp.max(1) as f32;
-                    ui.add(
-                        egui::ProgressBar::new(hp_frac)
-                            .desired_width(220.0)
-                            .desired_height(14.0)
-                            .fill(egui::Color32::from_rgb(224, 64, 64))
-                            .text(
-                                egui::RichText::new(format!("{}/{}", s.hp, s.max_hp))
-                                    .size(11.0)
-                                    .color(egui::Color32::WHITE),
-                            ),
-                    );
-                    let mp_frac = s.mp.max(0) as f32 / s.max_mp.max(1) as f32;
-                    ui.add(
-                        egui::ProgressBar::new(mp_frac)
-                            .desired_width(220.0)
-                            .desired_height(14.0)
-                            .fill(egui::Color32::from_rgb(63, 131, 232))
-                            .text(
-                                egui::RichText::new(format!("{}/{}", s.mp, s.max_mp))
-                                    .size(11.0)
-                                    .color(egui::Color32::WHITE),
-                            ),
-                    );
-                    let exp_frac = s.exp as f32 / s.req.max(1) as f32;
-                    ui.add(
-                        egui::ProgressBar::new(exp_frac)
-                            .desired_width(220.0)
-                            .desired_height(5.0)
-                            .fill(egui::Color32::from_rgb(238, 205, 82)),
-                    );
-                });
-                ui.add_space(20.0);
-                // 技能栏 (1/2/3)
-                let skills = net.skills.clone();
-                for (i, sk) in skills.iter().enumerate().take(3) {
-                    let remain = net.cds.get(&sk.id).map(|&t| t - now).unwrap_or(0.0);
-                    let label = if remain > 0.0 {
-                        format!("[{}] {}\n{:.1}s", i + 1, sk.name, remain)
-                    } else {
-                        format!("[{}] {}\nMP{}", i + 1, sk.name, sk.mp_cost)
-                    };
-                    let text = if remain > 0.0 {
-                        egui::RichText::new(label).color(egui::Color32::from_rgb(90, 86, 72))
-                    } else {
-                        egui::RichText::new(label).color(egui::Color32::from_rgb(232, 226, 208))
-                    };
-                    ui.add(egui::Button::new(text).min_size(egui::vec2(86.0, 40.0)));
-                }
-                ui.add_space(12.0);
-                ui.label(
-                    egui::RichText::new("B背包 C装备 L任务 F3调试")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(122, 117, 100)),
-                );
-            });
-        });
 }
 
 /// 过渡版任务面板 (L)
