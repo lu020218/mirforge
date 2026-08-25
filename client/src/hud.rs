@@ -20,17 +20,23 @@ pub const LOOT_GREEN: Color = Color::srgb(0.482, 0.847, 0.561); // #7bd88f
 #[derive(Resource)]
 pub struct Skin {
     pub font: Handle<Font>,
-    panel_glass: Handle<Image>,
-    bar_frame: Handle<Image>,
-    bar_hp: Handle<Image>,
-    bar_mp: Handle<Image>,
-    bar_exp: Handle<Image>,
-    avatar_ring: Handle<Image>,
-    badge: Handle<Image>,
-    slot: Handle<Image>,
+    pub panel_glass: Handle<Image>,
+    pub panel_ornate: Handle<Image>,
+    pub titlebar: Handle<Image>,
+    pub btn_gold: Handle<Image>,
+    pub btn_gold_hover: Handle<Image>,
+    pub btn_gold_pressed: Handle<Image>,
+    pub bar_frame: Handle<Image>,
+    pub bar_hp: Handle<Image>,
+    pub bar_mp: Handle<Image>,
+    pub bar_exp: Handle<Image>,
+    pub avatar_ring: Handle<Image>,
+    pub badge: Handle<Image>,
+    pub slot: Handle<Image>,
+    pub slot_gold: Handle<Image>,
 }
 
-fn sliced(border: f32) -> NodeImageMode {
+pub fn sliced(border: f32) -> NodeImageMode {
     NodeImageMode::Sliced(TextureSlicer {
         border: BorderRect::square(border),
         ..default()
@@ -59,6 +65,11 @@ pub fn load_skin(
     commands.insert_resource(Skin {
         font,
         panel_glass: assets.load("ui/skin/panel_glass.png"),
+        panel_ornate: assets.load("ui/skin/panel_ornate.png"),
+        titlebar: assets.load("ui/skin/titlebar.png"),
+        btn_gold: assets.load("ui/skin/btn_gold.png"),
+        btn_gold_hover: assets.load("ui/skin/btn_gold_hover.png"),
+        btn_gold_pressed: assets.load("ui/skin/btn_gold_pressed.png"),
         bar_frame: assets.load("ui/skin/bar_frame.png"),
         bar_hp: assets.load("ui/skin/bar_fill_hp.png"),
         bar_mp: assets.load("ui/skin/bar_fill_mp.png"),
@@ -66,6 +77,7 @@ pub fn load_skin(
         avatar_ring: assets.load("ui/skin/avatar_ring.png"),
         badge: assets.load("ui/skin/badge.png"),
         slot: assets.load("ui/skin/slot.png"),
+        slot_gold: assets.load("ui/skin/slot_gold.png"),
     });
 }
 

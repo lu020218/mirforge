@@ -13,6 +13,7 @@
 
 mod hud;
 mod net;
+mod panels;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -76,8 +77,9 @@ fn main() {
         .init_resource::<Net>()
         .init_resource::<Remotes>()
         .add_systems(Startup, (hud::load_skin, setup))
-        .add_systems(OnEnter(Screen::InGame), hud::setup)
-        .add_systems(OnExit(Screen::InGame), hud::teardown)
+        .add_systems(OnEnter(Screen::InGame), (hud::setup, panels::setup))
+        .add_systems(OnExit(Screen::InGame), (hud::teardown, panels::teardown))
+        .init_resource::<panels::Drag>()
         .add_systems(
             Update,
             (
@@ -87,8 +89,6 @@ fn main() {
                 dev_autologin,
                 login_ui.run_if(in_state(Screen::Login)),
                 charselect_ui.run_if(in_state(Screen::CharSelect)),
-                inventory_ui.run_if(in_state(Screen::InGame)),
-                quest_ui.run_if(in_state(Screen::InGame)),
             )
                 .chain(),
         )
@@ -107,6 +107,14 @@ fn main() {
                 upload_dirty_pages,
                 net_send,
                 hud::update.run_if(in_state(Screen::InGame)),
+                (
+                    panels::toggle,
+                    panels::drag,
+                    panels::button_skin,
+                    panels::clicks,
+                    panels::refresh,
+                )
+                    .run_if(in_state(Screen::InGame)),
                 debug_panel,
             )
                 .chain(),
@@ -140,6 +148,10 @@ struct Net {
     notices: Vec<(String, String, f64)>,
     /// 技能冷却结束时刻 (id → elapsed_secs)
     cds: HashMap<String, f64>,
+    /// 面板内容重建计数 (对应数据变化时递增)
+    inv_rev: u32,
+    quest_rev: u32,
+    stat_rev: u32,
     /// 未上报的本地位移累计（20Hz 打包发送）
     acc: DVec2,
     last_send: f64,
@@ -1079,13 +1091,17 @@ fn net_pump(
                     next.set(Screen::Login);
                 }
                 ServerMessage::SkillList { skills } => net.skills = skills,
-                ServerMessage::QuestState { quests } => net.quests = quests,
+                ServerMessage::QuestState { quests } => {
+                    net.quests = quests;
+                    net.quest_rev += 1;
+                }
                 ServerMessage::InventoryState {
                     inventory,
                     equipment,
                 } => {
                     net.inventory = inventory;
                     net.equipment = equipment;
+                    net.inv_rev += 1;
                 }
                 ServerMessage::PlayerStatus {
                     level,
@@ -1096,6 +1112,7 @@ fn net_pump(
                     mp,
                     max_mp,
                 } => {
+                    net.stat_rev += 1;
                     net.stat = Some(Stat {
                         level,
                         exp: experience,
@@ -1568,159 +1585,6 @@ fn float_damage(
         tf.translation.y += 38.0 * time.delta_secs();
         color.0.set_alpha(1.0 - (age - 0.5).max(0.0) * 2.0);
     }
-}
-
-/// 过渡版背包(B)/装备(C)面板
-fn inventory_ui(
-    mut ctx: EguiContexts,
-    keys: Res<ButtonInput<KeyCode>>,
-    net: Res<Net>,
-    mut show_bag: Local<bool>,
-    mut show_equip: Local<bool>,
-) {
-    if keys.just_pressed(KeyCode::KeyB) {
-        *show_bag = !*show_bag;
-    }
-    if keys.just_pressed(KeyCode::KeyC) {
-        *show_equip = !*show_equip;
-    }
-    let fmt_stats = |i: &protocol::ItemInfo| {
-        let mut s = Vec::new();
-        if i.attack > 0 {
-            s.push(format!("攻+{}", i.attack));
-        }
-        if i.defense > 0 {
-            s.push(format!("防+{}", i.defense));
-        }
-        if i.hp > 0 {
-            s.push(format!("血+{}", i.hp));
-        }
-        s.join(" ")
-    };
-    if *show_bag {
-        let items = net.inventory.clone();
-        egui::Window::new("背包 (B)")
-            .default_pos((40.0, 300.0))
-            .show(ctx.ctx_mut(), |ui| {
-                if items.is_empty() {
-                    ui.label("空空如也");
-                }
-                for item in &items {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{}  {}", item.name, fmt_stats(item)));
-                        if ui.small_button("装备").clicked() {
-                            net.send(ClientMessage::Equip {
-                                item_id: item.id.clone(),
-                                slot: item.slot.clone(),
-                            });
-                        }
-                    });
-                }
-            });
-    }
-    if *show_equip {
-        let equipment = net.equipment.clone();
-        egui::Window::new("装备 (C)")
-            .default_pos((40.0, 520.0))
-            .show(ctx.ctx_mut(), |ui| {
-                const SLOTS: [(&str, &str); 5] = [
-                    ("weapon", "武器"),
-                    ("armor", "衣服"),
-                    ("helmet", "头盔"),
-                    ("necklace", "项链"),
-                    ("ring", "戒指"),
-                ];
-                for (slot, label) in SLOTS {
-                    ui.horizontal(|ui| {
-                        match equipment.get(slot) {
-                            Some(item) => {
-                                ui.label(format!("{label}: {}  {}", item.name, fmt_stats(item)));
-                                if ui.small_button("卸下").clicked() {
-                                    net.send(ClientMessage::Unequip {
-                                        slot: slot.to_string(),
-                                    });
-                                }
-                            }
-                            None => {
-                                ui.label(format!("{label}: -"));
-                            }
-                        };
-                    });
-                }
-            });
-    }
-}
-
-/// 过渡版任务面板 (L)
-fn quest_ui(
-    mut ctx: EguiContexts,
-    keys: Res<ButtonInput<KeyCode>>,
-    net: Res<Net>,
-    mut show: Local<bool>,
-) {
-    if keys.just_pressed(KeyCode::KeyL) {
-        *show = !*show;
-    }
-    if !*show {
-        return;
-    }
-    fn mob_name(t: &str) -> &str {
-        match t {
-            "chicken" => "鸡",
-            "deer" => "鹿",
-            "scarecrow" => "稻草人",
-            other => other,
-        }
-    }
-    let quests = net.quests.clone();
-    egui::Window::new("任务 (L)")
-        .default_pos((1500.0, 60.0))
-        .show(ctx.ctx_mut(), |ui| {
-            if quests.is_empty() {
-                ui.label("暂无可接任务");
-            }
-            for q in &quests {
-                let tag = match q.state.as_str() {
-                    "active" => "[进行中]",
-                    "completed" => "[已完成]",
-                    _ => "[可接取]",
-                };
-                ui.horizontal(|ui| {
-                    ui.label(format!("{tag} {}  (经验 {})", q.name, q.exp_reward));
-                    match q.state.as_str() {
-                        "available" if ui.small_button("接取").clicked() => {
-                            net.send(ClientMessage::AcceptQuest {
-                                quest_id: q.id.clone(),
-                            });
-                        }
-                        "active" => {
-                            let done = q.objectives.iter().all(|o| o.current >= o.required);
-                            if done && ui.small_button("交付").clicked() {
-                                net.send(ClientMessage::CompleteQuest {
-                                    quest_id: q.id.clone(),
-                                });
-                            }
-                            if ui.small_button("放弃").clicked() {
-                                net.send(ClientMessage::AbandonQuest {
-                                    quest_id: q.id.clone(),
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-                });
-                if q.state == "active" {
-                    for o in &q.objectives {
-                        ui.label(format!(
-                            "    击杀{}: {}/{}",
-                            mob_name(&o.target_id),
-                            o.current,
-                            o.required
-                        ));
-                    }
-                }
-            }
-        });
 }
 
 // ─────────── 过渡版登录/选角 UI (egui 素排版, M4 换 Bevy UI 皮肤) ───────────
