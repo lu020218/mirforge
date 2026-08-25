@@ -1,16 +1,24 @@
-//! 方向 A 面板族 (M4.4)：背包 (B) / 角色 (C) / 任务 (L)。
-//! Bevy UI + panel_ornate 鎏金四角饰边皮肤，titlebar 可拖拽，btn_gold 三态按钮。
-//! 内容由 Net (inventory/equipment/quests/stat) 驱动，rev 计数变化时重建。
+//! 方向 A 面板族：背包 (B) / 角色 (C) / 任务 (L)。
+//! M4.5 重做: 逐参数对齐 design/Panels.dc.html —— 金角饰线面板框、
+//! 48px 标题栏 (可拖拽/关闭)、8 列背包格、经典 F10 装备环绕布局、
+//! 两列属性; 任务面板沿同风格自延 (设计稿未含)。
 
 use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
 
-use crate::hud::{sliced, Skin, DISABLED, EXP_GOLD, GOLD_BRIGHT, TEXT_DIM, TEXT_MAIN};
+use crate::hud::{
+    Skin, DISABLED, EDGE_DARK, EDGE_GOLD, EXP_GOLD, GOLD, GOLD_BRIGHT, TEXT_DIM, TEXT_MAIN,
+};
 use crate::Net;
 use protocol::ClientMessage;
 
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
+const PANEL_BG: Color = Color::srgba(0.051, 0.059, 0.094, 0.94); // rgba(13,15,24,.94)
+const SLOT_BG: Color = Color::srgb(0.055, 0.063, 0.090); // #0e1017
+/// 标题栏微金渐变的 sRGB 预合成近似 (Bevy 无渐变)
+const TITLE_BG: Color = Color::srgb(0.110, 0.106, 0.114);
+const BTN_GOLD_BG: Color = Color::srgb(0.216, 0.176, 0.098); // #372d19
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelKind {
@@ -23,6 +31,8 @@ pub enum PanelKind {
 pub struct Panel(pub PanelKind);
 #[derive(Component)]
 pub struct DragBar;
+#[derive(Component)]
+pub struct CloseBtn(pub PanelKind);
 /// 面板内容容器 (rev 变化时清空重建)
 #[derive(Component)]
 pub struct PanelBody(pub PanelKind);
@@ -38,45 +48,86 @@ pub struct QuestAction {
     /// accept / complete / abandon
     act: &'static str,
 }
-/// 金色按钮三态换图
-#[derive(Component)]
-pub struct GoldBtn;
 
 /// 拖拽状态 (光标相对面板左上角的偏移)
 #[derive(Resource, Default)]
 pub struct Drag(Option<(Entity, Vec2)>);
 
-/// 进入游戏时预建三面板 (默认隐藏)
+/// 进入游戏时预建三面板 (默认隐藏), 位置为设计稿坐标
 pub fn setup(mut commands: Commands, skin: Res<Skin>) {
     spawn_panel(
         &mut commands,
         &skin,
         PanelKind::Bag,
         "背 包",
-        (60.0, 120.0),
-        340.0,
+        (468.0, 220.0),
+        430.0,
     );
     spawn_panel(
         &mut commands,
         &skin,
         PanelKind::Character,
         "角 色",
-        (440.0, 120.0),
-        320.0,
+        (1010.0, 180.0),
+        440.0,
     );
     spawn_panel(
         &mut commands,
         &skin,
         PanelKind::Quest,
         "任 务",
-        (790.0, 120.0),
-        380.0,
+        (60.0, 180.0),
+        400.0,
     );
 }
 
 pub fn teardown(mut commands: Commands, q: Query<Entity, With<Panel>>) {
     for e in &q {
         commands.entity(e).despawn_recursive();
+    }
+}
+
+/// 四角金饰线: 左上/右下 22px, 右上/左下 26px, 2px #c9a55c (设计稿 ornate)
+fn ornate_corners(panel: &mut ChildBuilder) {
+    let corners: [(f32, [bool; 4]); 4] = [
+        // (尺寸, [top, right, bottom, left] 哪两边描线)
+        (22.0, [true, false, false, true]), // 左上
+        (22.0, [false, true, true, false]), // 右下
+        (26.0, [true, true, false, false]), // 右上
+        (26.0, [false, false, true, true]), // 左下
+    ];
+    for (i, (size, [t, r, b, l])) in corners.into_iter().enumerate() {
+        let mut node = Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(size),
+            height: Val::Px(size),
+            border: UiRect {
+                top: Val::Px(if t { 2.0 } else { 0.0 }),
+                right: Val::Px(if r { 2.0 } else { 0.0 }),
+                bottom: Val::Px(if b { 2.0 } else { 0.0 }),
+                left: Val::Px(if l { 2.0 } else { 0.0 }),
+            },
+            ..default()
+        };
+        match i {
+            0 => {
+                node.top = Val::Px(-2.0);
+                node.left = Val::Px(-2.0);
+            }
+            1 => {
+                node.bottom = Val::Px(-2.0);
+                node.right = Val::Px(-2.0);
+            }
+            2 => {
+                node.top = Val::Px(-2.0);
+                node.right = Val::Px(-2.0);
+            }
+            _ => {
+                node.bottom = Val::Px(-2.0);
+                node.left = Val::Px(-2.0);
+            }
+        }
+        panel.spawn((node, BorderColor(GOLD)));
     }
 }
 
@@ -98,45 +149,44 @@ fn spawn_panel(
                 width: Val::Px(width),
                 flex_direction: FlexDirection::Column,
                 display: Display::None,
-                padding: UiRect::all(Val::Px(10.0)),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            ImageNode::new(skin.panel_ornate.clone()).with_mode(sliced(32.0)),
+            BackgroundColor(PANEL_BG),
+            BorderColor(EDGE_GOLD),
             GlobalZIndex(10),
         ))
         .with_children(|panel| {
-            // 标题栏 (拖拽区)
+            ornate_corners(panel);
+            // 标题栏 48px (拖拽区): 微金渐变近似底 + 底分隔线
             panel
                 .spawn((
                     DragBar,
                     Button,
                     RelativeCursorPosition::default(),
                     Node {
-                        height: Val::Px(30.0),
-                        justify_content: JustifyContent::Center,
+                        height: Val::Px(48.0),
                         align_items: AlignItems::Center,
-                        margin: UiRect::bottom(Val::Px(8.0)),
+                        justify_content: JustifyContent::SpaceBetween,
+                        padding: UiRect::horizontal(Val::Px(16.0)),
+                        border: UiRect::bottom(Val::Px(1.0)),
                         ..default()
                     },
-                    ImageNode::new(skin.titlebar.clone()).with_mode(sliced(12.0)),
+                    BackgroundColor(TITLE_BG),
+                    BorderColor(EDGE_DARK),
                 ))
                 .with_children(|bar| {
-                    bar.spawn((
-                        Text::new(title),
-                        TextFont {
-                            font: skin.font.clone(),
-                            font_size: 16.0,
-                            ..default()
-                        },
-                        TextColor(GOLD_BRIGHT),
-                    ));
+                    bar.spawn(text(&skin.font, title, 15.0, TEXT_MAIN));
+                    bar.spawn((Button, CloseBtn(kind), Node::default()))
+                        .with_children(|x| {
+                            x.spawn(text(&skin.font, "×", 18.0, TEXT_DIM));
+                        });
                 });
             // 内容容器
             panel.spawn((
                 PanelBody(kind),
                 Node {
                     flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(6.0),
                     min_height: Val::Px(80.0),
                     ..default()
                 },
@@ -165,6 +215,23 @@ pub fn toggle(keys: Res<ButtonInput<KeyCode>>, mut q: Query<(&Panel, &mut Node)>
     }
     if keys.just_pressed(KeyCode::KeyL) {
         flip(PanelKind::Quest, &mut q);
+    }
+}
+
+/// 标题栏关闭按钮
+pub fn close(
+    q_btn: Query<(&Interaction, &CloseBtn), Changed<Interaction>>,
+    mut q_panel: Query<(&Panel, &mut Node)>,
+) {
+    for (it, close) in &q_btn {
+        if *it != Interaction::Pressed {
+            continue;
+        }
+        for (p, mut node) in q_panel.iter_mut() {
+            if p.0 == close.0 {
+                node.display = Display::None;
+            }
+        }
     }
 }
 
@@ -203,21 +270,6 @@ pub fn drag(
         }
     } else {
         drag.0 = None;
-    }
-}
-
-/// 金色按钮三态
-#[allow(clippy::type_complexity)]
-pub fn button_skin(
-    skin: Res<Skin>,
-    mut q: Query<(&Interaction, &mut ImageNode), (With<GoldBtn>, Changed<Interaction>)>,
-) {
-    for (it, mut img) in q.iter_mut() {
-        img.image = match it {
-            Interaction::Pressed => skin.btn_gold_pressed.clone(),
-            Interaction::Hovered => skin.btn_gold_hover.clone(),
-            Interaction::None => skin.btn_gold.clone(),
-        };
     }
 }
 
@@ -316,156 +368,287 @@ fn text(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) -> i
     )
 }
 
-/// 背包: 6×4 网格, 有物品的格显示名字, 点击穿戴
+/// 背包: 8×4 网格 44px 格, 物品格白边+名字, 点击穿戴; 底栏统计
 fn build_bag(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) {
     let items = net.inventory.clone();
     let font = skin.font.clone();
-    let slot_img = skin.slot.clone();
-    let e_ref = e.with_children(|body| {
+    let used = items.len();
+    e.with_children(|body| {
+        // 格区: padding 16, 8 列 gap 6 → (430-2-32-42)/8 ≈ 44px 方格
         body.spawn(Node {
+            padding: UiRect::all(Val::Px(16.0)),
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
-            column_gap: Val::Px(4.0),
-            row_gap: Val::Px(4.0),
+            column_gap: Val::Px(6.0),
+            row_gap: Val::Px(6.0),
             ..default()
         })
         .with_children(|grid| {
-            for i in 0..24 {
+            for i in 0..32 {
                 let item = items.get(i);
                 let mut slot = grid.spawn((
                     Node {
-                        width: Val::Px(48.0),
-                        height: Val::Px(48.0),
+                        width: Val::Px(44.0),
+                        height: Val::Px(44.0),
+                        border: UiRect::all(Val::Px(1.0)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
                         ..default()
                     },
-                    ImageNode::new(slot_img.clone()).with_mode(sliced(6.0)),
+                    BackgroundColor(SLOT_BG),
+                    BorderColor(if item.is_some() {
+                        QUALITY_COMMON
+                    } else {
+                        EDGE_DARK
+                    }),
+                    BorderRadius::all(Val::Px(3.0)),
                 ));
                 if let Some(it) = item {
                     slot.insert((Button, EquipItem(it.id.clone())));
                     let name: String = it.name.chars().take(2).collect();
                     slot.with_children(|s| {
-                        s.spawn(text(&font, name, 14.0, QUALITY_COMMON));
+                        s.spawn(text(&font, name, 13.0, QUALITY_COMMON));
                     });
                 }
             }
         });
+        // 选中说明行 (背包底部之上)
         if let Some(it) = items.first() {
-            body.spawn(text(
-                &font,
-                format!("{} {}  (点击格子穿戴)", it.name, stats_line(it)),
-                12.0,
-                TEXT_DIM,
-            ));
-        } else {
-            body.spawn(text(&font, "空空如也", 12.0, TEXT_DIM));
+            body.spawn(Node {
+                padding: UiRect::horizontal(Val::Px(16.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn(text(
+                    &font,
+                    format!("{} {}  (点击格子穿戴)", it.name, stats_line(it)),
+                    12.0,
+                    TEXT_DIM,
+                ));
+            });
         }
-    });
-    let _ = e_ref;
-}
-
-/// 角色: 左装备槽列 + 右属性
-fn build_character(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) {
-    const SLOTS: [(&str, &str); 5] = [
-        ("weapon", "武器"),
-        ("armor", "衣服"),
-        ("helmet", "头盔"),
-        ("necklace", "项链"),
-        ("ring", "戒指"),
-    ];
-    let font = skin.font.clone();
-    let equipment = net.equipment.clone();
-    let stat = net.stat;
-    let (atk, def): (i32, i32) = (
-        equipment.values().map(|i| i.attack).sum(),
-        equipment.values().map(|i| i.defense).sum(),
-    );
-    let slot_img = skin.slot_gold.clone();
-    e.with_children(|body| {
-        body.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(14.0),
-            ..default()
-        })
-        .with_children(|row| {
-            // 左: 装备槽
-            row.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(5.0),
+        // 底栏 42px: 顶分隔线 + 统计
+        body.spawn((
+            Node {
+                height: Val::Px(42.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::horizontal(Val::Px(16.0)),
+                border: UiRect::top(Val::Px(1.0)),
+                margin: UiRect::top(Val::Px(8.0)),
                 ..default()
-            })
-            .with_children(|col| {
-                for (slot, label) in SLOTS {
-                    let item = equipment.get(slot);
-                    let mut n = col.spawn((
-                        Node {
-                            width: Val::Px(150.0),
-                            height: Val::Px(30.0),
-                            align_items: AlignItems::Center,
-                            padding: UiRect::horizontal(Val::Px(8.0)),
-                            column_gap: Val::Px(6.0),
-                            ..default()
-                        },
-                        ImageNode::new(slot_img.clone()).with_mode(sliced(6.0)),
-                    ));
-                    if item.is_some() {
-                        n.insert((Button, UnequipSlot(slot)));
-                    }
-                    n.with_children(|s| {
-                        s.spawn(text(&font, label, 12.0, TEXT_DIM));
-                        match item {
-                            Some(it) => {
-                                s.spawn(text(&font, it.name.clone(), 13.0, QUALITY_COMMON));
-                            }
-                            None => {
-                                s.spawn(text(&font, "-", 13.0, DISABLED));
-                            }
-                        }
-                    });
-                }
-                col.spawn(text(&font, "(点击槽位卸下)", 11.0, TEXT_DIM));
-            });
-            // 右: 属性
-            row.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                ..default()
-            })
-            .with_children(|col| {
-                if let Some(s) = stat {
-                    col.spawn(text(&font, format!("等级  {}", s.level), 13.0, GOLD_BRIGHT));
-                    col.spawn(text(
-                        &font,
-                        format!("经验  {}/{}", s.exp, s.req),
-                        13.0,
-                        EXP_GOLD,
-                    ));
-                    col.spawn(text(
-                        &font,
-                        format!("生命  {}/{}", s.hp, s.max_hp),
-                        13.0,
-                        TEXT_MAIN,
-                    ));
-                    col.spawn(text(
-                        &font,
-                        format!("魔法  {}/{}", s.mp, s.max_mp),
-                        13.0,
-                        TEXT_MAIN,
-                    ));
-                }
-                col.spawn(text(&font, format!("装备攻击 +{atk}"), 13.0, TEXT_MAIN));
-                col.spawn(text(&font, format!("装备防御 +{def}"), 13.0, TEXT_MAIN));
-            });
+            },
+            BorderColor(EDGE_DARK),
+        ))
+        .with_children(|bar| {
+            bar.spawn(text(&font, format!("32 格 · 已用 {used}"), 12.0, TEXT_DIM));
+            bar.spawn(text(&font, "金币 0", 12.0, EXP_GOLD));
         });
     });
 }
 
-/// 任务: 列表 + 操作按钮
+/// 装备槽 56px (底排 52px): 有装备→金边+名字缩写(点击卸下), 空→暗边+占位名
+fn equip_slot(
+    parent: &mut ChildBuilder,
+    font: &Handle<Font>,
+    equipment: &std::collections::HashMap<String, protocol::ItemInfo>,
+    slot_key: Option<&'static str>,
+    label: &str,
+    size: f32,
+) {
+    let item = slot_key.and_then(|k| equipment.get(k));
+    let mut n = parent.spawn((
+        Node {
+            width: Val::Px(size),
+            height: Val::Px(size),
+            border: UiRect::all(Val::Px(1.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(SLOT_BG),
+        BorderColor(if item.is_some() { EDGE_GOLD } else { EDGE_DARK }),
+        BorderRadius::all(Val::Px(3.0)),
+    ));
+    if let (Some(key), true) = (slot_key, item.is_some()) {
+        n.insert((Button, UnequipSlot(key)));
+    }
+    match item {
+        Some(it) => {
+            let name: String = it.name.chars().take(2).collect();
+            n.with_children(|s| {
+                s.spawn(text(font, name, 13.0, QUALITY_COMMON));
+            });
+        }
+        None => {
+            n.with_children(|s| {
+                s.spawn(text(font, label, 10.0, DISABLED));
+            });
+        }
+    }
+}
+
+/// 角色: 经典 F10 布局 — 立绘居中, 装备槽左右下环绕 + 两列属性
+fn build_character(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) {
+    let font = skin.font.clone();
+    let equipment = net.equipment.clone();
+    let stat = net.stat;
+    let name = net
+        .characters
+        .iter()
+        .find(|c| Some(&c.id) == net.character_id.as_ref())
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "冒险者".into());
+    let (atk, def): (i32, i32) = (
+        equipment.values().map(|i| i.attack).sum(),
+        equipment.values().map(|i| i.defense).sum(),
+    );
+    e.with_children(|body| {
+        // 主区: 左列 4 槽 | 中央立绘+名字 | 右列 4 槽
+        body.spawn(Node {
+            padding: UiRect::new(Val::Px(20.0), Val::Px(20.0), Val::Px(18.0), Val::Px(0.0)),
+            justify_content: JustifyContent::SpaceBetween,
+            column_gap: Val::Px(12.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(10.0),
+                ..default()
+            })
+            .with_children(|col| {
+                equip_slot(col, &font, &equipment, Some("weapon"), "武器", 56.0);
+                equip_slot(col, &font, &equipment, Some("armor"), "衣服", 56.0);
+                equip_slot(col, &font, &equipment, None, "护腕", 56.0);
+                equip_slot(col, &font, &equipment, Some("ring"), "戒指", 56.0);
+            });
+            // 中央立绘 (150×240 剪影近似) + 名字/Lv
+            row.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(10.0),
+                flex_grow: 1.0,
+                ..default()
+            })
+            .with_children(|mid| {
+                mid.spawn((
+                    Node {
+                        width: Val::Px(150.0),
+                        height: Val::Px(240.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.137, 0.145, 0.204)), // #23263a
+                    BorderColor(EDGE_DARK),
+                    BorderRadius::all(Val::Px(4.0)),
+                ));
+                mid.spawn(Node {
+                    align_items: AlignItems::Baseline,
+                    column_gap: Val::Px(8.0),
+                    ..default()
+                })
+                .with_children(|line| {
+                    line.spawn(text(&font, name, 17.0, TEXT_MAIN));
+                    line.spawn((
+                        Node {
+                            border: UiRect::all(Val::Px(1.0)),
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+                            ..default()
+                        },
+                        BorderColor(EDGE_GOLD),
+                        BorderRadius::all(Val::Px(9.0)),
+                    ))
+                    .with_children(|lv| {
+                        lv.spawn(text(
+                            &font,
+                            format!("Lv {}", stat.map(|s| s.level).unwrap_or(1)),
+                            11.0,
+                            GOLD_BRIGHT,
+                        ));
+                    });
+                });
+            });
+            row.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(10.0),
+                ..default()
+            })
+            .with_children(|col| {
+                equip_slot(col, &font, &equipment, Some("helmet"), "头盔", 56.0);
+                equip_slot(col, &font, &equipment, Some("necklace"), "项链", 56.0);
+                equip_slot(col, &font, &equipment, None, "护腕", 56.0);
+                equip_slot(col, &font, &equipment, None, "戒指", 56.0);
+            });
+        });
+        // 底排 5 槽 52px 居中
+        body.spawn(Node {
+            padding: UiRect::new(Val::Px(20.0), Val::Px(20.0), Val::Px(10.0), Val::Px(14.0)),
+            justify_content: JustifyContent::Center,
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .with_children(|row| {
+            for label in ["腰带", "鞋子", "宝石", "生肖", "星座"] {
+                equip_slot(row, &font, &equipment, None, label, 52.0);
+            }
+        });
+        // 属性: 两列 grid, 顶分隔线
+        let pairs: Vec<(String, String)> = vec![
+            ("攻击".into(), format!("+{atk}")),
+            ("防御".into(), format!("+{def}")),
+            (
+                "生命".into(),
+                stat.map(|s| format!("{}/{}", s.hp, s.max_hp))
+                    .unwrap_or_default(),
+            ),
+            (
+                "魔法".into(),
+                stat.map(|s| format!("{}/{}", s.mp, s.max_mp))
+                    .unwrap_or_default(),
+            ),
+            (
+                "经验".into(),
+                stat.map(|s| format!("{}/{}", s.exp, s.req))
+                    .unwrap_or_default(),
+            ),
+            (
+                "等级".into(),
+                stat.map(|s| s.level.to_string()).unwrap_or_default(),
+            ),
+        ];
+        body.spawn((
+            Node {
+                border: UiRect::top(Val::Px(1.0)),
+                padding: UiRect::new(Val::Px(20.0), Val::Px(20.0), Val::Px(14.0), Val::Px(18.0)),
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: Val::Px(24.0),
+                row_gap: Val::Px(8.0),
+                ..default()
+            },
+            BorderColor(EDGE_DARK),
+        ))
+        .with_children(|grid| {
+            for (label, value) in pairs {
+                grid.spawn(Node {
+                    width: Val::Px(180.0),
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                })
+                .with_children(|cell| {
+                    cell.spawn(text(&font, label, 12.0, TEXT_DIM));
+                    cell.spawn(text(&font, value, 12.0, TEXT_MAIN));
+                });
+            }
+        });
+    });
+}
+
+/// 任务: 列表 + 操作按钮 (面板框同风格)
 fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) {
     let font = skin.font.clone();
     let quests = net.quests.clone();
-    let btn = skin.btn_gold.clone();
     fn mob_name(t: &str) -> &str {
         match t {
             "chicken" => "鸡",
@@ -475,97 +658,135 @@ fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin
         }
     }
     e.with_children(|body| {
-        if quests.is_empty() {
-            body.spawn(text(&font, "暂无可接任务", 12.0, TEXT_DIM));
-        }
-        for q in &quests {
-            let (tag, tag_color) = match q.state.as_str() {
-                "active" => ("进行中", EXP_GOLD),
-                "completed" => ("已完成", DISABLED),
-                _ => ("可接取", TEXT_MAIN),
-            };
-            body.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                margin: UiRect::bottom(Val::Px(4.0)),
-                ..default()
-            })
-            .with_children(|item| {
-                item.spawn(Node {
-                    column_gap: Val::Px(8.0),
-                    align_items: AlignItems::Center,
-                    ..default()
-                })
-                .with_children(|row| {
-                    row.spawn(text(&font, format!("[{tag}]"), 12.0, tag_color));
-                    row.spawn(text(&font, q.name.clone(), 14.0, TEXT_MAIN));
-                    row.spawn(text(&font, format!("经验{}", q.exp_reward), 11.0, EXP_GOLD));
-                });
-                if q.state == "active" {
-                    for o in &q.objectives {
-                        row_objective(item, &font, mob_name(&o.target_id), o.current, o.required);
-                    }
-                }
-                // 操作按钮
-                let actions: Vec<(&str, &str)> = match q.state.as_str() {
-                    "available" => vec![("accept", "接取")],
-                    "active" => {
-                        let done = q.objectives.iter().all(|o| o.current >= o.required);
-                        if done {
-                            vec![("complete", "交付"), ("abandon", "放弃")]
-                        } else {
-                            vec![("abandon", "放弃")]
-                        }
-                    }
-                    _ => vec![],
+        body.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(12.0),
+            padding: UiRect::all(Val::Px(16.0)),
+            ..default()
+        })
+        .with_children(|list| {
+            if quests.is_empty() {
+                list.spawn(text(&font, "暂无可接任务", 12.0, TEXT_DIM));
+            }
+            for q in &quests {
+                let (tag, tag_color) = match q.state.as_str() {
+                    "active" => ("进行中", EXP_GOLD),
+                    "completed" => ("已完成", DISABLED),
+                    _ => ("可接取", TEXT_MAIN),
                 };
-                if !actions.is_empty() {
+                list.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(6.0),
+                        padding: UiRect::all(Val::Px(12.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(SLOT_BG),
+                    BorderColor(EDGE_DARK),
+                    BorderRadius::all(Val::Px(3.0)),
+                ))
+                .with_children(|item| {
                     item.spawn(Node {
                         column_gap: Val::Px(8.0),
+                        align_items: AlignItems::Center,
                         ..default()
                     })
                     .with_children(|row| {
-                        for (act, label) in actions {
-                            row.spawn((
-                                Button,
-                                GoldBtn,
-                                QuestAction {
-                                    quest: q.id.clone(),
-                                    act,
-                                },
-                                Node {
-                                    padding: UiRect::axes(Val::Px(14.0), Val::Px(4.0)),
-                                    ..default()
-                                },
-                                ImageNode::new(btn.clone()).with_mode(sliced(12.0)),
-                            ))
-                            .with_children(|b| {
-                                b.spawn(text(&font, label, 13.0, Color::srgb(0.10, 0.09, 0.05)));
-                            });
-                        }
+                        row.spawn(text(&font, q.name.clone(), 14.0, TEXT_MAIN));
+                        row.spawn((
+                            Node {
+                                border: UiRect::all(Val::Px(1.0)),
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+                                ..default()
+                            },
+                            BorderColor(EDGE_DARK),
+                            BorderRadius::all(Val::Px(9.0)),
+                        ))
+                        .with_children(|t| {
+                            t.spawn(text(&font, tag, 11.0, tag_color));
+                        });
+                        row.spawn(text(
+                            &font,
+                            format!("经验 {}", q.exp_reward),
+                            11.0,
+                            EXP_GOLD,
+                        ));
                     });
-                }
-            });
-        }
+                    if q.state == "active" {
+                        for o in &q.objectives {
+                            let color = if o.current >= o.required {
+                                EXP_GOLD
+                            } else {
+                                TEXT_DIM
+                            };
+                            item.spawn(text(
+                                &font,
+                                format!(
+                                    "击杀{}  {}/{}",
+                                    mob_name(&o.target_id),
+                                    o.current,
+                                    o.required
+                                ),
+                                12.0,
+                                color,
+                            ));
+                        }
+                    }
+                    // 操作按钮
+                    let actions: Vec<(&str, &str)> = match q.state.as_str() {
+                        "available" => vec![("accept", "接 取")],
+                        "active" => {
+                            let done = q.objectives.iter().all(|o| o.current >= o.required);
+                            if done {
+                                vec![("complete", "交 付"), ("abandon", "放 弃")]
+                            } else {
+                                vec![("abandon", "放 弃")]
+                            }
+                        }
+                        _ => vec![],
+                    };
+                    if !actions.is_empty() {
+                        item.spawn(Node {
+                            column_gap: Val::Px(8.0),
+                            margin: UiRect::top(Val::Px(4.0)),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            for (act, label) in actions {
+                                let primary = act != "abandon";
+                                row.spawn((
+                                    Button,
+                                    QuestAction {
+                                        quest: q.id.clone(),
+                                        act,
+                                    },
+                                    Node {
+                                        padding: UiRect::axes(Val::Px(16.0), Val::Px(5.0)),
+                                        border: UiRect::all(Val::Px(1.0)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(if primary {
+                                        BTN_GOLD_BG
+                                    } else {
+                                        Color::NONE
+                                    }),
+                                    BorderColor(if primary { EDGE_GOLD } else { EDGE_DARK }),
+                                    BorderRadius::all(Val::Px(3.0)),
+                                ))
+                                .with_children(|b| {
+                                    b.spawn(text(
+                                        &font,
+                                        label,
+                                        12.0,
+                                        if primary { GOLD_BRIGHT } else { TEXT_DIM },
+                                    ));
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+        });
     });
-}
-
-fn row_objective(
-    parent: &mut ChildBuilder,
-    font: &Handle<Font>,
-    name: &str,
-    current: u32,
-    required: u32,
-) {
-    let color = if current >= required {
-        EXP_GOLD
-    } else {
-        TEXT_DIM
-    };
-    parent.spawn(text(
-        font,
-        format!("  击杀{name}  {current}/{required}"),
-        12.0,
-        color,
-    ));
 }

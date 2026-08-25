@@ -32,15 +32,8 @@ const TRACK_BG: Color = Color::srgba(0.051, 0.059, 0.094, 0.55); // rgba(13,15,2
 #[derive(Resource)]
 pub struct Skin {
     pub font: Handle<Font>,
-    pub panel_ornate: Handle<Image>,
-    pub titlebar: Handle<Image>,
-    pub btn_gold: Handle<Image>,
-    pub btn_gold_hover: Handle<Image>,
-    pub btn_gold_pressed: Handle<Image>,
     pub bar_hp: Handle<Image>,
     pub bar_mp: Handle<Image>,
-    pub slot: Handle<Image>,
-    pub slot_gold: Handle<Image>,
 }
 
 pub fn sliced(border: f32) -> NodeImageMode {
@@ -69,15 +62,8 @@ pub fn load_skin(
     .unwrap_or_default();
     commands.insert_resource(Skin {
         font,
-        panel_ornate: assets.load("ui/skin/panel_ornate.png"),
-        titlebar: assets.load("ui/skin/titlebar.png"),
-        btn_gold: assets.load("ui/skin/btn_gold.png"),
-        btn_gold_hover: assets.load("ui/skin/btn_gold_hover.png"),
-        btn_gold_pressed: assets.load("ui/skin/btn_gold_pressed.png"),
         bar_hp: assets.load("ui/skin/bar_fill_hp.png"),
         bar_mp: assets.load("ui/skin/bar_fill_mp.png"),
-        slot: assets.load("ui/skin/slot.png"),
-        slot_gold: assets.load("ui/skin/slot_gold.png"),
     });
 }
 

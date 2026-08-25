@@ -130,7 +130,7 @@ fn main() {
                     panels::toggle,
                     hud::menu_clicks,
                     panels::drag,
-                    panels::button_skin,
+                    panels::close,
                     panels::clicks,
                     panels::refresh,
                 )
