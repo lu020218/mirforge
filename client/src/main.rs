@@ -122,6 +122,7 @@ fn main() {
                 camera_follow,
                 camera_control,
                 stream_chunks,
+                animate_tiles,
                 cast_skills,
                 player_sprite,
                 remote_step,
@@ -259,7 +260,8 @@ struct World {
     map_name: String,
     /// 地图名(小写) → 文件路径, 切区时按名加载
     maps: HashMap<String, PathBuf>,
-    lib_dir: PathBuf,
+    /// 地图图库根 (Data/Map, 其下 WemadeMir2/ShandaMir2/WemadeMir3/...)
+    map_root: PathBuf,
     /// 怪物图库目录 (Data/Monster)
     mon_dir: PathBuf,
     libs: HashMap<String, Option<CrystalLib>>,
@@ -272,20 +274,65 @@ struct World {
 }
 
 impl World {
-    fn lib_name(layer: Layer, front_lib: i16) -> Option<String> {
-        // 与既有约定一致: back→Tiles, mid→SmTiles, front: 0=Tiles 1=SmTiles 2=Objects n=Objects{n-1}
-        Some(match layer {
-            Layer::Hum | Layer::Mon(_) => return None, // 专用库, 不走地图图库目录
-
-            Layer::Back => "Tiles".into(),
-            Layer::Mid => "SmTiles".into(),
-            Layer::Front => match front_lib {
-                0 => "Tiles".into(),
-                1 => "SmTiles".into(),
-                2 => "Objects".into(),
-                n if n > 2 => format!("Objects{}", n - 1),
-                _ => return None,
-            },
+    /// 库号 → 相对 Data/Map 的库文件名 (Crystal Libraries.MapLibs 注册表完整移植;
+    /// back/mid/front 三层共用同一索引空间, 逐格取 cell.*_lib)
+    fn lib_name(layer: Layer, lib: i16) -> Option<String> {
+        if matches!(layer, Layer::Hum | Layer::Mon(_)) {
+            return None; // 专用库, 不走地图图库目录
+        }
+        const MIR3_NAMES: [&str; 14] = [
+            "Tilesc",
+            "Tiles30c",
+            "Tiles5c",
+            "Smtilesc",
+            "Housesc",
+            "Cliffsc",
+            "Dungeonsc",
+            "Innersc",
+            "Furnituresc",
+            "Wallsc",
+            "smObjectsc",
+            "Animationsc",
+            "Object1c",
+            "Object2c",
+        ];
+        const MIR3_STATE: [&str; 5] = ["", "wood", "sand", "snow", "forest"];
+        let l = lib as i32;
+        Some(match l {
+            0 => "WemadeMir2/Tiles".into(),
+            1 => "WemadeMir2/SmTiles".into(),
+            2 => "WemadeMir2/Objects".into(),
+            3..=28 => format!("WemadeMir2/Objects{}", l - 1),
+            90 => "WemadeMir2/Objects_32bit".into(),
+            100 => "ShandaMir2/Tiles".into(),
+            101..=109 => format!("ShandaMir2/Tiles{}", l - 99),
+            110 => "ShandaMir2/SmTiles".into(),
+            111..=119 => format!("ShandaMir2/SmTiles{}", l - 109),
+            120 => "ShandaMir2/Objects".into(),
+            121..=150 => format!("ShandaMir2/Objects{}", l - 119),
+            190 => "ShandaMir2/AniTiles1".into(),
+            200..=274 => {
+                let o = (l - 200) as usize;
+                let (s, n) = (o / 15, o % 15);
+                if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
+                    return None;
+                }
+                let dir = if s == 0 {
+                    String::new()
+                } else {
+                    format!("{}/", MIR3_STATE[s])
+                };
+                format!("WemadeMir3/{dir}{}", MIR3_NAMES[n])
+            }
+            300..=374 => {
+                let o = (l - 300) as usize;
+                let (s, n) = (o / 15, o % 15);
+                if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
+                    return None;
+                }
+                format!("ShandaMir3/{}{}", MIR3_NAMES[n], MIR3_STATE[s])
+            }
+            _ => return None,
         })
     }
 
@@ -293,7 +340,7 @@ impl World {
         if !self.libs.contains_key(name) {
             let mut lib = None;
             for cand in [format!("{name}.Lib"), format!("{name}.lib")] {
-                let p = self.lib_dir.join(&cand);
+                let p = self.map_root.join(&cand);
                 if p.exists() {
                     if let Ok(data) = std::fs::read(&p) {
                         lib = CrystalLib::parse(data).ok();
@@ -443,7 +490,8 @@ fn setup(
                 .is_some_and(|s| s.eq_ignore_ascii_case("tiles"))
         })
         .collect();
-    let lib_dir = tiles
+    // 定位到含 Tiles.Lib 的套目录, 其父目录即 Data/Map 图库根 (Crystal MapLibs 语义)
+    let map_root = tiles
         .iter()
         .find(|l| {
             l.path
@@ -452,14 +500,14 @@ fn setup(
                 .contains(&lib_set.to_lowercase())
         })
         .or_else(|| tiles.first())
-        .map(|l| l.path.parent().unwrap().to_path_buf())
+        .and_then(|l| Some(l.path.parent()?.parent()?.to_path_buf()))
         .unwrap_or_else(|| {
             error!("资源目录中找不到 Tiles.Lib");
             std::process::exit(2);
         });
     info!(
-        "地图 {map_name}: {:?} {}x{}, 图库目录 {:?}",
-        map.kind, map.width, map.height, lib_dir
+        "地图 {map_name}: {:?} {}x{}, 图库根 {:?}",
+        map.kind, map.width, map.height, map_root
     );
 
     let start = std::env::var("MIRFORGE_START").unwrap_or_else(|_| "330,150".into());
@@ -531,17 +579,16 @@ fn setup(
                 .map(|n| (n.to_lowercase(), m.path.clone()))
         })
         .collect();
-    // 怪物图库目录: lib_dir = <root>/Data/Map/<套名> → <root>/Data/Monster
-    let mon_dir = lib_dir
+    // 怪物图库目录: map_root = <root>/Data/Map → <root>/Data/Monster
+    let mon_dir = map_root
         .parent()
-        .and_then(|p| p.parent())
         .map(|p| p.join("Monster"))
-        .unwrap_or_else(|| lib_dir.join("Monster"));
+        .unwrap_or_else(|| map_root.join("Monster"));
     commands.insert_resource(World {
         map,
         map_name: map_name.to_lowercase(),
         maps,
-        lib_dir,
+        map_root,
         mon_dir,
         libs: HashMap::new(),
         atlas: AtlasCpu::default(),
@@ -939,8 +986,14 @@ fn stream_chunks(
     }
 }
 
+/// 标准地表尺寸 (Crystal DrawFloor 判据: 恰为 48×32 或 96×64 才属地板层)
+fn is_floor_size(size: Vec2) -> bool {
+    (size.x == CELL_W && size.y == CELL_H) || (size.x == CELL_W * 2.0 && size.y == CELL_H * 2.0)
+}
+
 fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> Entity {
     let mut sprites: Vec<(Sprite, Transform)> = Vec::new();
+    let mut anims: Vec<AnimatedTile> = Vec::new();
     let (w, h) = (world.map.width as i32, world.map.height as i32);
     for cy in ky * CHUNK..(ky + 1) * CHUNK {
         for cx in kx * CHUNK..(kx + 1) * CHUNK {
@@ -954,22 +1007,41 @@ fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> 
                     sprites.push(sprite_at(world, f, cx, cy, 0.0, false));
                 }
             }
+            // mid: 标准尺寸入地板层; 其余锚底进对象层按行遮挡 (Crystal DrawObjects mir3 middle)
             if cell.mid >= 0 {
                 if let Some(f) = world.frame(Layer::Mid, cell.mid_lib, cell.mid) {
-                    sprites.push(sprite_at(world, f, cx, cy, 1.0, false));
+                    if is_floor_size(f.size) {
+                        sprites.push(sprite_at(world, f, cx, cy, 1.0, false));
+                    } else {
+                        let z = 10.0 + cy as f32 * 0.01;
+                        sprites.push(sprite_at(world, f, cx, cy, z, true));
+                    }
                 }
             }
+            // front: 标准尺寸画地板层; 非标准尺寸或带动画的锚底进对象层
+            // (Crystal: floor 画标准基帧, 对象层跳过"标准且无动画", 动画帧覆盖地板)
             if cell.front >= 0 {
                 if let Some(f) = world.frame(Layer::Front, cell.front_lib, cell.front) {
-                    // 前景层沿用 Crystal 画序: 高 32/64 的平铺地表在 floor 阶段 (角色之下),
-                    // 更高的物件才按行深度参与遮挡 (下行画在上行前)
-                    let h = f.size.y;
-                    let z = if h == CELL_H || h == CELL_H * 2.0 {
-                        2.0
-                    } else {
-                        10.0 + cy as f32 * 0.01
-                    };
-                    sprites.push(sprite_at(world, f, cx, cy, z, true));
+                    let frames = cell.ani_frame & 0x7F;
+                    if is_floor_size(f.size) {
+                        sprites.push(sprite_at(world, f, cx, cy, 2.0, false));
+                    }
+                    if !is_floor_size(f.size) || frames > 0 {
+                        let z = 10.0 + cy as f32 * 0.01 + 0.002;
+                        if frames > 0 {
+                            anims.push(AnimatedTile {
+                                lib: cell.front_lib,
+                                base: cell.front,
+                                frames,
+                                tick: cell.ani_tick,
+                                cx,
+                                cy,
+                                z,
+                            });
+                        } else {
+                            sprites.push(sprite_at(world, f, cx, cy, z, true));
+                        }
+                    }
                 }
             }
         }
@@ -978,6 +1050,10 @@ fn spawn_chunk(commands: &mut Commands, world: &mut World, kx: i32, ky: i32) -> 
     parent.with_children(|p| {
         for (s, t) in sprites {
             p.spawn((s, t));
+        }
+        for a in anims {
+            let t = Transform::from_xyz(a.cx as f32 * CELL_W, -(a.cy as f32 * CELL_H), a.z);
+            p.spawn((Sprite::default(), t, a));
         }
     });
     parent.id()
@@ -989,14 +1065,12 @@ fn sprite_at(
     cx: i32,
     cy: i32,
     z: f32,
-    front: bool,
+    anchor_bottom: bool,
 ) -> (Sprite, Transform) {
-    // Mir 放置: 左上角 = (cx*48 + off.x, cy*32 + off.y - (h - 32)); back/mid off 恒为绘制原点
-    let (px, py) = if front {
-        (
-            cx as f32 * CELL_W + f.off.x,
-            cy as f32 * CELL_H + f.off.y - (f.size.y - CELL_H),
-        )
+    // Crystal 地图层放置不使用帧自带偏移 (Draw(index,x,y) 不加 mi.X/mi.Y):
+    // 地板 = 格左上角; 对象 = 锚定格底边向上 ((y+1)*32 - h)
+    let (px, py) = if anchor_bottom {
+        (cx as f32 * CELL_W, (cy + 1) as f32 * CELL_H - f.size.y)
     } else {
         (cx as f32 * CELL_W, cy as f32 * CELL_H)
     };
@@ -1010,6 +1084,45 @@ fn sprite_at(
         // Bevy y 轴向上, 世界像素 y 取负
         Transform::from_xyz(px, -py, z),
     )
+}
+
+/// 动画前景格 (火把/水面/旗帜等): base + AnimationCount 循环换帧
+#[derive(Component)]
+struct AnimatedTile {
+    lib: i16,
+    base: i32,
+    frames: u8,
+    tick: u8,
+    cx: i32,
+    cy: i32,
+    z: f32,
+}
+
+/// 地图动画层: 每 100ms 递增全局帧计数 (Crystal AnimationCount 节拍),
+/// index = base + (count % (a + a*tick)) / (1 + tick)
+fn animate_tiles(
+    time: Res<Time>,
+    mut world: ResMut<World>,
+    mut state: Local<(f64, u32)>,
+    mut q: Query<(&AnimatedTile, &mut Sprite, &mut Transform)>,
+) {
+    let now = time.elapsed_secs_f64();
+    if now - state.0 < 0.1 {
+        return;
+    }
+    state.0 = now;
+    state.1 = state.1.wrapping_add(1);
+    let count = state.1;
+    for (a, mut sp, mut tf) in q.iter_mut() {
+        let (n, k) = (a.frames as u32, a.tick as u32);
+        let idx = a.base + ((count % (n + n * k)) / (1 + k)) as i32;
+        if let Some(f) = world.frame(Layer::Front, a.lib, idx) {
+            sp.image = world.pages[f.page.min(world.pages.len() - 1)].clone();
+            sp.rect = Some(f.rect);
+            sp.anchor = Anchor::TopLeft;
+            tf.translation.y = -((a.cy + 1) as f32 * CELL_H - f.size.y);
+        }
+    }
 }
 
 // ─────────── 图集脏页上传 ───────────
