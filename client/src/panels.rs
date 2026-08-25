@@ -88,7 +88,7 @@ pub fn teardown(mut commands: Commands, q: Query<Entity, With<Panel>>) {
 }
 
 /// 四角金饰线: 左上/右下 22px, 右上/左下 26px, 2px #c9a55c (设计稿 ornate)
-fn ornate_corners(panel: &mut ChildBuilder) {
+pub fn ornate_corners(panel: &mut ChildBuilder) {
     let corners: [(f32, [bool; 4]); 4] = [
         // (尺寸, [top, right, bottom, left] 哪两边描线)
         (22.0, [true, false, false, true]), // 左上
@@ -194,8 +194,15 @@ fn spawn_panel(
         });
 }
 
-/// B/C/L 开关面板
-pub fn toggle(keys: Res<ButtonInput<KeyCode>>, mut q: Query<(&Panel, &mut Node)>) {
+/// B/C/L 开关面板 (聊天输入时跳过)
+pub fn toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<crate::hud::ChatState>,
+    mut q: Query<(&Panel, &mut Node)>,
+) {
+    if chat.active {
+        return;
+    }
     let flip = |kind: PanelKind, q: &mut Query<(&Panel, &mut Node)>| {
         for (p, mut node) in q.iter_mut() {
             if p.0 == kind {
@@ -337,6 +344,7 @@ pub fn refresh(
     mut commands: Commands,
     net: Res<Net>,
     skin: Res<Skin>,
+    portrait: Option<Res<crate::Portrait>>,
     mut last_rev: Local<(u32, u32, u32)>,
     q_body: Query<(Entity, &PanelBody)>,
 ) {
@@ -345,12 +353,13 @@ pub fn refresh(
         return;
     }
     *last_rev = rev;
+    let portrait = portrait.as_ref().and_then(|p| p.0.clone());
     for (entity, body) in &q_body {
         let mut e = commands.entity(entity);
         e.despawn_descendants();
         match body.0 {
             PanelKind::Bag => build_bag(&mut e, &net, &skin),
-            PanelKind::Character => build_character(&mut e, &net, &skin),
+            PanelKind::Character => build_character(&mut e, &net, &skin, portrait.clone()),
             PanelKind::Quest => build_quest(&mut e, &net, &skin),
         }
     }
@@ -489,7 +498,12 @@ fn equip_slot(
 }
 
 /// 角色: 经典 F10 布局 — 立绘居中, 装备槽左右下环绕 + 两列属性
-fn build_character(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) {
+fn build_character(
+    e: &mut bevy::ecs::system::EntityCommands,
+    net: &Net,
+    skin: &Skin,
+    portrait: Option<(Handle<Image>, Vec2)>,
+) {
     let font = skin.font.clone();
     let equipment = net.equipment.clone();
     let stat = net.stat;
@@ -537,12 +551,28 @@ fn build_character(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &
                         width: Val::Px(150.0),
                         height: Val::Px(240.0),
                         border: UiRect::all(Val::Px(1.0)),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
                         ..default()
                     },
                     BackgroundColor(Color::srgb(0.137, 0.145, 0.204)), // #23263a
                     BorderColor(EDGE_DARK),
                     BorderRadius::all(Val::Px(4.0)),
-                ));
+                ))
+                .with_children(|frame| {
+                    if let Some((img, size)) = portrait {
+                        // 站立帧等比放大到高 ~220 (像素风 nearest)
+                        let scale = (220.0 / size.y).min(140.0 / size.x);
+                        frame.spawn((
+                            Node {
+                                width: Val::Px(size.x * scale),
+                                height: Val::Px(size.y * scale),
+                                ..default()
+                            },
+                            ImageNode::new(img),
+                        ));
+                    }
+                });
                 mid.spawn(Node {
                     align_items: AlignItems::Baseline,
                     column_gap: Val::Px(8.0),

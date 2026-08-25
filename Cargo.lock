@@ -3388,6 +3388,7 @@ name = "mir-formats"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "image",
  "thiserror 2.0.20",
 ]
 

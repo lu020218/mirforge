@@ -82,7 +82,10 @@ fn main() {
         .init_resource::<Net>()
         .init_resource::<Remotes>()
         .add_systems(Startup, (hud::load_skin, setup))
-        .add_systems(OnEnter(Screen::InGame), (hud::setup, panels::setup))
+        .add_systems(
+            OnEnter(Screen::InGame),
+            (make_portrait, hud::setup, panels::setup),
+        )
         .add_systems(OnExit(Screen::InGame), (hud::teardown, panels::teardown))
         .add_systems(OnEnter(Screen::Login), screens::login_setup)
         .add_systems(OnExit(Screen::Login), screens::login_teardown)
@@ -90,6 +93,7 @@ fn main() {
         .add_systems(OnExit(Screen::CharSelect), screens::charselect_teardown)
         .init_resource::<panels::Drag>()
         .init_resource::<screens::CharSelectState>()
+        .init_resource::<hud::ChatState>()
         .add_systems(
             Update,
             (
@@ -127,6 +131,7 @@ fn main() {
                 net_send,
                 hud::update.run_if(in_state(Screen::InGame)),
                 (
+                    hud::chat_input,
                     panels::toggle,
                     hud::menu_clicks,
                     panels::drag,
@@ -175,8 +180,8 @@ struct Net {
     notice_rev: u32,
     /// 当前区域显示名 (小地图)
     zone_name: String,
-    /// 系统消息滚动 (聊天框)
-    chatlog: Vec<String>,
+    /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
+    chatlog: Vec<(String, String)>,
     /// 未上报的本地位移累计（20Hz 打包发送）
     acc: DVec2,
     last_send: f64,
@@ -349,6 +354,47 @@ impl World {
         self.frames.insert(key, fref);
         fref
     }
+}
+
+/// 角色面板立绘 (CArmour 朝南站立帧)
+#[derive(Resource, Default)]
+pub struct Portrait(pub Option<(Handle<Image>, Vec2)>);
+
+/// 进入游戏时按性别取立绘帧 → 独立 Image (面板 ImageNode 用)
+fn make_portrait(
+    mut commands: Commands,
+    world: Res<World>,
+    mut images: ResMut<Assets<Image>>,
+    net: Res<Net>,
+) {
+    let female = net
+        .characters
+        .iter()
+        .find(|c| Some(&c.id) == net.character_id.as_ref())
+        .map(|c| c.gender == "female")
+        .unwrap_or(false);
+    // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808
+    let idx = if female { 808 + 16 } else { 16 };
+    let portrait = world
+        .hum
+        .as_ref()
+        .and_then(|l| l.image(idx).ok().flatten())
+        .map(|img| {
+            let size = Vec2::new(img.width as f32, img.height as f32);
+            let handle = images.add(Image::new(
+                bevy::render::render_resource::Extent3d {
+                    width: img.width as u32,
+                    height: img.height as u32,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                img.rgba,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+            ));
+            (handle, size)
+        });
+    commands.insert_resource(Portrait(portrait));
 }
 
 // ─────────── 启动 ───────────
@@ -816,8 +862,12 @@ fn camera_follow(q_player: Query<&Player>, mut q_cam: Query<&mut Transform, With
 fn camera_control(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<hud::ChatState>,
     mut q: Query<&mut OrthographicProjection, With<Camera2d>>,
 ) {
+    if chat.active {
+        return;
+    }
     let Ok(mut proj) = q.get_single_mut() else {
         return;
     };
@@ -1165,7 +1215,16 @@ fn net_pump(
                     if net.notices.len() > 6 {
                         net.notices.remove(0);
                     }
-                    net.chatlog.push(message);
+                    net.chatlog.push(("系统".into(), message));
+                    if net.chatlog.len() > 30 {
+                        net.chatlog.remove(0);
+                    }
+                    net.notice_rev += 1;
+                }
+                ServerMessage::ChatMessage {
+                    sender, content, ..
+                } => {
+                    net.chatlog.push((sender, content));
                     if net.chatlog.len() > 30 {
                         net.chatlog.remove(0);
                     }
@@ -1535,10 +1594,14 @@ fn skill_color(id: &str) -> Color {
 fn cast_skills(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<hud::ChatState>,
     mut net: ResMut<Net>,
     remotes: Res<Remotes>,
     mut q: Query<&mut Player>,
 ) {
+    if chat.active {
+        return;
+    }
     let Ok(mut p) = q.get_single_mut() else {
         return;
     };

@@ -331,6 +331,7 @@ pub fn login_setup(mut commands: Commands, skin: Res<Skin>) {
                 BorderColor(EDGE_GOLD),
             ))
             .with_children(|card| {
+                crate::panels::ornate_corners(card);
                 for (label, ph, pw, order) in [
                     ("账 号", "输入账号", false, 0u8),
                     ("密 码", "输入密码", true, 1u8),
@@ -791,6 +792,7 @@ fn spawn_create_panel(commands: &mut Commands, skin: &Skin) {
                     BorderColor(EDGE_GOLD),
                 ))
                 .with_children(|card| {
+                    crate::panels::ornate_corners(card);
                     card.spawn(text(&skin.font, "创 建 角 色", 20.0, TEXT_MAIN));
                     card.spawn(Node {
                         flex_direction: FlexDirection::Column,

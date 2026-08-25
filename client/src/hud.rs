@@ -3,11 +3,14 @@
 //! 1234, 右翼 MP 条+QWER), EXP 细条横贯屏幕底边, 右上 208 方形小地图 + 其下
 //! 任务追踪, 左下玻璃聊天框, 右下七键功能组, 通知堆栈。
 
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::ui::widget::NodeImageMode;
+use bevy::window::Ime;
 
 use crate::panels::{Panel, PanelKind};
 use crate::Net;
+use protocol::{ChatChannel, ClientMessage};
 
 // ── 设计令牌 (design 定稿色板) ──
 pub const GOLD: Color = Color::srgb(0.788, 0.647, 0.361); // #c9a55c
@@ -98,6 +101,15 @@ pub struct MiniDot(usize);
 pub struct TrackerBody;
 #[derive(Component)]
 pub struct ChatBody;
+#[derive(Component)]
+pub struct ChatInputText;
+
+/// 聊天输入态: active 时键盘由聊天独占 (toggle/技能/缩放键均应跳过)
+#[derive(Resource, Default)]
+pub struct ChatState {
+    pub active: bool,
+    pub buffer: String,
+}
 /// 右下功能键 (点击开关对应面板; None = 未实现灰态)
 #[derive(Component)]
 pub struct MenuBtn(pub Option<PanelKind>);
@@ -115,7 +127,13 @@ fn text(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) -> i
 }
 
 /// 52px 技能格 (设计稿: 暗底 1px 边 4px 圆角, 键位数字左上角)
-fn spawn_skill_slot(parent: &mut ChildBuilder, skin: &Skin, idx: Option<usize>, key: &str) {
+fn spawn_skill_slot(
+    parent: &mut ChildBuilder,
+    skin: &Skin,
+    idx: Option<usize>,
+    key: &str,
+    icon: Option<Handle<Image>>,
+) {
     let active = idx.is_some();
     parent
         .spawn((
@@ -150,8 +168,20 @@ fn spawn_skill_slot(parent: &mut ChildBuilder, skin: &Skin, idx: Option<usize>, 
                 TextColor(if active { TEXT_DIM } else { DISABLED }),
             ));
             if let Some(i) = idx {
-                // 技能名 (双字, 图标素材接入前的占位)
-                s.spawn((text(&skin.font, "", 14.0, TEXT_MAIN), SkillNameText(i)));
+                if let Some(icon) = icon {
+                    // MagIcon 图标 (格内 40×40)
+                    s.spawn((
+                        Node {
+                            width: Val::Px(40.0),
+                            height: Val::Px(40.0),
+                            ..default()
+                        },
+                        ImageNode::new(icon),
+                    ));
+                } else {
+                    // 技能名 (双字, 无图标时的占位)
+                    s.spawn((text(&skin.font, "", 14.0, TEXT_MAIN), SkillNameText(i)));
+                }
                 // 冷却遮罩: 自顶向下按剩余比例覆盖
                 s.spawn((
                     Node {
@@ -234,7 +264,59 @@ fn spawn_stat_bar(
 }
 
 /// 进入游戏时构建 HUD (全部绝对定位, 对齐设计稿)
-pub fn setup(mut commands: Commands, skin: Res<Skin>, net: Res<Net>) {
+/// 技能 id → MagIcon.Lib 帧号 (逐帧人工核对: 火球/治愈/毒骷髅/焰符/闪电/
+/// 火焰剑/雪花/狮头/冲撞人形)
+fn magicon_index(id: &str) -> Option<usize> {
+    Some(match id {
+        "huoqiu" => 0,
+        "zhiyu" => 2,
+        "shidu" => 10,
+        "huofu" => 16,
+        "leidian" => 20,
+        "bingpaoxiao" => 46,
+        "liehuo" => 50,
+        "shizihou" => 58,
+        "yeman" => 60,
+        _ => return None,
+    })
+}
+
+/// 按技能表顺序解码图标帧 → 独立 Image
+fn load_skill_icons(
+    net: &Net,
+    data_dir: Option<&std::path::Path>,
+    images: &mut Assets<Image>,
+) -> Vec<Option<Handle<Image>>> {
+    let lib = data_dir
+        .and_then(|d| std::fs::read(d.join("MagIcon.Lib")).ok())
+        .and_then(|d| mir_formats::crystal_lib::CrystalLib::parse(d).ok());
+    net.skills
+        .iter()
+        .map(|s| {
+            let img = lib.as_ref()?.image(magicon_index(&s.id)?).ok().flatten()?;
+            Some(images.add(Image::new(
+                bevy::render::render_resource::Extent3d {
+                    width: img.width as u32,
+                    height: img.height as u32,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                img.rgba,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+            )))
+        })
+        .collect()
+}
+
+pub fn setup(
+    mut commands: Commands,
+    skin: Res<Skin>,
+    net: Res<Net>,
+    world: Res<crate::World>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let icons = load_skill_icons(&net, world.mon_dir.parent(), &mut images);
     // ── 底部中央动作条 (透明背景, gap 22) ──
     commands
         .spawn((
@@ -267,7 +349,8 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>, net: Res<Net>) {
                 .with_children(|row| {
                     for (i, key) in ["1", "2", "3", "4", "5"].iter().enumerate() {
                         let idx = (i < net.skills.len().clamp(3, 5)).then_some(i);
-                        spawn_skill_slot(row, &skin, if i < 3 { idx } else { None }, key);
+                        let icon = icons.get(i).cloned().flatten();
+                        spawn_skill_slot(row, &skin, if i < 3 { idx } else { None }, key, icon);
                     }
                 });
             });
@@ -336,7 +419,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>, net: Res<Net>) {
                 })
                 .with_children(|row| {
                     for key in ["Q", "W", "E", "R", "T"] {
-                        spawn_skill_slot(row, &skin, None, key);
+                        spawn_skill_slot(row, &skin, None, key, None);
                     }
                 });
             });
@@ -533,8 +616,11 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>, net: Res<Net>) {
                 BorderRadius::all(Val::Px(4.0)),
             ))
             .with_children(|input| {
-                input.spawn(text(&skin.font, "系统", 12.0, GOLD));
-                input.spawn(text(&skin.font, "聊天功能开发中…", 13.0, DISABLED));
+                input.spawn(text(&skin.font, "世界", 12.0, GOLD));
+                input.spawn((
+                    text(&skin.font, "按 Enter 聊天", 13.0, DISABLED),
+                    ChatInputText,
+                ));
             });
         });
 
@@ -624,6 +710,86 @@ pub fn teardown(mut commands: Commands, q: Query<Entity, With<HudRoot>>) {
 }
 
 /// 功能键点击 → 开关对应面板
+/// 聊天输入: Enter 开启/发送, Esc 取消, 字符/退格编辑, IME 中文提交
+#[allow(clippy::type_complexity)]
+pub fn chat_input(
+    mut chat: ResMut<ChatState>,
+    net: Res<Net>,
+    mut keys: EventReader<KeyboardInput>,
+    mut ime: EventReader<Ime>,
+    mut windows: Query<&mut Window>,
+    mut q_line: Query<(&mut Text, &mut TextColor), With<ChatInputText>>,
+) {
+    for ev in keys.read() {
+        if !ev.state.is_pressed() {
+            continue;
+        }
+        match &ev.logical_key {
+            Key::Enter => {
+                if chat.active {
+                    let content = chat.buffer.trim().to_string();
+                    if !content.is_empty() {
+                        net.send(ClientMessage::Chat {
+                            channel: ChatChannel::World,
+                            content,
+                            target_name: None,
+                        });
+                    }
+                    chat.active = false;
+                    chat.buffer.clear();
+                } else {
+                    chat.active = true;
+                    chat.buffer.clear();
+                }
+            }
+            Key::Escape if chat.active => {
+                chat.active = false;
+                chat.buffer.clear();
+            }
+            Key::Backspace if chat.active => {
+                chat.buffer.pop();
+            }
+            Key::Space if chat.active && chat.buffer.chars().count() < 120 => {
+                chat.buffer.push(' ');
+            }
+            Key::Character(s) if chat.active => {
+                for c in s.chars().filter(|c| !c.is_control()) {
+                    if chat.buffer.chars().count() < 120 {
+                        chat.buffer.push(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // 中文输入法整段提交
+    for ev in ime.read() {
+        if let Ime::Commit { value, .. } = ev {
+            if chat.active {
+                for c in value.chars() {
+                    if chat.buffer.chars().count() < 120 {
+                        chat.buffer.push(c);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(mut w) = windows.get_single_mut() {
+        if w.ime_enabled != chat.active {
+            w.ime_enabled = chat.active;
+        }
+    }
+    for (mut t, mut color) in q_line.iter_mut() {
+        if chat.active {
+            **t = format!("{}_", chat.buffer);
+            color.0 = TEXT_MAIN;
+        } else {
+            **t = "按 Enter 聊天".into();
+            color.0 = DISABLED;
+        }
+    }
+}
+
 pub fn menu_clicks(
     q_btn: Query<(&Interaction, &MenuBtn), Changed<Interaction>>,
     mut q_panel: Query<(&Panel, &mut Node)>,
@@ -828,9 +994,10 @@ pub fn update(
                 if recent.is_empty() {
                     body.spawn(text(&skin.font, "[系统] 欢迎来到玛法大陆", 13.0, TEXT_DIM));
                 }
-                for line in recent {
+                for (tag, line) in recent {
+                    let tag_color = if tag == "系统" { EXP_GOLD } else { GOLD };
                     body.spawn(Node::default()).with_children(|row| {
-                        row.spawn(text(&skin.font, "[系统] ", 13.0, EXP_GOLD));
+                        row.spawn(text(&skin.font, format!("[{tag}] "), 13.0, tag_color));
                         row.spawn(text(&skin.font, line, 13.0, TEXT_SUB));
                     });
                 }

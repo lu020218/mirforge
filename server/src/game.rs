@@ -847,11 +847,61 @@ impl Game {
             } => {
                 self.handle_use_skill(&conn_id, &skill_id, target_id).await;
             }
+            ClientMessage::Chat {
+                channel, content, ..
+            } => {
+                self.handle_chat(&conn_id, channel, content).await;
+            }
             other => {
                 // M3 玩法消息占位
                 warn!("暂未实现的消息: {other:?}");
             }
         }
+    }
+
+    /// 聊天: World 全服广播, Zone 同区广播; 其余频道未实现仅回显自己
+    async fn handle_chat(&self, conn_id: &str, channel: protocol::ChatChannel, content: String) {
+        let Some(sender) = self
+            .players
+            .values()
+            .find(|p| p.conn_id == conn_id && p.connected)
+        else {
+            return;
+        };
+        let content: String = content.trim().chars().take(120).collect();
+        if content.is_empty() {
+            return;
+        }
+        let msg = ServerMessage::ChatMessage {
+            channel,
+            sender: sender.character.name.clone(),
+            content,
+            timestamp: now_ms(),
+        };
+        for target in self.chat_targets(conn_id, channel) {
+            send_to(&self.sessions, &target, msg.clone()).await;
+        }
+    }
+
+    /// 频道可见目标的 conn_id 列表 (含发送者)
+    fn chat_targets(&self, conn_id: &str, channel: protocol::ChatChannel) -> Vec<String> {
+        let Some(sender) = self
+            .players
+            .values()
+            .find(|p| p.conn_id == conn_id && p.connected)
+        else {
+            return Vec::new();
+        };
+        self.players
+            .values()
+            .filter(|p| p.connected)
+            .filter(|p| match channel {
+                protocol::ChatChannel::World => true,
+                protocol::ChatChannel::Zone => p.zone == sender.zone,
+                _ => p.conn_id == conn_id,
+            })
+            .map(|p| p.conn_id.clone())
+            .collect()
     }
 
     fn account_of(&self, conn_id: &str) -> Option<String> {
@@ -2199,5 +2249,40 @@ mod tests {
         // 前置完成 → 猎鹿可接
         g.handle_accept_quest("c1", "hunt_deer").await;
         assert_eq!(g.players["char1"].quests["hunt_deer"].state, 1);
+    }
+
+    #[tokio::test]
+    async fn chat_targets_by_channel() {
+        let mut g = test_game().await;
+        // 同区两人 + 异区一人
+        g.players
+            .insert("char1".into(), test_player("c1", "z1", 5.5, 5.5));
+        let mut p2 = test_player("c2", "z1", 6.5, 5.5);
+        p2.character.id = "char2".into();
+        g.players.insert("char2".into(), p2);
+        let mut p3 = test_player("c3", "z2", 5.5, 5.5);
+        p3.character.id = "char3".into();
+        g.players.insert("char3".into(), p3);
+
+        let mut world = g.chat_targets("c1", protocol::ChatChannel::World);
+        world.sort();
+        assert_eq!(world, ["c1", "c2", "c3"], "世界频道应全服可见");
+        let mut zone = g.chat_targets("c1", protocol::ChatChannel::Zone);
+        zone.sort();
+        assert_eq!(zone, ["c1", "c2"], "区域频道仅同区可见");
+        assert_eq!(
+            g.chat_targets("c1", protocol::ChatChannel::Whisper),
+            ["c1"],
+            "未实现频道仅回显自己"
+        );
+        // 断线者不可见
+        g.players.get_mut("char2").unwrap().connected = false;
+        let mut zone = g.chat_targets("c1", protocol::ChatChannel::Zone);
+        zone.sort();
+        assert_eq!(zone, ["c1"]);
+        // 未在场的连接无目标
+        assert!(g
+            .chat_targets("nobody", protocol::ChatChannel::World)
+            .is_empty());
     }
 }
