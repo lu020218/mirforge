@@ -82,6 +82,15 @@
   <textarea id="skills-json" spellcheck="false"></textarea>
   <h3 style="color:#c9a55c;font-size:14px">任务 quests.json</h3>
   <textarea id="quests-json" spellcheck="false"></textarea>
+  <h3 style="color:#c9a55c;font-size:14px">区域 zones/*.json <span style="color:#5b5648;font-size:12px">(保存后该区怪物按新配置立即重建)</span></h3>
+  <div class="row">
+    <select id="zone-sel" onchange="showZone()" style="background:#0e1017;color:#e8e2d0;border:1px solid #2a2d3c;border-radius:3px;padding:6px 10px"></select>
+    <button onclick="saveZone()">保存区域</button>
+    <span style="color:#9a917c;font-size:12px">接入新地图:</span>
+    <select id="zone-avail" style="background:#0e1017;color:#e8e2d0;border:1px solid #2a2d3c;border-radius:3px;padding:6px 10px;width:140px"></select>
+    <button onclick="addZone()">接入</button>
+  </div>
+  <textarea id="zone-json" spellcheck="false" style="min-height:220px"></textarea>
 </div>
 <script>
 const token = localStorage.getItem('admToken') || '';
@@ -135,7 +144,7 @@ function showTab(t) {
     document.getElementById('tab-' + k).classList.toggle('on', k === t);
     document.getElementById('pane-' + k).classList.toggle('on', k === t);
   }
-  if (t === 'config') loadCfg();
+  if (t === 'config') { loadCfg(); loadZones(); }
 }
 const ITEM_COLS = ['template','name','slot','attack','defense','hp','image','shape'];
 const NUM_COLS = new Set(['attack','defense','hp','image','shape']);
@@ -185,6 +194,44 @@ async function saveCfg(kind) {
   const resp = await r.json();
   document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.errors.join('\n');
   if (resp.ok) flash(kind + ' 已保存并热重载');
+}
+let zoneData = {};
+async function loadZones() {
+  const r = await fetch('/api/zones', { headers: hdr });
+  if (!r.ok) return;
+  const d = await r.json();
+  zoneData = Object.fromEntries(d.zones.map(z => [z.map, z]));
+  const sel = document.getElementById('zone-sel');
+  sel.innerHTML = d.zones.map(z => `<option value="${z.map}">${z.name} [${z.map}]</option>`).join('');
+  const avail = document.getElementById('zone-avail');
+  avail.innerHTML = d.available.map(m => `<option>${m}</option>`).join('');
+  showZone();
+}
+function showZone() {
+  const z = zoneData[document.getElementById('zone-sel').value];
+  document.getElementById('zone-json').value = z ? JSON.stringify(z.sidecar, null, 2) : '';
+}
+async function saveZone() {
+  const map = document.getElementById('zone-sel').value;
+  let sidecar;
+  try { sidecar = JSON.parse(document.getElementById('zone-json').value); }
+  catch (e) { document.getElementById('cfg-err').textContent = 'JSON 语法错误: ' + e.message; return; }
+  const r = await fetch('/api/zones', { method: 'PUT',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ map, sidecar }) });
+  const resp = await r.json();
+  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
+  if (resp.ok) { flash(map + ' 已保存并热重载'); loadZones(); }
+}
+async function addZone() {
+  const map = document.getElementById('zone-avail').value;
+  if (!map) return;
+  const r = await fetch('/api/zones', { method: 'POST',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ map }) });
+  const resp = await r.json();
+  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
+  if (resp.ok) { flash(map + ' 已接入 (记得配置客户端小地图帧号与传送门)'); loadZones(); }
 }
 tick(); setInterval(tick, 2000);
 </script>

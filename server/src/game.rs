@@ -40,6 +40,137 @@ pub struct Zone {
     pub spawn: (f64, f64),
     pub portals: Vec<Portal>,
     pub monster_spawns: Vec<MonsterSpawn>,
+    /// 原始边车 (管理台回显/写回)
+    pub sidecar: ZoneSidecar,
+}
+
+// ── 边车配置 (zones/<map>.json; 服务器与管理台共用) ──
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ZoneSidecar {
+    pub name: Option<String>,
+    pub spawn: Option<(f64, f64)>,
+    #[serde(default)]
+    pub portals: Vec<PortalSidecar>,
+    #[serde(default)]
+    pub monsters: Vec<MonsterSidecar>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct PortalSidecar {
+    pub x: f64,
+    pub y: f64,
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_y: Option<f64>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct DropSidecar {
+    pub item: String,
+    pub chance: f64,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct MonsterSidecar {
+    pub template: String,
+    /// 客户端怪物图库号 (Data/Monster/{image:03}.Lib)
+    pub image: u16,
+    pub x: f64,
+    pub y: f64,
+    #[serde(default = "one")]
+    pub count: u32,
+    #[serde(default)]
+    pub passive: bool,
+    #[serde(default = "default_hp")]
+    pub hp: i32,
+    #[serde(default)]
+    pub damage: i32,
+    #[serde(default = "default_exp")]
+    pub exp: u64,
+    #[serde(default)]
+    pub drops: Vec<DropSidecar>,
+    #[serde(default = "default_radius")]
+    pub radius: f64,
+}
+
+fn one() -> u32 {
+    1
+}
+fn default_radius() -> f64 {
+    5.0
+}
+fn default_hp() -> i32 {
+    30
+}
+fn default_exp() -> u64 {
+    10
+}
+
+/// 从地图文件 + 边车构建区域 (行走网格/出生点吸附)
+pub fn load_zone(map_path: &std::path::Path, map_name: &str, sidecar: ZoneSidecar) -> Option<Zone> {
+    let map = mir_formats::map::parse(&std::fs::read(map_path).ok()?).ok()?;
+    let walk = WalkGrid::from_cells(map.width, map.height, |x, y| {
+        map.cell(x, y).is_some_and(|c| c.blocked)
+    });
+    let want = sidecar
+        .spawn
+        .unwrap_or((map.width as f64 / 2.0, map.height as f64 / 2.0));
+    let spawn = nearest_walkable(&walk, want.0, want.1);
+    let name = sidecar.name.clone().unwrap_or_else(|| map_name.to_string());
+    info!(
+        "区域 {name} [{map_name}] ({:?} {}x{}), 出生点 ({:.1},{:.1}), 传送门 {}",
+        map.kind,
+        map.width,
+        map.height,
+        spawn.0,
+        spawn.1,
+        sidecar.portals.len()
+    );
+    Some(Zone {
+        id: map_name.to_string(),
+        name,
+        walk,
+        spawn,
+        portals: sidecar
+            .portals
+            .iter()
+            .map(|p| Portal {
+                x: p.x,
+                y: p.y,
+                to_zone: p.to.clone(),
+                to_x: p.to_x,
+                to_y: p.to_y,
+            })
+            .collect(),
+        monster_spawns: sidecar
+            .monsters
+            .iter()
+            .map(|m| MonsterSpawn {
+                template: m.template.clone(),
+                image: m.image,
+                x: m.x,
+                y: m.y,
+                count: m.count,
+                radius: m.radius,
+                passive: m.passive,
+                hp: m.hp,
+                damage: m.damage,
+                exp: m.exp,
+                drops: m
+                    .drops
+                    .iter()
+                    .map(|d| DropEntry {
+                        item: d.item.clone(),
+                        chance: d.chance,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        sidecar,
+    })
 }
 
 /// 怪物刷新点（边车配置）：home 附近 radius 内刷 count 只
@@ -394,6 +525,53 @@ pub fn nearest_walkable(walk: &WalkGrid, x: f64, y: f64) -> (f64, f64) {
     (x, y)
 }
 
+/// 按刷新点物化一个区域的怪物 (出生位置吸附可走格)
+fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
+    let mut next = |limit: f64| {
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 7;
+        *rng ^= *rng << 17;
+        (*rng >> 11) as f64 / (1u64 << 53) as f64 * limit
+    };
+    let now = Instant::now();
+    let mut out = Vec::new();
+    for (si, sp) in zone.monster_spawns.iter().enumerate() {
+        for i in 0..sp.count {
+            let want = (
+                sp.x + next(sp.radius * 2.0) - sp.radius,
+                sp.y + next(sp.radius * 2.0) - sp.radius,
+            );
+            let (x, y) = nearest_walkable(&zone.walk, want.0, want.1);
+            out.push(Monster {
+                id: format!("mon_{}_{}_{}_{}", zone.id, sp.image, si, i),
+                template: sp.template.clone(),
+                zone: zone.id.clone(),
+                home: (x, y),
+                roam: sp.radius,
+                x,
+                y,
+                dir: 4,
+                target: None,
+                chasing: false,
+                attack_until: None,
+                pending_hit: None,
+                next_attack: now,
+                next_decide: now,
+                passive: sp.passive,
+                hp: sp.hp,
+                max_hp: sp.hp,
+                damage: sp.damage,
+                exp: sp.exp,
+                drops: sp.drops.clone(),
+                dying_until: None,
+                respawn_at: None,
+                removed_sent: false,
+            });
+        }
+    }
+    out
+}
+
 /// 连接级状态（角色选定前）
 #[derive(Default)]
 struct ConnState {
@@ -458,6 +636,10 @@ pub struct Game {
     /// resume token → account_id
     tokens: HashMap<String, String>,
     monsters: Vec<Monster>,
+    /// 全部可用 .map 文件 (含未接入区域; 管理台新增地图用)
+    map_files: HashMap<String, std::path::PathBuf>,
+    /// 边车目录 (管理台写回)
+    zones_dir: std::path::PathBuf,
     /// 地面物品 (掉落/丢弃)
     ground: Vec<GroundItem>,
     next_drop_id: u64,
@@ -480,52 +662,13 @@ impl Game {
         default_zone: String,
         db: Db,
         sessions: Sessions,
+        map_files: HashMap<String, std::path::PathBuf>,
+        zones_dir: std::path::PathBuf,
     ) -> Self {
-        // 按刷新点物化怪物 (出生位置吸附可走格)
-        let mut monsters = Vec::new();
         let mut rng: u64 = 0x9E3779B97F4A7C15;
-        let mut next = |limit: f64| {
-            rng ^= rng << 13;
-            rng ^= rng >> 7;
-            rng ^= rng << 17;
-            (rng >> 11) as f64 / (1u64 << 53) as f64 * limit
-        };
-        let now = Instant::now();
+        let mut monsters = Vec::new();
         for zone in zones.values() {
-            for sp in &zone.monster_spawns {
-                for i in 0..sp.count {
-                    let want = (
-                        sp.x + next(sp.radius * 2.0) - sp.radius,
-                        sp.y + next(sp.radius * 2.0) - sp.radius,
-                    );
-                    let (x, y) = nearest_walkable(&zone.walk, want.0, want.1);
-                    monsters.push(Monster {
-                        id: format!("mon_{}_{}_{}", sp.image, sp.template, i),
-                        template: sp.template.clone(),
-                        zone: zone.id.clone(),
-                        home: (x, y),
-                        roam: sp.radius,
-                        x,
-                        y,
-                        dir: 4,
-                        target: None,
-                        chasing: false,
-                        attack_until: None,
-                        pending_hit: None,
-                        next_attack: now,
-                        next_decide: now,
-                        passive: sp.passive,
-                        hp: sp.hp,
-                        max_hp: sp.hp,
-                        damage: sp.damage,
-                        exp: sp.exp,
-                        drops: sp.drops.clone(),
-                        dying_until: None,
-                        respawn_at: None,
-                        removed_sent: false,
-                    });
-                }
-            }
+            monsters.extend(materialize_monsters(zone, &mut rng));
         }
         info!("怪物已刷新: {} 只", monsters.len());
         Game {
@@ -537,6 +680,8 @@ impl Game {
             players: HashMap::new(),
             tokens: HashMap::new(),
             monsters,
+            map_files,
+            zones_dir,
             ground: Vec::new(),
             next_drop_id: 1,
             rng: 0x00C0_FFEE_1234_5678,
@@ -574,6 +719,105 @@ impl Game {
                 _ = tick.tick() => self.tick().await,
             }
         }
+    }
+
+    /// 边车热应用: 校验 → 写文件 → 重建区域数据与该区怪物
+    async fn apply_zone_sidecar(
+        &mut self,
+        map: &str,
+        value: serde_json::Value,
+    ) -> Result<(), String> {
+        if !self.zones.contains_key(map) {
+            return Err(format!("区域未加载: {map}"));
+        }
+        let sidecar: ZoneSidecar =
+            serde_json::from_value(value.clone()).map_err(|e| format!("边车解析失败: {e}"))?;
+        // 校验: 掉落物品与传送门目标存在
+        let d = data();
+        for m in &sidecar.monsters {
+            for dr in &m.drops {
+                if !d.items.iter().any(|i| i.template == dr.item) {
+                    return Err(format!("掉落引用不存在的物品: {}", dr.item));
+                }
+            }
+        }
+        for pt in &sidecar.portals {
+            if !self.zones.contains_key(&pt.to) && !self.map_files.contains_key(&pt.to) {
+                return Err(format!("传送门指向不存在的地图: {}", pt.to));
+            }
+        }
+        let map_path = self
+            .map_files
+            .get(map)
+            .cloned()
+            .ok_or_else(|| format!("找不到地图文件: {map}"))?;
+        let zone = load_zone(&map_path, map, sidecar.clone()).ok_or("地图解析失败".to_string())?;
+        // 写回边车文件
+        let path = self.zones_dir.join(format!("{map}.json"));
+        let mut pretty = serde_json::to_string_pretty(&value).unwrap_or_default();
+        pretty.push('\n');
+        std::fs::write(&path, pretty).map_err(|e| format!("写入 {path:?} 失败: {e}"))?;
+        // 热应用: 替换区域 + 重建该区怪物 (先广播 removed)
+        let removed: Vec<String> = self
+            .monsters
+            .iter()
+            .filter(|m| m.zone == map)
+            .map(|m| m.id.clone())
+            .collect();
+        if !removed.is_empty() {
+            let conns = self.zone_conns(map);
+            let entities: Vec<EntityUpdate> = removed
+                .iter()
+                .map(|id| EntityUpdate {
+                    id: id.clone(),
+                    position: None,
+                    hp: None,
+                    animation: None,
+                    dir: None,
+                    removed: Some(true),
+                    armour: None,
+                    weapon: None,
+                })
+                .collect();
+            broadcast_to(
+                &self.sessions,
+                &conns,
+                ServerMessage::StateUpdate {
+                    entities,
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
+        }
+        self.monsters.retain(|m| m.zone != map);
+        let mut rng = self.rng | 1;
+        let fresh = materialize_monsters(&zone, &mut rng);
+        info!("区域 {map} 热重载: 怪物 {} 只", fresh.len());
+        self.monsters.extend(fresh);
+        self.zones.insert(map.to_string(), zone);
+        Ok(())
+    }
+
+    /// 接入新地图: 默认边车 → 加载 → 写文件
+    async fn add_zone(&mut self, map: &str) -> Result<(), String> {
+        let map = map.to_lowercase();
+        if self.zones.contains_key(&map) {
+            return Err(format!("区域已存在: {map}"));
+        }
+        let map_path = self
+            .map_files
+            .get(&map)
+            .cloned()
+            .ok_or_else(|| format!("资源目录中没有该地图: {map}"))?;
+        let sidecar = ZoneSidecar::default();
+        let zone = load_zone(&map_path, &map, sidecar.clone()).ok_or("地图解析失败".to_string())?;
+        let path = self.zones_dir.join(format!("{map}.json"));
+        let mut pretty = serde_json::to_string_pretty(&sidecar).unwrap_or_default();
+        pretty.push('\n');
+        std::fs::write(&path, pretty).map_err(|e| format!("写入 {path:?} 失败: {e}"))?;
+        info!("新区域已接入: {map} ({})", zone.name);
+        self.zones.insert(map.clone(), zone);
+        Ok(())
     }
 
     /// 全员立即存档
@@ -674,6 +918,30 @@ impl Game {
             AdminCmd::SaveAll(done) => {
                 self.save_all().await;
                 let _ = done.send(());
+            }
+            AdminCmd::ZonesInfo(reply) => {
+                let zones: Vec<crate::admin::ZoneRow> = self
+                    .zones
+                    .values()
+                    .map(|z| crate::admin::ZoneRow {
+                        map: z.id.clone(),
+                        name: z.name.clone(),
+                        sidecar: serde_json::to_value(&z.sidecar).unwrap_or_default(),
+                    })
+                    .collect();
+                let available: Vec<String> = self
+                    .map_files
+                    .keys()
+                    .filter(|m| !self.zones.contains_key(*m))
+                    .cloned()
+                    .collect();
+                let _ = reply.send(crate::admin::ZonesInfo { zones, available });
+            }
+            AdminCmd::PutZone { map, sidecar, done } => {
+                let _ = done.send(self.apply_zone_sidecar(&map, sidecar).await);
+            }
+            AdminCmd::AddZone { map, done } => {
+                let _ = done.send(self.add_zone(&map).await);
             }
         }
     }
@@ -2253,6 +2521,7 @@ mod tests {
                         chance: 1.0,
                     }],
                 }],
+                sidecar: ZoneSidecar::default(),
             },
         );
         zones.insert(
@@ -2264,6 +2533,7 @@ mod tests {
                 spawn: (5.5, 5.5),
                 portals: vec![],
                 monster_spawns: vec![],
+                sidecar: ZoneSidecar::default(),
             },
         );
         zones
@@ -2272,7 +2542,14 @@ mod tests {
     async fn test_game() -> Game {
         let db = Db::open(":memory:").await.unwrap();
         let (gw, _rx) = crate::gateway::Gateway::new();
-        Game::new(test_zones(), "z1".into(), db, gw.sessions())
+        Game::new(
+            test_zones(),
+            "z1".into(),
+            db,
+            gw.sessions(),
+            HashMap::new(),
+            std::path::PathBuf::from("zones"),
+        )
     }
 
     fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {

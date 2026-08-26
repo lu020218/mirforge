@@ -1,12 +1,74 @@
 {
-  "name": "比奇省",
-  "spawn": [330.5, 150.5],
-  "portals": [
-    { "x": 330.5, "y": 158.5, "to": "2.map" }
-  ],
   "monsters": [
-    { "template": "chicken", "image": 3, "x": 333.0, "y": 148.0, "count": 4, "radius": 3, "passive": true, "hp": 12, "exp": 5, "drops": [{ "item": "wooden_sword", "chance": 0.2 }] },
-    { "template": "deer", "image": 4, "x": 338.0, "y": 152.0, "count": 2, "radius": 4, "passive": true, "hp": 30, "exp": 8, "drops": [{ "item": "cloth_armor", "chance": 0.25 }] },
-    { "template": "scarecrow", "image": 5, "x": 342.0, "y": 157.0, "count": 3, "radius": 4, "hp": 90, "damage": 4, "exp": 20, "drops": [{ "item": "iron_sword", "chance": 1.0 }, { "item": "leather_armor", "chance": 0.4 }] }
+    {
+      "count": 4,
+      "damage": 0,
+      "drops": [
+        {
+          "chance": 0.2,
+          "item": "wooden_sword"
+        }
+      ],
+      "exp": 5,
+      "hp": 12,
+      "image": 3,
+      "passive": true,
+      "radius": 3,
+      "template": "chicken",
+      "x": 333,
+      "y": 148
+    },
+    {
+      "count": 2,
+      "damage": 0,
+      "drops": [
+        {
+          "chance": 0.25,
+          "item": "cloth_armor"
+        }
+      ],
+      "exp": 8,
+      "hp": 30,
+      "image": 4,
+      "passive": true,
+      "radius": 4,
+      "template": "deer",
+      "x": 338,
+      "y": 152
+    },
+    {
+      "count": 3,
+      "damage": 4,
+      "drops": [
+        {
+          "chance": 1,
+          "item": "iron_sword"
+        },
+        {
+          "chance": 0.4,
+          "item": "leather_armor"
+        }
+      ],
+      "exp": 20,
+      "hp": 90,
+      "image": 5,
+      "passive": false,
+      "radius": 4,
+      "template": "scarecrow",
+      "x": 342,
+      "y": 157
+    }
+  ],
+  "name": "比奇省",
+  "portals": [
+    {
+      "to": "2.map",
+      "x": 330.5,
+      "y": 158.5
+    }
+  ],
+  "spawn": [
+    330.5,
+    150.5
   ]
 }

@@ -26,6 +26,32 @@ pub enum AdminCmd {
         done: oneshot::Sender<bool>,
     },
     SaveAll(oneshot::Sender<()>),
+    /// 区域列表 + 可接入地图
+    ZonesInfo(oneshot::Sender<ZonesInfo>),
+    /// 边车更新 (校验/写回/热重载该区怪物)
+    PutZone {
+        map: String,
+        sidecar: serde_json::Value,
+        done: oneshot::Sender<Result<(), String>>,
+    },
+    /// 接入新地图 (默认边车)
+    AddZone {
+        map: String,
+        done: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+#[derive(Serialize)]
+pub struct ZonesInfo {
+    pub zones: Vec<ZoneRow>,
+    pub available: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ZoneRow {
+    pub map: String,
+    pub name: String,
+    pub sidecar: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -236,6 +262,93 @@ async fn api_config_put(
     }))
 }
 
+async fn api_zones_get(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ZonesInfo>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let (tx, rx) = oneshot::channel();
+    st.tx
+        .send(AdminCmd::ZonesInfo(tx))
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    rx.await
+        .map(Json)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
+#[derive(Deserialize)]
+struct PutZoneReq {
+    map: String,
+    sidecar: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct AddZoneReq {
+    map: String,
+}
+
+#[derive(Serialize)]
+struct ZoneOpResp {
+    ok: bool,
+    error: Option<String>,
+}
+
+fn zone_resp(r: Result<(), String>) -> Json<ZoneOpResp> {
+    match r {
+        Ok(()) => Json(ZoneOpResp {
+            ok: true,
+            error: None,
+        }),
+        Err(e) => Json(ZoneOpResp {
+            ok: false,
+            error: Some(e),
+        }),
+    }
+}
+
+async fn api_zones_put(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PutZoneReq>,
+) -> Result<Json<ZoneOpResp>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let (tx, rx) = oneshot::channel();
+    st.tx
+        .send(AdminCmd::PutZone {
+            map: req.map,
+            sidecar: req.sidecar,
+            done: tx,
+        })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    rx.await
+        .map(zone_resp)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn api_zones_add(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AddZoneReq>,
+) -> Result<Json<ZoneOpResp>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let (tx, rx) = oneshot::channel();
+    st.tx
+        .send(AdminCmd::AddZone {
+            map: req.map,
+            done: tx,
+        })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    rx.await
+        .map(zone_resp)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("admin.html"))
 }
@@ -260,6 +373,10 @@ pub fn spawn() -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         .route("/api/kick", post(api_kick))
         .route("/api/save", post(api_save))
         .route("/api/config", get(api_config_get).put(api_config_put))
+        .route(
+            "/api/zones",
+            get(api_zones_get).put(api_zones_put).post(api_zones_add),
+        )
         .with_state(state);
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {
