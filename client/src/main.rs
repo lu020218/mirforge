@@ -267,7 +267,7 @@ struct World {
     libs: HashMap<String, Option<CrystalLib>>,
     atlas: AtlasCpu,
     pages: Vec<Handle<Image>>,
-    frames: HashMap<(Layer, i16, i32), Option<FrameRef>>,
+    frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
     chunks: HashMap<(i32, i32), Entity>,
     hum: Option<CrystalLib>,
     walk: WalkGrid,
@@ -355,12 +355,24 @@ impl World {
 
     /// 取帧（按需解码进图集）
     fn frame(&mut self, layer: Layer, front_lib: i16, idx: i32) -> Option<FrameRef> {
-        let key = (layer, front_lib, idx);
+        self.frame_ex(layer, front_lib, idx, false)
+    }
+
+    /// blend=true: 加色混合帧 (灯光/法阵光晕)。Bevy Sprite 无逐精灵混合
+    /// 模式, 用标准近似: alpha=像素亮度 (黑=全透明, 等效柔性 additive)
+    fn frame_ex(
+        &mut self,
+        layer: Layer,
+        front_lib: i16,
+        idx: i32,
+        blend: bool,
+    ) -> Option<FrameRef> {
+        let key = (layer, front_lib, idx, blend);
         if let Some(cached) = self.frames.get(&key) {
             return *cached;
         }
         let fref = (|| {
-            let img = match layer {
+            let mut img = match layer {
                 Layer::Hum => self.hum.as_ref()?.image(idx as usize).ok().flatten()?,
                 Layer::Mon(n) => {
                     let name = format!("mon{n:03}");
@@ -383,6 +395,11 @@ impl World {
                     lib.image(idx as usize).ok().flatten()?
                 }
             };
+            if blend {
+                for px in img.rgba.chunks_exact_mut(4) {
+                    px[3] = px[3].min(px[0].max(px[1]).max(px[2]));
+                }
+            }
             let placed = self
                 .atlas
                 .insert(img.width as u32, img.height as u32, &img.rgba)?;
@@ -1042,7 +1059,8 @@ fn spawn_chunk(
             // front: 标准尺寸画地板层; 非标准尺寸或带动画的锚底进对象层
             // (Crystal: floor 画标准基帧, 对象层跳过"标准且无动画", 动画帧覆盖地板)
             if cell.front >= 0 {
-                if let Some(f) = world.frame(Layer::Front, cell.front_lib, cell.front) {
+                let blend = cell.ani_frame & 0x80 > 0;
+                if let Some(f) = world.frame_ex(Layer::Front, cell.front_lib, cell.front, blend) {
                     let frames = cell.ani_frame & 0x7F;
                     if is_floor_size(f.size) {
                         placed.push((f, cx, cy, 2.0, false));
@@ -1055,6 +1073,7 @@ fn spawn_chunk(
                                 base: cell.front,
                                 frames,
                                 tick: cell.ani_tick,
+                                blend,
                                 cx,
                                 cy,
                                 z,
@@ -1115,6 +1134,8 @@ struct AnimatedTile {
     base: i32,
     frames: u8,
     tick: u8,
+    /// 加色混合光效 (ani_frame 0x80 位)
+    blend: bool,
     cx: i32,
     cy: i32,
     z: f32,
@@ -1139,7 +1160,7 @@ fn animate_tiles(
     for (a, mut sp, mut tf, mut vis) in q.iter_mut() {
         let (n, k) = (a.frames as u32, a.tick as u32);
         let idx = a.base + ((count % (n + n * k)) / (1 + k)) as i32;
-        if let Some(f) = world.frame(Layer::Front, a.lib, idx) {
+        if let Some(f) = world.frame_ex(Layer::Front, a.lib, idx, a.blend) {
             world.ensure_pages(&mut images);
             sp.image = world.pages[f.page].clone();
             sp.rect = Some(f.rect);
