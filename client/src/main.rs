@@ -95,6 +95,7 @@ fn main() {
         .init_resource::<screens::CharSelectState>()
         .init_resource::<hud::ChatState>()
         .init_resource::<MiniMap>()
+        .init_resource::<Zoom>()
         .add_systems(
             Update,
             (
@@ -982,32 +983,50 @@ fn camera_follow(q_player: Query<&Player>, mut q_cam: Query<&mut Transform, With
 
 // ─────────── 镜头 ───────────
 
+/// 世界缩放档 = 精灵的物理像素放大倍数。恒为整数, 保证 nearest 采样
+/// 下每个源像素占等宽物理像素 (非整数倍会让像素时宽时窄, 观感发虚)
+#[derive(Resource)]
+struct Zoom(u32);
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Zoom(2)
+    }
+}
+
 fn camera_control(
-    time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     chat: Res<hud::ChatState>,
+    mut zoom: ResMut<Zoom>,
+    windows: Query<&Window>,
     mut q: Query<&mut OrthographicProjection, With<Camera2d>>,
 ) {
-    if chat.active {
-        return;
+    if !chat.active {
+        if keys.just_pressed(KeyCode::PageUp) || keys.just_pressed(KeyCode::Equal) {
+            zoom.0 = (zoom.0 + 1).min(6);
+        }
+        if keys.just_pressed(KeyCode::PageDown) || keys.just_pressed(KeyCode::Minus) {
+            zoom.0 = zoom.0.saturating_sub(1).max(1);
+        }
+        if keys.just_pressed(KeyCode::KeyF) {
+            zoom.0 = match zoom.0 {
+                2 => 3,
+                3 => 4,
+                4 => 1,
+                _ => 2,
+            };
+        }
     }
+    // 投影 scale = 窗口缩放系数 / 档位 → 物理放大恰为 zoom 整数倍
+    let Ok(win) = windows.get_single() else {
+        return;
+    };
     let Ok(mut proj) = q.get_single_mut() else {
         return;
     };
-
-    if keys.pressed(KeyCode::PageUp) || keys.pressed(KeyCode::Equal) {
-        proj.scale = (proj.scale * (1.0 - time.delta_secs())).max(0.2);
-    }
-    if keys.pressed(KeyCode::PageDown) || keys.pressed(KeyCode::Minus) {
-        proj.scale = (proj.scale * (1.0 + time.delta_secs())).min(6.0);
-    }
-    if keys.just_pressed(KeyCode::KeyF) {
-        // 整数倍缩放循环 1x → 2x → 3x (高分屏像素锐利档)
-        proj.scale = match proj.scale {
-            s if s > 0.9 => 0.5,
-            s if s > 0.4 => 1.0 / 3.0,
-            _ => 1.0,
-        };
+    let target = win.resolution.scale_factor() / zoom.0 as f32;
+    if (proj.scale - target).abs() > 1e-4 {
+        proj.scale = target;
     }
 }
 
