@@ -227,6 +227,10 @@ struct Remote {
     anim: u8,
     dir: usize,
     anim_t: f64,
+    /// 行走相位 (累计位移格数): 脚步帧与地面锁定, 走一格恰好一轮 6 帧
+    walk_phase: f64,
+    /// 最近实际位移时刻 (行走动画 0.25s 去抖, 防插值追上目标后站/走高频交替)
+    last_move_t: f64,
     last_seen: f64,
 }
 
@@ -1652,37 +1656,50 @@ fn remote_step(
             gone.push(id.clone());
             continue;
         }
-        // 朝目标插值: 速度按动画档, 距离偏大时加速收敛防积压
+        // 朝目标插值: 速度贴近服务器实速 (怪物游荡 0.8/追击 1.8 格/s),
+        // 距离积压时按 dist*4 加速收敛 — 快怪自动跟上, 慢怪不会瞬间追完
         let d = r.target - r.pos;
         let dist = d.length();
         let speed = match r.anim {
             2 => RUN_SPEED,
-            1 => WALK_SPEED * if r.image.is_some() { 1.6 } else { 1.0 },
+            1 => {
+                if r.image.is_some() {
+                    0.9
+                } else {
+                    WALK_SPEED
+                }
+            }
             _ => 0.0,
         };
         let step = (speed * dt).max(dist * 4.0 * dt);
-        let moving = dist > 0.02 && r.anim < 3;
-        if moving {
+        if dist > 0.02 && r.anim < 3 {
             r.dir = dir8_from(d.x, d.y);
-            r.pos += if dist <= step { d } else { d / dist * step };
-        } else if r.anim < 3 {
+            let adv = dist.min(step);
+            r.pos += d / dist * adv;
+            r.walk_phase += adv;
+            r.last_move_t = now;
+        } else if r.anim < 3 && dist > 0.0 {
             r.pos = r.target;
         }
         r.anim_t += dt;
+        // 行走动画去抖: 最近 0.25s 内有实际位移才算在走
+        let walking = r.anim < 3 && now - r.last_move_t < 0.25;
+        // 脚步帧 = 位移相位 × 6 (走一格一轮), 与地面锁定不受插值快慢影响
+        let foot = (r.walk_phase * 6.0) as usize % 6;
         // 帧表: 玩家=CArmour (站/走/跑), 怪物=Mon 库 (站/走/攻/死)
         let (layer, frame_idx) = if let Some(n) = r.image {
             let idx = match r.anim {
                 4 => 144 + r.dir * 10 + (((r.anim_t / 0.13) as usize).min(9)), // 死亡一次性, 停在末帧
                 3 => 80 + r.dir * 6 + ((r.anim_t / 0.15) as usize % 6),
-                _ if moving => 32 + r.dir * 6 + ((r.anim_t / 0.12) as usize % 6),
+                _ if walking => 32 + r.dir * 6 + foot,
                 _ => r.dir * 4 + ((r.anim_t / 0.25) as usize % 4),
             };
             (Layer::Mon(n), idx)
         } else {
-            let idx = if moving && r.anim == 2 {
-                80 + r.dir * 6 + ((r.anim_t / RUN_FRAME_DT) as usize % 6)
-            } else if moving {
-                32 + r.dir * 6 + ((r.anim_t / WALK_FRAME_DT) as usize % 6)
+            let idx = if walking && r.anim == 2 {
+                80 + r.dir * 6 + foot
+            } else if walking {
+                32 + r.dir * 6 + foot
             } else {
                 r.dir * 4 + ((r.anim_t / 0.2) as usize % 4)
             };
