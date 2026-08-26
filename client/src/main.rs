@@ -68,10 +68,18 @@ fn main() {
                     primary_window: Some(Window {
                         title: "MirForge".into(),
                         present_mode: PresentMode::AutoVsync,
-                        // 覆盖系统 DPI 使 UI 与设计稿 (1920×1080 基准) 1:1;
-                        // 启动后最大化适配屏幕 (见 setup)
+                        // 覆盖系统 DPI: adapt_scale 按窗口高动态设缩放系数,
+                        // UI 恒以 1080 逻辑高适配 (设计稿 1:1 基准)
                         resolution: bevy::window::WindowResolution::new(1600.0, 900.0)
                             .with_scale_factor_override(1.0),
+                        position: bevy::window::WindowPosition::Centered(
+                            bevy::window::MonitorSelection::Primary,
+                        ),
+                        resize_constraints: bevy::window::WindowResizeConstraints {
+                            min_width: 800.0,
+                            min_height: 600.0,
+                            ..default()
+                        },
                         ..default()
                     }),
                     ..default()
@@ -520,11 +528,7 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut net: ResMut<Net>,
     mut next: ResMut<NextState<Screen>>,
-    mut windows: Query<&mut Window>,
 ) {
-    if let Ok(mut w) = windows.get_single_mut() {
-        w.set_maximized(true);
-    }
     let root = std::env::var("MIRFORGE_RES").unwrap_or_else(|_| {
         error!("请设置 MIRFORGE_RES 指向传奇资源目录");
         std::process::exit(2);

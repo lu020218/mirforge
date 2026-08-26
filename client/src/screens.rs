@@ -17,18 +17,18 @@ const BTN_GOLD_BG: Color = Color::srgb(0.216, 0.176, 0.098); // #372d19 (渐变�
 const SEL_BG: Color = Color::srgb(0.103, 0.100, 0.113);
 const LIST_BG: Color = Color::srgba(0.051, 0.059, 0.094, 0.70);
 
-/// 分辨率适配: 覆盖窗口 scale factor = 物理高/1080, 使逻辑高恒为设计稿
-/// 基准 1080 —— 所有 UI 直接用设计稿 px 值即与设计稿 1:1, 任意分辨率铺满。
-pub fn adapt_scale(mut windows: Query<&mut Window>) {
-    let Ok(mut w) = windows.get_single_mut() else {
+/// 分辨率适配: UiScale = 窗口高/1080 —— UI 布局用设计稿 (1920×1080 基准)
+/// px 原值, 任意窗口尺寸等比缩放铺满。窗口 scale factor 恒为 1.0
+/// (逻辑=物理, 见 main WindowPlugin), 运行时绝不改 override:
+/// bevy_winit 对非最大化窗口会"保持逻辑尺寸、按新系数缩放物理窗口",
+/// 动态调 override 会让窗口逐帧缩小 (反馈循环)。
+pub fn adapt_scale(mut ui_scale: ResMut<UiScale>, windows: Query<&Window>) {
+    let Ok(w) = windows.get_single() else {
         return;
     };
-    let s = (w.resolution.physical_height() as f32 / 1080.0).max(0.5);
-    if w.resolution
-        .scale_factor_override()
-        .is_none_or(|cur| (cur - s).abs() > 0.005)
-    {
-        w.resolution.set_scale_factor_override(Some(s));
+    let s = (w.height() / 1080.0).max(0.4);
+    if (ui_scale.0 - s).abs() > 0.003 {
+        ui_scale.0 = s;
     }
 }
 
