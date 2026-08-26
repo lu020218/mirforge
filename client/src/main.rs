@@ -1672,9 +1672,11 @@ fn remote_step(
             _ => 0.0,
         };
         let step = (speed * dt).max(dist * 4.0 * dt);
-        if dist > 0.05 && r.anim < 3 {
+        if dist > 0.02 && r.anim < 3 {
             // 8 向量化插值: 服务器移动同为 8 向懒转向, target 轨迹即折线;
             // 客户端严格重放 — 沿当前朝向走到投影耗尽才换向 (与服务器同规则)
+            // 阈值须小于最慢实体的单包位移 (游荡 0.8 格/s ÷ 20Hz = 0.04),
+            // 否则慢速怪永远走瞬移分支 → 身体平移而腿不动
             let v = sim::DIR8[r.dir];
             if d.x * v.0 + d.y * v.1 < 0.01 {
                 r.dir = dir8_from(d.x, d.y);
@@ -1689,7 +1691,7 @@ fn remote_step(
                 r.last_move_t = now;
             }
         } else if r.anim < 3 && dist > 0.0 {
-            // 余量 ≤0.05 格: 无感贴齐 (取代旧的任意距离瞬移)
+            // 余量 ≤0.02 格 (≤1px): 无感贴齐
             r.pos = r.target;
         }
         r.anim_t += dt;
