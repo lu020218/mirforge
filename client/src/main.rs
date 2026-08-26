@@ -1034,13 +1034,20 @@ fn player_sprite(
             ))
             .id()
     });
+    // 武器前后层序 (Crystal PlayerObject.Draw): 朝左/上系 (0,5,6,7)
+    // 武器画在身体后, 朝右/下系 (1,2,3,4) 画在身体前
+    let wz = if matches!(p.dir, 0 | 5 | 6 | 7) {
+        z - 0.0005
+    } else {
+        z + 0.0005
+    };
     if let Ok((mut ws, mut wt, mut vis)) = q_wep.get_mut(wep) {
         match wf {
             Some(w) => {
                 ws.image = world.pages[w.page].clone();
                 ws.rect = Some(w.rect);
                 ws.anchor = Anchor::TopLeft;
-                wt.translation = Vec3::new(bx + w.off.x, -(by + w.off.y), z + 0.0005);
+                wt.translation = Vec3::new(bx + w.off.x, -(by + w.off.y), wz);
                 *vis = Visibility::Inherited;
             }
             None => *vis = Visibility::Hidden,
@@ -1862,7 +1869,12 @@ fn remote_step(
                         anchor: Anchor::TopLeft,
                         ..default()
                     };
-                    let wt = Transform::from_xyz(bx + w.off.x, -(by + w.off.y), z + 0.0005);
+                    let wz = if matches!(r.dir, 0 | 5 | 6 | 7) {
+                        z - 0.0005
+                    } else {
+                        z + 0.0005
+                    };
+                    let wt = Transform::from_xyz(bx + w.off.x, -(by + w.off.y), wz);
                     match ent {
                         Some(e) => {
                             commands.entity(e).insert((ws, wt, Visibility::Inherited));
