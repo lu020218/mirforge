@@ -104,6 +104,7 @@ fn main() {
         .init_resource::<hud::ChatState>()
         .init_resource::<MiniMap>()
         .init_resource::<ItemIcons>()
+        .init_resource::<GroundEntities>()
         .init_resource::<Zoom>()
         .add_systems(
             Update,
@@ -135,6 +136,7 @@ fn main() {
                 stream_chunks,
                 animate_tiles,
                 load_minimap,
+                ground_render,
                 cast_skills,
                 player_sprite,
                 remote_step,
@@ -150,6 +152,7 @@ fn main() {
                     panels::drag,
                     panels::close,
                     panels::clicks,
+                    panels::drop_clicks,
                     panels::refresh,
                 )
                     .run_if(in_state(Screen::InGame)),
@@ -195,6 +198,9 @@ struct Net {
     zone_name: String,
     /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
     chatlog: Vec<(String, String)>,
+    /// 地面掉落物 (服务器快照驱动)
+    ground: Vec<protocol::GroundItemInfo>,
+    ground_rev: u32,
     /// 未上报的本地位移累计（20Hz 打包发送）
     acc: DVec2,
     last_send: f64,
@@ -525,6 +531,56 @@ fn load_minimap(mut mm: ResMut<MiniMap>, world: Res<World>, mut images: ResMut<A
     }
 }
 
+/// 地面物品实体池 (id → sprite 实体)
+#[derive(Resource, Default)]
+struct GroundEntities(HashMap<String, Entity>);
+
+/// 地面掉落物渲染: 快照版本变化时增删实体 (Items.Lib 图标, 地板上物件下)
+fn ground_render(
+    mut commands: Commands,
+    net: Res<Net>,
+    world: Res<World>,
+    mut icons: ResMut<ItemIcons>,
+    mut images: ResMut<Assets<Image>>,
+    mut ents: ResMut<GroundEntities>,
+    mut last_rev: Local<u32>,
+) {
+    if *last_rev == net.ground_rev {
+        return;
+    }
+    *last_rev = net.ground_rev;
+    let alive: std::collections::HashSet<&str> = net.ground.iter().map(|g| g.id.as_str()).collect();
+    ents.0.retain(|id, e| {
+        if alive.contains(id.as_str()) {
+            true
+        } else {
+            commands.entity(*e).despawn();
+            false
+        }
+    });
+    for g in &net.ground {
+        if ents.0.contains_key(&g.id) {
+            continue;
+        }
+        let Some(h) = icons.get(g.image, &world.data_root, &mut images) else {
+            continue;
+        };
+        let px = g.x as f32 * CELL_W - CELL_W / 2.0;
+        let py = g.y as f32 * CELL_H - CELL_H / 2.0;
+        let e = commands
+            .spawn((
+                Sprite {
+                    image: h,
+                    ..default()
+                },
+                Transform::from_xyz(px, -py, 3.0),
+                Visibility::default(),
+            ))
+            .id();
+        ents.0.insert(g.id.clone(), e);
+    }
+}
+
 /// 进入游戏时按性别取立绘帧 → 独立 Image (面板 ImageNode 用)
 fn make_portrait(
     mut commands: Commands,
@@ -852,6 +908,23 @@ fn player_move(
                     p.anim_t += dt;
                 }
                 return;
+            }
+            // 点在地面物品上且够得着 → 拾取 (超距则照常走路靠近)
+            if buttons.just_pressed(MouseButton::Left) {
+                let pick = net
+                    .ground
+                    .iter()
+                    .find(|g| (g.x - cc.x).abs() < 0.7 && (g.y - cc.y).abs() < 0.7);
+                if let Some(g) = pick {
+                    let d = DVec2::new(g.x, g.y) - p.pos;
+                    if d.length() <= 2.0 {
+                        p.dir = dir8_from(d.x, d.y);
+                        net.send(ClientMessage::PickupItem {
+                            drop_id: g.id.clone(),
+                        });
+                        return;
+                    }
+                }
             }
         }
     }
@@ -1547,6 +1620,10 @@ fn net_pump(
                         net.chatlog.remove(0);
                     }
                     net.notice_rev += 1;
+                }
+                ServerMessage::GroundItems { items } => {
+                    net.ground = items;
+                    net.ground_rev += 1;
                 }
                 ServerMessage::ChatMessage {
                     sender, content, ..

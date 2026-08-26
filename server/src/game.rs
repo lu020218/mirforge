@@ -328,6 +328,21 @@ fn make_item(template: &str) -> Option<protocol::ItemInfo> {
     })
 }
 
+/// 背包容量上限
+const MAX_INVENTORY: usize = 32;
+/// 地面物品存留时长
+const GROUND_ITEM_TTL: Duration = Duration::from_secs(60);
+
+/// 地面掉落物
+struct GroundItem {
+    id: String,
+    zone: String,
+    item: protocol::ItemInfo,
+    x: f64,
+    y: f64,
+    expire: Instant,
+}
+
 /// 掉落表条目 (边车配置)
 #[derive(Clone)]
 pub struct DropEntry {
@@ -516,6 +531,9 @@ pub struct Game {
     /// resume token → account_id
     tokens: HashMap<String, String>,
     monsters: Vec<Monster>,
+    /// 地面物品 (掉落/丢弃)
+    ground: Vec<GroundItem>,
+    next_drop_id: u64,
     /// xorshift64 随机态 (怪物 AI 用, 无需加密质量)
     rng: u64,
     last_save: Instant,
@@ -592,6 +610,8 @@ impl Game {
             players: HashMap::new(),
             tokens: HashMap::new(),
             monsters,
+            ground: Vec::new(),
+            next_drop_id: 1,
             rng: 0x00C0_FFEE_1234_5678,
             last_save: Instant::now(),
             last_regen: Instant::now(),
@@ -818,6 +838,9 @@ impl Game {
                         let (x, y) = (p.x, p.y);
                         info!("Resume 原位恢复: {character_id} @({x:.1},{y:.1})");
                         self.send_enter_payload(&conn_id, &character_id, x, y).await;
+                        if let Some(z) = self.players.get(&character_id).map(|p| p.zone.clone()) {
+                            self.broadcast_ground(&z).await;
+                        }
                         return;
                     }
                 }
@@ -859,6 +882,12 @@ impl Game {
             }
             ClientMessage::Unequip { slot } => {
                 self.handle_unequip(&conn_id, &slot).await;
+            }
+            ClientMessage::DropItem { item_id } => {
+                self.handle_drop_item(&conn_id, &item_id).await;
+            }
+            ClientMessage::PickupItem { drop_id } => {
+                self.handle_pickup_item(&conn_id, &drop_id).await;
             }
             ClientMessage::UseSkill {
                 skill_id,
@@ -997,6 +1026,9 @@ impl Game {
         }
         info!("进入游戏: {character_id} {zone} @({x:.1},{y:.1})");
         self.send_enter_payload(conn_id, &character_id, x, y).await;
+        if let Some(z) = self.players.get(&character_id).map(|p| p.zone.clone()) {
+            self.broadcast_ground(&z).await;
+        }
         self.send_player_status(&character_id).await;
         self.send_skill_list(&character_id).await;
         self.send_inventory(&character_id).await;
@@ -1400,7 +1432,7 @@ impl Game {
     }
 
     /// 击杀掷落: 命中的物品直接入包 (经典拾取交互后续再做)
-    async fn roll_drops(&mut self, char_id: &str, mon_id: &str) {
+    async fn roll_drops(&mut self, _char_id: &str, mon_id: &str) {
         let Some(drops) = self
             .monsters
             .iter()
@@ -1420,24 +1452,145 @@ impl Game {
         if gained.is_empty() {
             return;
         }
-        let Some(p) = self.players.get_mut(char_id) else {
+        // 原版语义: 掉落物落地, 玩家点击拾取 (背包满也不丢失)
+        let Some((zone, mx, my)) = self
+            .monsters
+            .iter()
+            .find(|m| m.id == mon_id)
+            .map(|m| (m.zone.clone(), m.x, m.y))
+        else {
             return;
         };
-        let conn = p.conn_id.clone();
-        let names: Vec<String> = gained.iter().map(|i| i.name.clone()).collect();
-        p.inventory.extend(gained);
-        for name in names {
+        for (i, item) in gained.into_iter().enumerate() {
+            let ang = i as f64 * 2.4;
+            let (dx, dy) = (ang.cos() * 0.4 * i as f64, ang.sin() * 0.4 * i as f64);
+            self.spawn_ground(&zone, item, mx + dx, my + dy);
+        }
+        self.broadcast_ground(&zone).await;
+    }
+
+    fn spawn_ground(&mut self, zone: &str, item: protocol::ItemInfo, x: f64, y: f64) {
+        let id = format!("drop_{}", self.next_drop_id);
+        self.next_drop_id += 1;
+        self.ground.push(GroundItem {
+            id,
+            zone: zone.to_string(),
+            item,
+            x,
+            y,
+            expire: Instant::now() + GROUND_ITEM_TTL,
+        });
+    }
+
+    /// 区域地面物品全量快照 → 该区在线玩家
+    async fn broadcast_ground(&self, zone: &str) {
+        let items: Vec<protocol::GroundItemInfo> = self
+            .ground
+            .iter()
+            .filter(|g| g.zone == zone)
+            .map(|g| protocol::GroundItemInfo {
+                id: g.id.clone(),
+                name: g.item.name.clone(),
+                image: g.item.image,
+                x: g.x,
+                y: g.y,
+            })
+            .collect();
+        let conns = self.zone_conns(zone);
+        broadcast_to(&self.sessions, &conns, ServerMessage::GroundItems { items }).await;
+    }
+
+    /// 丢弃: 背包移除 → 脚下落地
+    async fn handle_drop_item(&mut self, conn_id: &str, item_id: &str) {
+        let Some((char_id, zone, x, y, idx)) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id && p.connected)
+            .and_then(|(id, p)| {
+                let idx = p.inventory.iter().position(|i| i.id == item_id)?;
+                Some((id.clone(), p.zone.clone(), p.x, p.y, idx))
+            })
+        else {
+            return;
+        };
+        let item = self
+            .players
+            .get_mut(&char_id)
+            .map(|p| p.inventory.remove(idx));
+        if let Some(item) = item {
+            self.spawn_ground(&zone, item, x, y);
+            self.send_inventory(&char_id).await;
+            self.broadcast_ground(&zone).await;
+        }
+    }
+
+    /// 拾取: 距离与容量校验 → 入包
+    async fn handle_pickup_item(&mut self, conn_id: &str, drop_id: &str) {
+        let Some((char_id, conn, zone, px, py, inv_len)) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id && p.connected)
+            .map(|(id, p)| {
+                (
+                    id.clone(),
+                    p.conn_id.clone(),
+                    p.zone.clone(),
+                    p.x,
+                    p.y,
+                    p.inventory.len(),
+                )
+            })
+        else {
+            return;
+        };
+        let Some(gi) = self
+            .ground
+            .iter()
+            .position(|g| g.id == drop_id && g.zone == zone)
+        else {
+            return;
+        };
+        let g = &self.ground[gi];
+        if ((g.x - px).powi(2) + (g.y - py).powi(2)).sqrt() > 2.0 {
             send_to(
                 &self.sessions,
                 &conn,
                 ServerMessage::Notification {
-                    message: format!("获得物品: {name}"),
-                    notification_type: "loot".into(),
+                    message: "距离太远, 无法拾取".into(),
+                    notification_type: "warn".into(),
                 },
             )
             .await;
+            return;
         }
-        self.send_inventory(char_id).await;
+        if inv_len >= MAX_INVENTORY {
+            send_to(
+                &self.sessions,
+                &conn,
+                ServerMessage::Notification {
+                    message: "背包已满".into(),
+                    notification_type: "warn".into(),
+                },
+            )
+            .await;
+            return;
+        }
+        let g = self.ground.remove(gi);
+        let name = g.item.name.clone();
+        if let Some(p) = self.players.get_mut(&char_id) {
+            p.inventory.push(g.item);
+        }
+        send_to(
+            &self.sessions,
+            &conn,
+            ServerMessage::Notification {
+                message: format!("获得物品: {name}"),
+                notification_type: "loot".into(),
+            },
+        )
+        .await;
+        self.send_inventory(&char_id).await;
+        self.broadcast_ground(&zone).await;
     }
 
     /// 推送背包与装备
@@ -1685,6 +1838,19 @@ impl Game {
 
     async fn tick(&mut self) {
         let now = Instant::now();
+        // 地面物品过期清理 (按区广播变化)
+        if self.ground.iter().any(|g| now >= g.expire) {
+            let zones: Vec<String> = self
+                .ground
+                .iter()
+                .filter(|g| now >= g.expire)
+                .map(|g| g.zone.clone())
+                .collect();
+            self.ground.retain(|g| now < g.expire);
+            for z in zones {
+                self.broadcast_ground(&z).await;
+            }
+        }
         // 停止判定: 200ms 没有移动包即站立
         for p in self.players.values_mut() {
             if p.moving && now.duration_since(p.last_move) > Duration::from_millis(200) {
@@ -2255,8 +2421,9 @@ mod tests {
         assert!(g.monsters[0].dying_until.is_some());
         let p = &g.players["char1"];
         assert_eq!(p.exp, 20, "击杀应得 20 经验");
-        assert_eq!(p.inventory.len(), 1, "100% 掉落应入包");
-        assert_eq!(p.inventory[0].template, "iron_sword");
+        assert!(p.inventory.is_empty(), "掉落应落地而非直接入包");
+        assert_eq!(g.ground.len(), 1, "100% 掉落应落地");
+        assert_eq!(g.ground[0].item.template, "iron_sword");
         // 已死怪不能再打
         assert!(!g.hit_monster("char1", &mon_id, 12).await);
     }
@@ -2311,6 +2478,41 @@ mod tests {
         // 前置完成 → 猎鹿可接
         g.handle_accept_quest("c1", "hunt_deer").await;
         assert_eq!(g.players["char1"].quests["hunt_deer"].state, 1);
+    }
+
+    #[tokio::test]
+    async fn drop_pickup_roundtrip_and_limits() {
+        let mut g = test_game().await;
+        let mut p = test_player("c1", "z1", 5.5, 5.5);
+        p.inventory.push(make_item("wooden_sword").unwrap());
+        let item_id = p.inventory[0].id.clone();
+        g.players.insert("char1".into(), p);
+        // 丢弃 → 落地脚下
+        g.handle_drop_item("c1", &item_id).await;
+        assert!(g.players["char1"].inventory.is_empty());
+        assert_eq!(g.ground.len(), 1);
+        let drop_id = g.ground[0].id.clone();
+        // 拾取 → 回包
+        g.handle_pickup_item("c1", &drop_id).await;
+        assert!(g.ground.is_empty());
+        assert_eq!(g.players["char1"].inventory.len(), 1);
+        // 距离超 2 格拒绝
+        let far_id = {
+            let item = make_item("copper_ring").unwrap();
+            g.spawn_ground("z1", item, 15.5, 15.5);
+            g.ground[0].id.clone()
+        };
+        g.handle_pickup_item("c1", &far_id).await;
+        assert_eq!(g.ground.len(), 1, "超距拾取应被拒绝");
+        // 背包满拒绝
+        g.ground[0].x = 5.5;
+        g.ground[0].y = 5.5;
+        for _ in 0..MAX_INVENTORY {
+            let it = make_item("copper_ring").unwrap();
+            g.players.get_mut("char1").unwrap().inventory.push(it);
+        }
+        g.handle_pickup_item("c1", &far_id).await;
+        assert_eq!(g.ground.len(), 1, "背包满应拒绝拾取");
     }
 
     #[tokio::test]

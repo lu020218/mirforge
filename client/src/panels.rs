@@ -280,6 +280,25 @@ pub fn drag(
     }
 }
 
+/// 背包格右键 = 丢弃到地上
+pub fn drop_clicks(
+    net: Res<Net>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    q: Query<(&Interaction, &EquipItem)>,
+) {
+    if !buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+    for (it, item) in &q {
+        if matches!(it, Interaction::Hovered | Interaction::Pressed) {
+            net.send(ClientMessage::DropItem {
+                item_id: item.0.clone(),
+            });
+            return;
+        }
+    }
+}
+
 /// 点击交互: 装备/卸下/任务操作
 #[allow(clippy::type_complexity)]
 pub fn clicks(
@@ -402,9 +421,9 @@ fn build_bag(
     let font = skin.font.clone();
     let used = items.len();
     e.with_children(|body| {
-        // 格区: padding 16, 8 列 gap 6 → (430-2-32-42)/8 ≈ 44px 方格
+        // 格区: 8 列 40px 格 gap 6, 水平 padding 居中
         body.spawn(Node {
-            padding: UiRect::all(Val::Px(16.0)),
+            padding: UiRect::axes(Val::Px(33.0), Val::Px(16.0)),
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
             column_gap: Val::Px(6.0),
@@ -416,11 +435,12 @@ fn build_bag(
                 let item = items.get(i);
                 let mut slot = grid.spawn((
                     Node {
-                        width: Val::Px(44.0),
-                        height: Val::Px(44.0),
+                        width: Val::Px(40.0),
+                        height: Val::Px(40.0),
                         border: UiRect::all(Val::Px(1.0)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
+                        overflow: Overflow::clip(),
                         ..default()
                     },
                     BackgroundColor(SLOT_BG),

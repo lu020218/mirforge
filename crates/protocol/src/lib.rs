@@ -88,6 +88,12 @@ pub enum ClientMessage {
     Equip { item_id: String, slot: String },
     #[serde(rename = "unequip")]
     Unequip { slot: String },
+    /// 丢弃背包物品到脚下
+    #[serde(rename = "dropItem")]
+    DropItem { item_id: String },
+    /// 拾取地面物品
+    #[serde(rename = "pickupItem")]
+    PickupItem { drop_id: String },
     #[serde(rename = "acceptQuest")]
     AcceptQuest { quest_id: String },
     #[serde(rename = "completeQuest")]
@@ -201,6 +207,9 @@ pub enum ServerMessage {
         amount: i32,
         is_critical: bool,
     },
+    /// 当前区域地面物品全量快照 (增删时下发)
+    #[serde(rename = "groundItems")]
+    GroundItems { items: Vec<GroundItemInfo> },
     #[serde(rename = "notification")]
     Notification {
         message: String,
@@ -243,6 +252,16 @@ pub struct ItemInfo {
     /// 外观库编号 (weapon → CWeapon/{shape:02}.Lib, armor → CArmour)
     #[serde(default)]
     pub shape: u16,
+}
+
+/// 地面掉落物 (渲染 Items.Lib 图标帧)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroundItemInfo {
+    pub id: String,
+    pub name: String,
+    pub image: u16,
+    pub x: f64,
+    pub y: f64,
 }
 
 // ─────────── 载荷结构 ───────────
