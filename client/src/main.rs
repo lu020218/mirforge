@@ -1030,7 +1030,7 @@ fn spawn_chunk(
 ) -> Entity {
     // 先解码收集帧 (期间图集可能开新页), 全部到位后统一补页再构造精灵,
     // 避免帧绑定到尚未建立的页纹理
-    let mut placed: Vec<(FrameRef, i32, i32, f32, bool)> = Vec::new();
+    let mut placed: Vec<(FrameRef, f32, f32, f32)> = Vec::new();
     let mut anims: Vec<AnimatedTile> = Vec::new();
     let (w, h) = (world.map.width as i32, world.map.height as i32);
     for cy in ky * CHUNK..(ky + 1) * CHUNK {
@@ -1039,31 +1039,32 @@ fn spawn_chunk(
                 continue;
             }
             let cell = *world.map.cell(cx as u32, cy as u32).unwrap();
+            let (fx, fy) = (cx as f32 * CELL_W, cy as f32 * CELL_H);
             // back: 96×64 大砖只画偶数格 (覆盖 2×2)
             if cell.back >= 0 && cx % 2 == 0 && cy % 2 == 0 {
                 if let Some(f) = world.frame(Layer::Back, cell.back_lib, cell.back) {
-                    placed.push((f, cx, cy, 0.0, false));
+                    placed.push((f, fx, fy, 0.0));
                 }
             }
             // mid: 标准尺寸入地板层; 其余锚底进对象层按行遮挡 (Crystal DrawObjects mir3 middle)
             if cell.mid >= 0 {
                 if let Some(f) = world.frame(Layer::Mid, cell.mid_lib, cell.mid) {
                     if is_floor_size(f.size) {
-                        placed.push((f, cx, cy, 1.0, false));
+                        placed.push((f, fx, fy, 1.0));
                     } else {
                         let z = 10.0 + cy as f32 * 0.01;
-                        placed.push((f, cx, cy, z, true));
+                        placed.push((f, fx, (cy + 1) as f32 * CELL_H - f.size.y, z));
                     }
                 }
             }
-            // front: 标准尺寸画地板层; 非标准尺寸或带动画的锚底进对象层
+            // front: 标准尺寸画地板层; 非标准尺寸或带动画的进对象层
             // (Crystal: floor 画标准基帧, 对象层跳过"标准且无动画", 动画帧覆盖地板)
             if cell.front >= 0 {
                 let blend = cell.ani_frame & 0x80 > 0;
                 if let Some(f) = world.frame_ex(Layer::Front, cell.front_lib, cell.front, blend) {
                     let frames = cell.ani_frame & 0x7F;
                     if is_floor_size(f.size) {
-                        placed.push((f, cx, cy, 2.0, false));
+                        placed.push((f, fx, fy, 2.0));
                     }
                     if !is_floor_size(f.size) || frames > 0 {
                         let z = 10.0 + cy as f32 * 0.01 + 0.002;
@@ -1079,7 +1080,9 @@ fn spawn_chunk(
                                 z,
                             });
                         } else {
-                            placed.push((f, cx, cy, z, true));
+                            let (px, py) =
+                                object_pos(&f, cx, cy, cell.front_lib, cell.front, blend);
+                            placed.push((f, px, py, z));
                         }
                     }
                 }
@@ -1089,8 +1092,8 @@ fn spawn_chunk(
     world.ensure_pages(images);
     let mut parent = commands.spawn((Transform::default(), Visibility::default()));
     parent.with_children(|p| {
-        for (f, cx, cy, z, ab) in placed {
-            p.spawn(sprite_at(world, f, cx, cy, z, ab));
+        for (f, px, py, z) in placed {
+            p.spawn(sprite_from(world, f, px, py, z));
         }
         for a in anims {
             let t = Transform::from_xyz(a.cx as f32 * CELL_W, -(a.cy as f32 * CELL_H), a.z);
@@ -1100,21 +1103,30 @@ fn spawn_chunk(
     parent.id()
 }
 
-fn sprite_at(
-    world: &World,
-    f: FrameRef,
-    cx: i32,
-    cy: i32,
-    z: f32,
-    anchor_bottom: bool,
-) -> (Sprite, Transform) {
-    // Crystal 地图层放置不使用帧自带偏移 (Draw(index,x,y) 不加 mi.X/mi.Y):
-    // 地板 = 格左上角; 对象 = 锚定格底边向上 ((y+1)*32 - h)
-    let (px, py) = if anchor_bottom {
-        (cx as f32 * CELL_W, (cy + 1) as f32 * CELL_H - f.size.y)
+/// 对象层放置 (Crystal DrawObjects 逐条移植)。基准 = 格底边 (cy+1)*32:
+/// - blend + 库 14/27/100-198: 上移 3 格并加帧偏移
+/// - blend + 帧 2723-2732 (灯火光晕): 锚底并加帧偏移 (火焰对准灯柱顶)
+/// - 非 blend + 库 28 且帧带偏移: 上移 1 格并加帧偏移
+/// - 其余: 锚底, 不加帧偏移
+fn object_pos(f: &FrameRef, cx: i32, cy: i32, lib: i16, idx: i32, blend: bool) -> (f32, f32) {
+    let bx = cx as f32 * CELL_W;
+    let by = (cy + 1) as f32 * CELL_H;
+    if blend {
+        if matches!(lib as i32, 14 | 27 | 100..=198) {
+            (bx + f.off.x, by - 3.0 * CELL_H + f.off.y)
+        } else if (2723..=2732).contains(&idx) {
+            (bx + f.off.x, by - f.size.y + f.off.y)
+        } else {
+            (bx, by - f.size.y)
+        }
+    } else if lib as i32 == 28 && (f.off.x != 0.0 || f.off.y != 0.0) {
+        (bx + f.off.x, by - CELL_H + f.off.y)
     } else {
-        (cx as f32 * CELL_W, cy as f32 * CELL_H)
-    };
+        (bx, by - f.size.y)
+    }
+}
+
+fn sprite_from(world: &World, f: FrameRef, px: f32, py: f32, z: f32) -> (Sprite, Transform) {
     (
         Sprite {
             image: world.pages[f.page].clone(),
@@ -1165,7 +1177,9 @@ fn animate_tiles(
             sp.image = world.pages[f.page].clone();
             sp.rect = Some(f.rect);
             sp.anchor = Anchor::TopLeft;
-            tf.translation.y = -((a.cy + 1) as f32 * CELL_H - f.size.y);
+            let (px, py) = object_pos(&f, a.cx, a.cy, a.lib, idx, a.blend);
+            tf.translation.x = px;
+            tf.translation.y = -py;
             *vis = Visibility::Inherited;
         }
     }
