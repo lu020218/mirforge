@@ -94,6 +94,7 @@ fn main() {
         .init_resource::<panels::Drag>()
         .init_resource::<screens::CharSelectState>()
         .init_resource::<hud::ChatState>()
+        .init_resource::<MiniMap>()
         .add_systems(
             Update,
             (
@@ -123,6 +124,7 @@ fn main() {
                 camera_control,
                 stream_chunks,
                 animate_tiles,
+                load_minimap,
                 cast_skills,
                 player_sprite,
                 remote_step,
@@ -423,6 +425,51 @@ impl World {
 /// 角色面板立绘 (CArmour 朝南站立帧)
 #[derive(Resource, Default)]
 pub struct Portrait(pub Option<(Handle<Image>, Vec2)>);
+
+/// 当前区域小地图 (Data/mmap.Lib 帧 → 独立 Image)
+#[derive(Resource, Default)]
+pub struct MiniMap {
+    pub image: Option<(Handle<Image>, Vec2)>,
+    loaded_for: String,
+}
+
+/// 地图名 → mmap.Lib 帧号 (Crystal 服务器 DB 惯例: 比奇 101, 盟重 102)
+fn minimap_index(map_name: &str) -> Option<usize> {
+    match map_name {
+        "0.map" => Some(101),
+        "2.map" => Some(102),
+        _ => None,
+    }
+}
+
+/// 切区时按地图名重载小地图帧
+fn load_minimap(mut mm: ResMut<MiniMap>, world: Res<World>, mut images: ResMut<Assets<Image>>) {
+    if mm.loaded_for == world.map_name {
+        return;
+    }
+    mm.loaded_for = world.map_name.clone();
+    mm.image = minimap_index(&world.map_name).and_then(|idx| {
+        let path = world.mon_dir.parent()?.join("mmap.Lib");
+        let lib = CrystalLib::parse(std::fs::read(path).ok()?).ok()?;
+        let img = lib.image(idx).ok().flatten()?;
+        let size = Vec2::new(img.width as f32, img.height as f32);
+        let handle = images.add(Image::new(
+            Extent3d {
+                width: img.width as u32,
+                height: img.height as u32,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            img.rgba,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        ));
+        Some((handle, size))
+    });
+    if mm.image.is_none() {
+        info!("地图 {} 无小地图帧映射", world.map_name);
+    }
+}
 
 /// 进入游戏时按性别取立绘帧 → 独立 Image (面板 ImageNode 用)
 fn make_portrait(

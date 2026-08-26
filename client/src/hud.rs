@@ -98,6 +98,10 @@ pub struct CoordText;
 #[derive(Component)]
 pub struct MiniDot(usize);
 #[derive(Component)]
+pub struct MiniMapImg;
+#[derive(Component)]
+pub struct PlayerDot;
+#[derive(Component)]
 pub struct TrackerBody;
 #[derive(Component)]
 pub struct ChatBody;
@@ -469,7 +473,21 @@ pub fn setup(
             BorderColor(EDGE_GOLD),
         ))
         .with_children(|map| {
-            // 玩家点 (中心, 金色)
+            // 原版小地图图层 (mmap.Lib 帧, 以玩家为中心裁剪窗口; 无帧映射时隐藏)
+            map.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    width: Val::Px(206.0),
+                    height: Val::Px(206.0),
+                    ..default()
+                },
+                ImageNode::default(),
+                Visibility::Hidden,
+                MiniMapImg,
+            ));
+            // 玩家点 (金色)
             map.spawn((
                 Node {
                     position_type: PositionType::Absolute,
@@ -481,6 +499,7 @@ pub fn setup(
                 },
                 BackgroundColor(GOLD_BRIGHT),
                 BorderRadius::all(Val::Percent(50.0)),
+                PlayerDot,
             ));
             // 怪物点池
             for i in 0..24 {
@@ -820,6 +839,9 @@ pub fn update(
     skin: Res<Skin>,
     q_player: Query<&crate::Player>,
     remotes: Res<crate::Remotes>,
+    world: Res<crate::World>,
+    minimap: Res<crate::MiniMap>,
+    mut q_mmimg: Query<(&mut ImageNode, &mut Visibility), With<MiniMapImg>>,
     mut q_fill: Query<
         (
             &mut Node,
@@ -828,6 +850,7 @@ pub fn update(
             Option<&ExpFill>,
             Option<&SkillMask>,
             Option<&MiniDot>,
+            Option<&PlayerDot>,
         ),
         Or<(
             With<HpFill>,
@@ -835,6 +858,7 @@ pub fn update(
             With<ExpFill>,
             With<SkillMask>,
             With<MiniDot>,
+            With<PlayerDot>,
         )>,
     >,
     mut q_texts: Query<(
@@ -857,21 +881,63 @@ pub fn update(
     let stat = net.stat;
     let player_pos = q_player.get_single().map(|p| p.pos).ok();
 
-    // 怪物小地图点位: ±50 格视野 → 208px (2px/格)
+    // 小地图: 有原版图帧 → 以玩家为中心裁剪窗口, 实体点用图像素坐标系
+    // (Crystal 语义: 像素位 = 格坐标 × 图尺寸/地图格数); 无图帧 → 2px/格相对点阵
+    const PANE: f32 = 206.0;
+    let mut player_dot = (101.0, 101.0);
     let mut dots: Vec<(f32, f32)> = Vec::new();
+    let mut window = None; // (x0, y0, sx, sy) 有图时的裁剪窗口与比例
+    if let (Some((handle, size)), Some(pp)) = (&minimap.image, player_pos) {
+        let sx = size.x / world.map.width.max(1) as f32;
+        let sy = size.y / world.map.height.max(1) as f32;
+        let (px, py) = (pp.x as f32 * sx, pp.y as f32 * sy);
+        let x0 = (px - PANE / 2.0).clamp(0.0, (size.x - PANE).max(0.0));
+        let y0 = (py - PANE / 2.0).clamp(0.0, (size.y - PANE).max(0.0));
+        for (mut img, mut vis) in q_mmimg.iter_mut() {
+            img.image = handle.clone();
+            img.rect = Some(Rect::new(
+                x0,
+                y0,
+                (x0 + PANE).min(size.x),
+                (y0 + PANE).min(size.y),
+            ));
+            *vis = Visibility::Inherited;
+        }
+        player_dot = (px - x0 - 3.0, py - y0 - 3.0);
+        window = Some((x0, y0, sx, sy));
+    } else {
+        for (_, mut vis) in q_mmimg.iter_mut() {
+            *vis = Visibility::Hidden;
+        }
+    }
     if let Some(pp) = player_pos {
         for r in remotes.0.values() {
             if r.image.is_none() || r.anim == 4 {
                 continue;
             }
-            let (dx, dy) = ((r.pos.x - pp.x) * 2.0, (r.pos.y - pp.y) * 2.0);
-            if dx.abs() < 100.0 && dy.abs() < 100.0 {
-                dots.push((104.0 + dx as f32, 104.0 + dy as f32));
+            match window {
+                Some((x0, y0, sx, sy)) => {
+                    let (mx, my) = (r.pos.x as f32 * sx - x0, r.pos.y as f32 * sy - y0);
+                    if (0.0..PANE).contains(&mx) && (0.0..PANE).contains(&my) {
+                        dots.push((mx - 2.0, my - 2.0));
+                    }
+                }
+                None => {
+                    let (dx, dy) = ((r.pos.x - pp.x) * 2.0, (r.pos.y - pp.y) * 2.0);
+                    if dx.abs() < 100.0 && dy.abs() < 100.0 {
+                        dots.push((104.0 + dx as f32, 104.0 + dy as f32));
+                    }
+                }
             }
         }
     }
 
-    for (mut node, hp, mp, exp, mask, dot) in q_fill.iter_mut() {
+    for (mut node, hp, mp, exp, mask, dot, pdot) in q_fill.iter_mut() {
+        if pdot.is_some() {
+            node.left = Val::Px(player_dot.0);
+            node.top = Val::Px(player_dot.1);
+            continue;
+        }
         if hp.is_some() {
             if let Some(s) = stat {
                 node.width =
