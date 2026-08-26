@@ -12,13 +12,9 @@ param(
 Set-Location (Join-Path $PSScriptRoot "..")
 
 if (-not $Res) {
-    $candidates = @(
-        "E:/Work/GitHub/Lengend25D/client/open-res",
-        (Join-Path (Get-Location) "resources")
-    )
-    foreach ($c in $candidates) {
-        if (Test-Path (Join-Path $c "Map")) { $Res = $c; break }
-    }
+    # 默认使用仓库内 resources/ (不入库, 见 .gitignore)
+    $c = Join-Path (Get-Location) "resources"
+    if (Test-Path (Join-Path $c "Map")) { $Res = $c }
 }
 if (-not $Res -or -not (Test-Path (Join-Path $Res "Map"))) {
     Write-Error "找不到传奇资源目录 (需含 Map/ 子目录)。请设置 `$env:MIRFORGE_RES 或用 -Res 参数指定。"

@@ -31,7 +31,8 @@ client/          Bevy 客户端
 ## 快速开始
 
 需要一套市面上已有的传奇客户端资源（含 `Map/` 与 `Data/` 图库，本仓库不含任何游戏资源）。
-所有命令通过 `MIRFORGE_RES` 环境变量找到资源目录。
+把资源放到仓库根的 `resources/` 目录（已被 .gitignore 排除，不会入库），开发脚本会自动找到；
+或通过 `MIRFORGE_RES` 环境变量指向任意位置。
 
 **Windows (PowerShell) 一键脚本：**
 
