@@ -103,6 +103,7 @@ fn main() {
         .init_resource::<screens::CharSelectState>()
         .init_resource::<hud::ChatState>()
         .init_resource::<MiniMap>()
+        .init_resource::<ItemIcons>()
         .init_resource::<Zoom>()
         .add_systems(
             Update,
@@ -239,6 +240,11 @@ struct Remote {
     walk_phase: f64,
     /// 最近实际位移时刻 (行走动画 0.25s 去抖, 防插值追上目标后站/走高频交替)
     last_move_t: f64,
+    /// 玩家外观 (CArmour 库号 / CWeapon 库号)
+    armour: u16,
+    weapon: Option<u16>,
+    /// 武器叠层实体
+    wep_entity: Option<Entity>,
     last_seen: f64,
 }
 
@@ -253,10 +259,14 @@ enum Layer {
     Back,
     Mid,
     Front,
-    /// 角色 (CArmour)
-    Hum,
-    /// 怪物 (Data/Monster/{n:03}.Lib)
+    /// 角色衣甲 (CArmour/{n:02}.Lib)
+    Hum(u16),
+    /// 手持武器 (CWeapon/{n:02}.Lib)
+    Weapon(u16),
+    /// 怪物 (Monster/{n:03}.Lib)
     Mon(u16),
+    /// 技能特效 (0=Magic.Lib, 1=Magic2.Lib)
+    Fx(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -275,16 +285,13 @@ struct World {
     map_name: String,
     /// 地图名(小写) → 文件路径, 切区时按名加载
     maps: HashMap<String, PathBuf>,
-    /// 地图图库根 (Data/Map, 其下 WemadeMir2/ShandaMir2/WemadeMir3/...)
-    map_root: PathBuf,
-    /// 怪物图库目录 (Data/Monster)
-    mon_dir: PathBuf,
+    /// 资源数据根 (Data/, 其下 Map/ Monster/ CArmour/ CWeapon/ Magic 等)
+    data_root: PathBuf,
     libs: HashMap<String, Option<CrystalLib>>,
     atlas: AtlasCpu,
     pages: Vec<Handle<Image>>,
     frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
     chunks: HashMap<(i32, i32), Entity>,
-    hum: Option<CrystalLib>,
     walk: WalkGrid,
 }
 
@@ -292,8 +299,13 @@ impl World {
     /// 库号 → 相对 Data/Map 的库文件名 (Crystal Libraries.MapLibs 注册表完整移植;
     /// back/mid/front 三层共用同一索引空间, 逐格取 cell.*_lib)
     fn lib_name(layer: Layer, lib: i16) -> Option<String> {
-        if matches!(layer, Layer::Hum | Layer::Mon(_)) {
-            return None; // 专用库, 不走地图图库目录
+        match layer {
+            Layer::Hum(n) => return Some(format!("CArmour/{n:02}")),
+            Layer::Weapon(n) => return Some(format!("CWeapon/{n:02}")),
+            Layer::Mon(n) => return Some(format!("Monster/{n:03}")),
+            Layer::Fx(0) => return Some("Magic".into()),
+            Layer::Fx(_) => return Some("Magic2".into()),
+            _ => {}
         }
         const MIR3_NAMES: [&str; 14] = [
             "Tilesc",
@@ -314,18 +326,18 @@ impl World {
         const MIR3_STATE: [&str; 5] = ["", "wood", "sand", "snow", "forest"];
         let l = lib as i32;
         Some(match l {
-            0 => "WemadeMir2/Tiles".into(),
-            1 => "WemadeMir2/SmTiles".into(),
-            2 => "WemadeMir2/Objects".into(),
-            3..=28 => format!("WemadeMir2/Objects{}", l - 1),
-            90 => "WemadeMir2/Objects_32bit".into(),
-            100 => "ShandaMir2/Tiles".into(),
-            101..=109 => format!("ShandaMir2/Tiles{}", l - 99),
-            110 => "ShandaMir2/SmTiles".into(),
-            111..=119 => format!("ShandaMir2/SmTiles{}", l - 109),
-            120 => "ShandaMir2/Objects".into(),
-            121..=150 => format!("ShandaMir2/Objects{}", l - 119),
-            190 => "ShandaMir2/AniTiles1".into(),
+            0 => "Map/WemadeMir2/Tiles".into(),
+            1 => "Map/WemadeMir2/SmTiles".into(),
+            2 => "Map/WemadeMir2/Objects".into(),
+            3..=28 => format!("Map/WemadeMir2/Objects{}", l - 1),
+            90 => "Map/WemadeMir2/Objects_32bit".into(),
+            100 => "Map/ShandaMir2/Tiles".into(),
+            101..=109 => format!("Map/ShandaMir2/Tiles{}", l - 99),
+            110 => "Map/ShandaMir2/SmTiles".into(),
+            111..=119 => format!("Map/ShandaMir2/SmTiles{}", l - 109),
+            120 => "Map/ShandaMir2/Objects".into(),
+            121..=150 => format!("Map/ShandaMir2/Objects{}", l - 119),
+            190 => "Map/ShandaMir2/AniTiles1".into(),
             200..=274 => {
                 let o = (l - 200) as usize;
                 let (s, n) = (o / 15, o % 15);
@@ -337,7 +349,7 @@ impl World {
                 } else {
                     format!("{}/", MIR3_STATE[s])
                 };
-                format!("WemadeMir3/{dir}{}", MIR3_NAMES[n])
+                format!("Map/WemadeMir3/{dir}{}", MIR3_NAMES[n])
             }
             300..=374 => {
                 let o = (l - 300) as usize;
@@ -345,7 +357,7 @@ impl World {
                 if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
                     return None;
                 }
-                format!("ShandaMir3/{}{}", MIR3_NAMES[n], MIR3_STATE[s])
+                format!("Map/ShandaMir3/{}{}", MIR3_NAMES[n], MIR3_STATE[s])
             }
             _ => return None,
         })
@@ -355,7 +367,7 @@ impl World {
         if !self.libs.contains_key(name) {
             let mut lib = None;
             for cand in [format!("{name}.Lib"), format!("{name}.lib")] {
-                let p = self.map_root.join(&cand);
+                let p = self.data_root.join(&cand);
                 if p.exists() {
                     if let Ok(data) = std::fs::read(&p) {
                         lib = CrystalLib::parse(data).ok();
@@ -387,28 +399,10 @@ impl World {
             return *cached;
         }
         let fref = (|| {
-            let mut img = match layer {
-                Layer::Hum => self.hum.as_ref()?.image(idx as usize).ok().flatten()?,
-                Layer::Mon(n) => {
-                    let name = format!("mon{n:03}");
-                    if !self.libs.contains_key(&name) {
-                        let lib = std::fs::read(self.mon_dir.join(format!("{n:03}.Lib")))
-                            .ok()
-                            .and_then(|d| CrystalLib::parse(d).ok());
-                        self.libs.insert(name.clone(), lib);
-                    }
-                    self.libs
-                        .get(&name)
-                        .and_then(|l| l.as_ref())?
-                        .image(idx as usize)
-                        .ok()
-                        .flatten()?
-                }
-                _ => {
-                    let name = Self::lib_name(layer, front_lib)?;
-                    let lib = self.open_lib(&name)?;
-                    lib.image(idx as usize).ok().flatten()?
-                }
+            let mut img = {
+                let name = Self::lib_name(layer, front_lib)?;
+                let lib = self.open_lib(&name)?;
+                lib.image(idx as usize).ok().flatten()?
             };
             if blend {
                 for px in img.rgba.chunks_exact_mut(4) {
@@ -439,6 +433,53 @@ impl World {
 #[derive(Resource, Default)]
 pub struct Portrait(pub Option<(Handle<Image>, Vec2)>);
 
+/// 物品图标 (Items.Lib 帧 → 独立 Image, 惰性缓存)
+#[derive(Resource, Default)]
+pub struct ItemIcons {
+    lib: Option<CrystalLib>,
+    cache: HashMap<u16, Option<Handle<Image>>>,
+}
+
+impl ItemIcons {
+    pub fn get(
+        &mut self,
+        image: u16,
+        data_root: &Path,
+        images: &mut Assets<Image>,
+    ) -> Option<Handle<Image>> {
+        if image == 0 {
+            return None;
+        }
+        if let Some(c) = self.cache.get(&image) {
+            return c.clone();
+        }
+        if self.lib.is_none() {
+            self.lib = std::fs::read(data_root.join("Items.Lib"))
+                .ok()
+                .and_then(|d| CrystalLib::parse(d).ok());
+        }
+        let h = self
+            .lib
+            .as_ref()
+            .and_then(|l| l.image(image as usize).ok().flatten())
+            .map(|img| {
+                images.add(Image::new(
+                    Extent3d {
+                        width: img.width as u32,
+                        height: img.height as u32,
+                        depth_or_array_layers: 1,
+                    },
+                    TextureDimension::D2,
+                    img.rgba,
+                    TextureFormat::Rgba8UnormSrgb,
+                    RenderAssetUsages::RENDER_WORLD,
+                ))
+            });
+        self.cache.insert(image, h.clone());
+        h
+    }
+}
+
 /// 当前区域小地图 (Data/mmap.Lib 帧 → 独立 Image)
 #[derive(Resource, Default)]
 pub struct MiniMap {
@@ -462,7 +503,7 @@ fn load_minimap(mut mm: ResMut<MiniMap>, world: Res<World>, mut images: ResMut<A
     }
     mm.loaded_for = world.map_name.clone();
     mm.image = minimap_index(&world.map_name).and_then(|idx| {
-        let path = world.mon_dir.parent()?.join("mmap.Lib");
+        let path = world.data_root.join("mmap.Lib");
         let lib = CrystalLib::parse(std::fs::read(path).ok()?).ok()?;
         let img = lib.image(idx).ok().flatten()?;
         let size = Vec2::new(img.width as f32, img.height as f32);
@@ -487,7 +528,7 @@ fn load_minimap(mut mm: ResMut<MiniMap>, world: Res<World>, mut images: ResMut<A
 /// 进入游戏时按性别取立绘帧 → 独立 Image (面板 ImageNode 用)
 fn make_portrait(
     mut commands: Commands,
-    world: Res<World>,
+    mut world: ResMut<World>,
     mut images: ResMut<Assets<Image>>,
     net: Res<Net>,
 ) {
@@ -500,8 +541,7 @@ fn make_portrait(
     // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808
     let idx = if female { 808 + 16 } else { 16 };
     let portrait = world
-        .hum
-        .as_ref()
+        .open_lib("CArmour/00")
         .and_then(|l| l.image(idx).ok().flatten())
         .map(|img| {
             let size = Vec2::new(img.width as f32, img.height as f32);
@@ -563,8 +603,8 @@ fn setup(
                 .is_some_and(|s| s.eq_ignore_ascii_case("tiles"))
         })
         .collect();
-    // 定位到含 Tiles.Lib 的套目录, 其父目录即 Data/Map 图库根 (Crystal MapLibs 语义)
-    let map_root = tiles
+    // 定位到含 Tiles.Lib 的套目录 (Data/Map/<套>), 上溯两级到 Data/ 资源根
+    let data_root = tiles
         .iter()
         .find(|l| {
             l.path
@@ -573,14 +613,14 @@ fn setup(
                 .contains(&lib_set.to_lowercase())
         })
         .or_else(|| tiles.first())
-        .and_then(|l| Some(l.path.parent()?.parent()?.to_path_buf()))
+        .and_then(|l| Some(l.path.parent()?.parent()?.parent()?.to_path_buf()))
         .unwrap_or_else(|| {
             error!("资源目录中找不到 Tiles.Lib");
             std::process::exit(2);
         });
     info!(
-        "地图 {map_name}: {:?} {}x{}, 图库根 {:?}",
-        map.kind, map.width, map.height, map_root
+        "地图 {map_name}: {:?} {}x{}, 资源根 {:?}",
+        map.kind, map.width, map.height, data_root
     );
 
     let start = std::env::var("MIRFORGE_START").unwrap_or_else(|_| "330,150".into());
@@ -593,22 +633,6 @@ fn setup(
         Camera2d,
         Transform::from_xyz(sx * CELL_W, -sy * CELL_H, 1000.0),
     ));
-    // 角色库: CArmour/00.Lib (男 0..808, 女 808..1616; 站 0+4/向, 走 32+6/向, 跑 80+6/向)
-    let hum = idx
-        .libs
-        .iter()
-        .find(|l| {
-            l.path.to_string_lossy().to_lowercase().contains("carmour")
-                && l.path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s == "00")
-        })
-        .and_then(|l| std::fs::read(&l.path).ok())
-        .and_then(|d| CrystalLib::parse(d).ok());
-    if hum.is_none() {
-        warn!("未找到 CArmour/00.Lib, 角色将不可见");
-    }
     // 行走网格: 原版地图格级阻挡 → 1/4 子格
     let cells = map.cells.clone();
     let (mw, mh) = (map.width, map.height);
@@ -652,23 +676,16 @@ fn setup(
                 .map(|n| (n.to_lowercase(), m.path.clone()))
         })
         .collect();
-    // 怪物图库目录: map_root = <root>/Data/Map → <root>/Data/Monster
-    let mon_dir = map_root
-        .parent()
-        .map(|p| p.join("Monster"))
-        .unwrap_or_else(|| map_root.join("Monster"));
     commands.insert_resource(World {
         map,
         map_name: map_name.to_lowercase(),
         maps,
-        map_root,
-        mon_dir,
+        data_root,
         libs: HashMap::new(),
         atlas: AtlasCpu::default(),
         pages,
         frames: HashMap::new(),
         chunks: HashMap::new(),
-        hum,
         walk,
     });
 }
@@ -944,21 +961,44 @@ fn debug_panel(
         });
 }
 
-/// 按动作/方向/时间挑帧并更新精灵与变换
+/// 按动作/方向/时间挑帧并更新精灵与变换 (paperdoll: 衣甲换库 + 武器叠层)
+#[allow(clippy::too_many_arguments)]
 fn player_sprite(
+    mut commands: Commands,
     time: Res<Time>,
     mut world: ResMut<World>,
     mut images: ResMut<Assets<Image>>,
+    net: Res<Net>,
+    mut wep_entity: Local<Option<Entity>>,
+    mut debug_shapes: Local<Option<Option<(u16, Option<u16>)>>>,
     mut q: Query<(&Player, &mut Sprite, &mut Transform)>,
+    mut q_wep: Query<
+        (&mut Sprite, &mut Transform, &mut Visibility),
+        (With<WeaponSprite>, Without<Player>),
+    >,
 ) {
     let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
         return;
     };
+    // 外观: MIRFORGE_SHAPES=armour[,weapon] 调试覆盖 (离线可视验证);
+    // 否则由已穿装备的 shape 决定
+    let dbg = *debug_shapes.get_or_insert_with(|| {
+        std::env::var("MIRFORGE_SHAPES").ok().map(|v| {
+            let mut it = v.split(',');
+            let a = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let w = it.next().and_then(|s| s.trim().parse().ok());
+            (a, w)
+        })
+    });
+    let (armour, weapon) = dbg.unwrap_or_else(|| {
+        (
+            net.equipment.get("armor").map(|i| i.shape).unwrap_or(0),
+            net.equipment.get("weapon").map(|i| i.shape),
+        )
+    });
     let now_t = time.elapsed_secs_f64();
     // 帧表 (Crystal FrameSet.Player 权威定义): 站 0+dir*4; 走 32+dir*6;
-    // 跑 80+dir*6; 战斗站架 128+dir*1; 攻击 136+dir*6 (Attack1)。
-    // 此前把 128 当攻击起点是错的 — 128..136 是 Stance 段, 攻击帧会整体
-    // 串向 (朝左攻击显示朝上等)
+    // 跑 80+dir*6; 战斗站架 128+dir*1; 攻击 136+dir*6 (Attack1)
     let frame_idx = if let Some(t) = p.attack_start.filter(|t| now_t - t < ATTACK_ANIM_SECS) {
         136 + p.dir * 6 + (((now_t - t) / 0.09) as usize).min(5)
     } else if p.moving && p.running {
@@ -968,21 +1008,49 @@ fn player_sprite(
     } else {
         p.dir * 4 + ((p.anim_t / 0.2) as usize % 4)
     };
-    let Some(f) = world.frame(Layer::Hum, 0, frame_idx as i32) else {
+    let Some(f) = world.frame(Layer::Hum(armour), 0, frame_idx as i32) else {
         warn_once!("角色帧 {frame_idx} 不可用");
         return;
     };
+    let wf = weapon.and_then(|s| world.frame(Layer::Weapon(s), 0, frame_idx as i32));
     world.ensure_pages(&mut images);
     sprite.image = world.pages[f.page].clone();
     sprite.rect = Some(f.rect);
     sprite.anchor = Anchor::TopLeft;
     // Mir 角色帧偏移相对所在格左上角; 位置取格坐标向下取整的格原点 + 帧内偏移 + 连续余量
-    let px = p.pos.x as f32 * CELL_W - CELL_W / 2.0 + f.off.x;
-    let py = p.pos.y as f32 * CELL_H - CELL_H / 2.0 + f.off.y;
+    let bx = p.pos.x as f32 * CELL_W - CELL_W / 2.0;
+    let by = p.pos.y as f32 * CELL_H - CELL_H / 2.0;
     // 与前景高物件同一行深度体系; +0.005 让同行时角色压在物件之上
     let z = 10.0 + p.pos.y as f32 * 0.01 + 0.005;
-    tf.translation = Vec3::new(px, -py, z);
+    tf.translation = Vec3::new(bx + f.off.x, -(by + f.off.y), z);
+    // 武器叠层: 与身体同帧号同格原点, z 微高
+    let wep = *wep_entity.get_or_insert_with(|| {
+        commands
+            .spawn((
+                WeaponSprite,
+                Sprite::default(),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id()
+    });
+    if let Ok((mut ws, mut wt, mut vis)) = q_wep.get_mut(wep) {
+        match wf {
+            Some(w) => {
+                ws.image = world.pages[w.page].clone();
+                ws.rect = Some(w.rect);
+                ws.anchor = Anchor::TopLeft;
+                wt.translation = Vec3::new(bx + w.off.x, -(by + w.off.y), z + 0.0005);
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
+        }
+    }
 }
+
+/// 武器叠层精灵标记 (本地玩家/远程实体共用)
+#[derive(Component)]
+struct WeaponSprite;
 
 fn camera_follow(q_player: Query<&Player>, mut q_cam: Query<&mut Transform, With<Camera2d>>) {
     let (Ok(p), Ok(mut cam)) = (q_player.get_single(), q_cam.get_single_mut()) else {
@@ -1495,20 +1563,42 @@ fn net_pump(
                             points.push(r.pos);
                         }
                     }
+                    let fx = skill_fx(&skill_id);
                     for pt in points {
                         let px = pt.x as f32 * CELL_W - CELL_W / 2.0;
                         let py = pt.y as f32 * CELL_H - CELL_H / 2.0;
-                        commands.spawn((
-                            Sprite {
-                                color,
-                                custom_size: Some(Vec2::splat(26.0)),
-                                ..default()
-                            },
-                            Transform::from_xyz(px, -py, 700.0),
-                            Fx {
-                                born: time.elapsed_secs_f64(),
-                            },
-                        ));
+                        match fx {
+                            // 原版 Magic 库帧动画特效
+                            Some((lib, base, frames)) => {
+                                commands.spawn((
+                                    Sprite::default(),
+                                    Transform::from_xyz(px, -py, 700.0),
+                                    Visibility::Hidden,
+                                    EffectAnim {
+                                        lib,
+                                        base,
+                                        frames,
+                                        born: time.elapsed_secs_f64(),
+                                        px,
+                                        py,
+                                    },
+                                ));
+                            }
+                            // 无独立特效的技能 (刀光在人物动画): 淡色扩散圈
+                            None => {
+                                commands.spawn((
+                                    Sprite {
+                                        color,
+                                        custom_size: Some(Vec2::splat(26.0)),
+                                        ..default()
+                                    },
+                                    Transform::from_xyz(px, -py, 700.0),
+                                    Fx {
+                                        born: time.elapsed_secs_f64(),
+                                    },
+                                ));
+                            }
+                        }
                     }
                 }
                 ServerMessage::DamageNumber {
@@ -1601,6 +1691,12 @@ fn net_pump(
                         if let Some(d) = e.dir {
                             r.dir = (d as usize) % 8;
                         }
+                        if let Some(a) = e.armour {
+                            r.armour = a;
+                        }
+                        if e.weapon.is_some() {
+                            r.weapon = e.weapon;
+                        }
                     }
                 }
                 _ => {}
@@ -1659,6 +1755,9 @@ fn remote_step(
             if let Some((a, b)) = r.bar.take() {
                 commands.entity(a).despawn();
                 commands.entity(b).despawn();
+            }
+            if let Some(w) = r.wep_entity.take() {
+                commands.entity(w).despawn();
             }
             gone.push(id.clone());
             continue;
@@ -1723,7 +1822,7 @@ fn remote_step(
             } else {
                 r.dir * 4 + ((r.anim_t / 0.2) as usize % 4)
             };
-            (Layer::Hum, idx)
+            (Layer::Hum(r.armour), idx)
         };
         let Some(f) = world.frame(layer, 0, frame_idx as i32) else {
             continue;
@@ -1745,6 +1844,39 @@ fn remote_step(
             }
             None => {
                 r.entity = Some(commands.spawn((sprite, tf, Visibility::default())).id());
+            }
+        }
+        // 远程玩家武器叠层 (同帧号, z 微高)
+        if r.image.is_none() {
+            let wf = r
+                .weapon
+                .and_then(|s| world.frame(Layer::Weapon(s), 0, frame_idx as i32));
+            world.ensure_pages(&mut images);
+            match (wf, r.wep_entity) {
+                (Some(w), ent) => {
+                    let bx = r.pos.x as f32 * CELL_W - CELL_W / 2.0;
+                    let by = r.pos.y as f32 * CELL_H - CELL_H / 2.0;
+                    let ws = Sprite {
+                        image: world.pages[w.page].clone(),
+                        rect: Some(w.rect),
+                        anchor: Anchor::TopLeft,
+                        ..default()
+                    };
+                    let wt = Transform::from_xyz(bx + w.off.x, -(by + w.off.y), z + 0.0005);
+                    match ent {
+                        Some(e) => {
+                            commands.entity(e).insert((ws, wt, Visibility::Inherited));
+                        }
+                        None => {
+                            r.wep_entity =
+                                Some(commands.spawn((ws, wt, Visibility::default())).id());
+                        }
+                    }
+                }
+                (None, Some(e)) => {
+                    commands.entity(e).insert(Visibility::Hidden);
+                }
+                (None, None) => {}
             }
         }
         // 受伤怪头顶血条 (满血/死亡中不显示)
@@ -1805,8 +1937,14 @@ fn dev_autologin(
     let Ok(cred) = std::env::var("MIRFORGE_AUTOLOGIN") else {
         return;
     };
-    let Some((user, pass)) = cred.split_once(':') else {
+    let mut it = cred.splitn(3, ':');
+    let (Some(user), Some(pass)) = (it.next(), it.next()) else {
         return;
+    };
+    let class = match it.next() {
+        Some("mage") => CharacterClass::Mage,
+        Some("taoist") => CharacterClass::Taoist,
+        _ => CharacterClass::Warrior,
     };
     match screen.get() {
         Screen::Login if net.connected => {
@@ -1840,7 +1978,7 @@ fn dev_autologin(
                 *stage = 4;
                 net.send(ClientMessage::CreateCharacter {
                     name: user.into(),
-                    class: CharacterClass::Warrior,
+                    class,
                     gender: "male".into(),
                 });
             }
@@ -1853,6 +1991,32 @@ fn dev_autologin(
 #[derive(Component)]
 struct Fx {
     born: f64,
+}
+
+/// 技能 → 原版特效 (库 0=Magic/1=Magic2, 起始帧, 帧数)。
+/// 帧号出处: Crystal PlayerObject.cs 各 Spell 的 Effect(...) 定义
+fn skill_fx(id: &str) -> Option<(u8, i32, u8)> {
+    Some(match id {
+        "huoqiu" => (0, 170, 10),       // FireBall 命中爆焰
+        "zhiyu" => (0, 370, 10),        // Healing 金光
+        "leidian" => (1, 10, 5),        // ThunderBolt 落雷
+        "shidu" => (0, 770, 10),        // Poisoning 毒雾
+        "huofu" => (0, 1360, 10),       // SoulFireBall 符爆
+        "bingpaoxiao" => (0, 3850, 20), // IceStorm 冰暴
+        "shizihou" => (1, 710, 20),     // LionRoar 吼波
+        _ => return None,
+    })
+}
+
+/// 原版技能特效帧动画 (100ms/帧, 播完自毁; blend 亮度透明)
+#[derive(Component)]
+struct EffectAnim {
+    lib: u8,
+    base: i32,
+    frames: u8,
+    born: f64,
+    px: f32,
+    py: f32,
 }
 
 fn skill_color(id: &str) -> Color {
@@ -1939,7 +2103,19 @@ fn cast_skills(
 fn fx_step(
     mut commands: Commands,
     time: Res<Time>,
+    mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
     mut q: Query<(Entity, &mut Transform, &mut Sprite, &Fx)>,
+    mut q_anim: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Sprite,
+            &mut Visibility,
+            &EffectAnim,
+        ),
+        Without<Fx>,
+    >,
 ) {
     let now = time.elapsed_secs_f64();
     for (e, mut tf, mut sprite, fx) in q.iter_mut() {
@@ -1950,6 +2126,23 @@ fn fx_step(
         }
         tf.scale = Vec3::splat(1.0 + age * 5.0);
         sprite.color.set_alpha(0.85 * (1.0 - age * 2.0));
+    }
+    // 原版特效帧动画: 100ms/帧, blend (加色近似) 解码
+    for (e, mut tf, mut sp, mut vis, fx) in q_anim.iter_mut() {
+        let k = ((now - fx.born) / 0.1) as i32;
+        if k >= fx.frames as i32 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        if let Some(f) = world.frame_ex(Layer::Fx(fx.lib), 0, fx.base + k, true) {
+            world.ensure_pages(&mut images);
+            sp.image = world.pages[f.page].clone();
+            sp.rect = Some(f.rect);
+            sp.anchor = Anchor::TopLeft;
+            tf.translation.x = fx.px + f.off.x;
+            tf.translation.y = -(fx.py + f.off.y);
+            *vis = Visibility::Inherited;
+        }
     }
 }
 

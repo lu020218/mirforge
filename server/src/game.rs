@@ -230,6 +230,10 @@ struct ItemDef {
     attack: i32,
     defense: i32,
     hp: i32,
+    /// Items.Lib 图标帧号
+    image: u16,
+    /// 外观库号 (weapon → CWeapon, armor → CArmour)
+    shape: u16,
 }
 
 static ITEM_DEFS: [ItemDef; 7] = [
@@ -240,6 +244,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 2,
         defense: 0,
         hp: 0,
+        image: 30,
+        shape: 0,
     },
     ItemDef {
         template: "iron_sword",
@@ -248,6 +254,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 6,
         defense: 0,
         hp: 0,
+        image: 35,
+        shape: 5,
     },
     ItemDef {
         template: "cloth_armor",
@@ -256,6 +264,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 0,
         defense: 2,
         hp: 0,
+        image: 60,
+        shape: 1,
     },
     ItemDef {
         template: "leather_armor",
@@ -264,6 +274,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 0,
         defense: 4,
         hp: 10,
+        image: 61,
+        shape: 2,
     },
     ItemDef {
         template: "leather_helmet",
@@ -272,6 +284,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 0,
         defense: 2,
         hp: 0,
+        image: 105,
+        shape: 0,
     },
     ItemDef {
         template: "amber_necklace",
@@ -280,6 +294,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 2,
         defense: 0,
         hp: 0,
+        image: 196,
+        shape: 0,
     },
     ItemDef {
         template: "copper_ring",
@@ -288,6 +304,8 @@ static ITEM_DEFS: [ItemDef; 7] = [
         attack: 1,
         defense: 0,
         hp: 0,
+        image: 144,
+        shape: 0,
     },
 ];
 
@@ -305,6 +323,8 @@ fn make_item(template: &str) -> Option<protocol::ItemInfo> {
         attack: d.attack,
         defense: d.defense,
         hp: d.hp,
+        image: d.image,
+        shape: d.shape,
     })
 }
 
@@ -1762,6 +1782,9 @@ impl Game {
                     ),
                     dir: None,
                     removed: None,
+                    // 外观: 衣甲缺省 0 (基础模), 武器无则不带
+                    armour: Some(p.equipment.get("armor").map(|i| i.shape).unwrap_or(0)),
+                    weapon: p.equipment.get("weapon").map(|i| i.shape),
                 })
                 .collect();
             if entities.is_empty() {
@@ -1785,6 +1808,8 @@ impl Game {
                                 animation: None,
                                 dir: None,
                                 removed: Some(true),
+                                armour: None,
+                                weapon: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() {
@@ -1803,6 +1828,8 @@ impl Game {
                             animation: Some(anim.into()),
                             dir: Some(m.dir),
                             removed: None,
+                            armour: None,
+                            weapon: None,
                         })
                     }),
             );

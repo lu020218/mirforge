@@ -320,7 +320,7 @@ pub fn setup(
     world: Res<crate::World>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let icons = load_skill_icons(&net, world.mon_dir.parent(), &mut images);
+    let icons = load_skill_icons(&net, Some(world.data_root.as_path()), &mut images);
     // ── 底部中央动作条 (透明背景, gap 22) ──
     commands
         .spawn((

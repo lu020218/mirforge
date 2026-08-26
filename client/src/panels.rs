@@ -345,6 +345,9 @@ pub fn refresh(
     net: Res<Net>,
     skin: Res<Skin>,
     portrait: Option<Res<crate::Portrait>>,
+    world: Res<crate::World>,
+    mut icons: ResMut<crate::ItemIcons>,
+    mut images: ResMut<Assets<Image>>,
     mut last_rev: Local<(u32, u32, u32)>,
     q_body: Query<(Entity, &PanelBody)>,
 ) {
@@ -354,12 +357,23 @@ pub fn refresh(
     }
     *last_rev = rev;
     let portrait = portrait.as_ref().and_then(|p| p.0.clone());
+    // 本次重建涉及的物品图标预取
+    let mut icon_of = |img: u16| icons.get(img, &world.data_root, &mut images);
+    let inv_icons: Vec<Option<Handle<Image>>> =
+        net.inventory.iter().map(|i| icon_of(i.image)).collect();
+    let equip_icons: std::collections::HashMap<String, Option<Handle<Image>>> = net
+        .equipment
+        .iter()
+        .map(|(k, i)| (k.clone(), icon_of(i.image)))
+        .collect();
     for (entity, body) in &q_body {
         let mut e = commands.entity(entity);
         e.despawn_descendants();
         match body.0 {
-            PanelKind::Bag => build_bag(&mut e, &net, &skin),
-            PanelKind::Character => build_character(&mut e, &net, &skin, portrait.clone()),
+            PanelKind::Bag => build_bag(&mut e, &net, &skin, &inv_icons),
+            PanelKind::Character => {
+                build_character(&mut e, &net, &skin, portrait.clone(), &equip_icons)
+            }
             PanelKind::Quest => build_quest(&mut e, &net, &skin),
         }
     }
@@ -378,7 +392,12 @@ fn text(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) -> i
 }
 
 /// 背包: 8×4 网格 44px 格, 物品格白边+名字, 点击穿戴; 底栏统计
-fn build_bag(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) {
+fn build_bag(
+    e: &mut bevy::ecs::system::EntityCommands,
+    net: &Net,
+    skin: &Skin,
+    icons: &[Option<Handle<Image>>],
+) {
     let items = net.inventory.clone();
     let font = skin.font.clone();
     let used = items.len();
@@ -414,9 +433,22 @@ fn build_bag(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) 
                 ));
                 if let Some(it) = item {
                     slot.insert((Button, EquipItem(it.id.clone())));
+                    let icon = icons.get(i).cloned().flatten();
                     let name: String = it.name.chars().take(2).collect();
-                    slot.with_children(|s| {
-                        s.spawn(text(&font, name, 13.0, QUALITY_COMMON));
+                    slot.with_children(|s| match icon {
+                        Some(h) => {
+                            s.spawn((
+                                Node {
+                                    width: Val::Px(38.0),
+                                    height: Val::Px(38.0),
+                                    ..default()
+                                },
+                                ImageNode::new(h),
+                            ));
+                        }
+                        None => {
+                            s.spawn(text(&font, name, 13.0, QUALITY_COMMON));
+                        }
                     });
                 }
             }
@@ -457,15 +489,18 @@ fn build_bag(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin) 
 }
 
 /// 装备槽 56px (底排 52px): 有装备→金边+名字缩写(点击卸下), 空→暗边+占位名
+#[allow(clippy::too_many_arguments)]
 fn equip_slot(
     parent: &mut ChildBuilder,
     font: &Handle<Font>,
     equipment: &std::collections::HashMap<String, protocol::ItemInfo>,
+    icons: &std::collections::HashMap<String, Option<Handle<Image>>>,
     slot_key: Option<&'static str>,
     label: &str,
     size: f32,
 ) {
     let item = slot_key.and_then(|k| equipment.get(k));
+    let icon = slot_key.and_then(|k| icons.get(k)).cloned().flatten();
     let mut n = parent.spawn((
         Node {
             width: Val::Px(size),
@@ -482,14 +517,26 @@ fn equip_slot(
     if let (Some(key), true) = (slot_key, item.is_some()) {
         n.insert((Button, UnequipSlot(key)));
     }
-    match item {
-        Some(it) => {
+    match (item, icon) {
+        (Some(_), Some(h)) => {
+            n.with_children(|s| {
+                s.spawn((
+                    Node {
+                        width: Val::Px(size - 12.0),
+                        height: Val::Px(size - 12.0),
+                        ..default()
+                    },
+                    ImageNode::new(h),
+                ));
+            });
+        }
+        (Some(it), None) => {
             let name: String = it.name.chars().take(2).collect();
             n.with_children(|s| {
                 s.spawn(text(font, name, 13.0, QUALITY_COMMON));
             });
         }
-        None => {
+        (None, _) => {
             n.with_children(|s| {
                 s.spawn(text(font, label, 10.0, DISABLED));
             });
@@ -503,6 +550,7 @@ fn build_character(
     net: &Net,
     skin: &Skin,
     portrait: Option<(Handle<Image>, Vec2)>,
+    icons: &std::collections::HashMap<String, Option<Handle<Image>>>,
 ) {
     let font = skin.font.clone();
     let equipment = net.equipment.clone();
@@ -532,10 +580,10 @@ fn build_character(
                 ..default()
             })
             .with_children(|col| {
-                equip_slot(col, &font, &equipment, Some("weapon"), "武器", 56.0);
-                equip_slot(col, &font, &equipment, Some("armor"), "衣服", 56.0);
-                equip_slot(col, &font, &equipment, None, "护腕", 56.0);
-                equip_slot(col, &font, &equipment, Some("ring"), "戒指", 56.0);
+                equip_slot(col, &font, &equipment, icons, Some("weapon"), "武器", 56.0);
+                equip_slot(col, &font, &equipment, icons, Some("armor"), "衣服", 56.0);
+                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0);
+                equip_slot(col, &font, &equipment, icons, Some("ring"), "戒指", 56.0);
             });
             // 中央立绘 (150×240 剪影近似) + 名字/Lv
             row.spawn(Node {
@@ -605,10 +653,18 @@ fn build_character(
                 ..default()
             })
             .with_children(|col| {
-                equip_slot(col, &font, &equipment, Some("helmet"), "头盔", 56.0);
-                equip_slot(col, &font, &equipment, Some("necklace"), "项链", 56.0);
-                equip_slot(col, &font, &equipment, None, "护腕", 56.0);
-                equip_slot(col, &font, &equipment, None, "戒指", 56.0);
+                equip_slot(col, &font, &equipment, icons, Some("helmet"), "头盔", 56.0);
+                equip_slot(
+                    col,
+                    &font,
+                    &equipment,
+                    icons,
+                    Some("necklace"),
+                    "项链",
+                    56.0,
+                );
+                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0);
+                equip_slot(col, &font, &equipment, icons, None, "戒指", 56.0);
             });
         });
         // 底排 5 槽 52px 居中
@@ -620,7 +676,7 @@ fn build_character(
         })
         .with_children(|row| {
             for label in ["腰带", "鞋子", "宝石", "生肖", "星座"] {
-                equip_slot(row, &font, &equipment, None, label, 52.0);
+                equip_slot(row, &font, &equipment, icons, None, label, 52.0);
             }
         });
         // 属性: 两列 grid, 顶分隔线

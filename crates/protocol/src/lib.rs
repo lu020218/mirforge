@@ -127,6 +127,12 @@ pub struct EntityUpdate {
     /// true = 实体已消失（如怪物死亡），客户端移除
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed: Option<bool>,
+    /// 玩家外观 (衣甲 CArmour 库号); 怪物无
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armour: Option<u16>,
+    /// 玩家外观 (武器 CWeapon 库号); 无武器/怪物 = None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +237,12 @@ pub struct ItemInfo {
     pub defense: i32,
     #[serde(default)]
     pub hp: i32,
+    /// Items.Lib 图标帧号
+    #[serde(default)]
+    pub image: u16,
+    /// 外观库编号 (weapon → CWeapon/{shape:02}.Lib, armor → CArmour)
+    #[serde(default)]
+    pub shape: u16,
 }
 
 // ─────────── 载荷结构 ───────────
@@ -348,6 +360,8 @@ mod tests {
                 animation: Some("walk".into()),
                 dir: None,
                 removed: None,
+                armour: None,
+                weapon: None,
             }],
             timestamp: 12345,
         };
