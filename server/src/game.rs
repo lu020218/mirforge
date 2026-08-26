@@ -80,8 +80,10 @@ fn exp_required(level: u32) -> u64 {
     level as u64 * 100
 }
 
-// ─────────── 技能 (迁自旧服务器三职业设计; 数值随 3.4 装备化再校) ───────────
+// ─────────── 游戏数据 (JSON 配置驱动, server/data/*.json 可覆盖内置默认) ───────────
 
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum SkillKind {
     /// 单体伤害 (攻击 × 倍率)
     Damage(f64),
@@ -91,142 +93,98 @@ enum SkillKind {
     Heal,
 }
 
+#[derive(Clone, serde::Deserialize)]
 struct SkillDef {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: String,
     mp: i32,
-    cd: Duration,
+    cd_ms: u64,
     level: u32,
     range: f64,
     self_cast: bool,
     kind: SkillKind,
 }
 
-const fn ms(v: u64) -> Duration {
-    Duration::from_millis(v)
+impl SkillDef {
+    fn cd(&self) -> Duration {
+        Duration::from_millis(self.cd_ms)
+    }
 }
 
-use SkillKind::{Aoe, Damage, Heal};
-static WARRIOR_SKILLS: [SkillDef; 3] = [
-    SkillDef {
-        id: "liehuo",
-        name: "烈火剑法",
-        mp: 5,
-        cd: ms(3000),
-        level: 1,
-        range: 2.5,
-        self_cast: false,
-        kind: Damage(2.5),
-    },
-    SkillDef {
-        id: "yeman",
-        name: "野蛮冲撞",
-        mp: 8,
-        cd: ms(6000),
-        level: 3,
-        range: 2.5,
-        self_cast: false,
-        kind: Damage(1.6),
-    },
-    SkillDef {
-        id: "shizihou",
-        name: "狮子吼",
-        mp: 15,
-        cd: ms(10000),
-        level: 5,
-        range: 0.0,
-        self_cast: true,
-        kind: Aoe {
-            radius: 3.0,
-            mult: 1.2,
-        },
-    },
-];
-static MAGE_SKILLS: [SkillDef; 3] = [
-    SkillDef {
-        id: "huoqiu",
-        name: "火球术",
-        mp: 6,
-        cd: ms(1500),
-        level: 1,
-        range: 7.0,
-        self_cast: false,
-        kind: Damage(2.0),
-    },
-    SkillDef {
-        id: "leidian",
-        name: "雷电术",
-        mp: 12,
-        cd: ms(4000),
-        level: 3,
-        range: 7.0,
-        self_cast: false,
-        kind: Aoe {
-            radius: 2.0,
-            mult: 1.8,
-        },
-    },
-    SkillDef {
-        id: "bingpaoxiao",
-        name: "冰咆哮",
-        mp: 20,
-        cd: ms(8000),
-        level: 5,
-        range: 7.0,
-        self_cast: false,
-        kind: Aoe {
-            radius: 3.5,
-            mult: 2.2,
-        },
-    },
-];
-static TAOIST_SKILLS: [SkillDef; 3] = [
-    SkillDef {
-        id: "zhiyu",
-        name: "治愈术",
-        mp: 8,
-        cd: ms(3000),
-        level: 1,
-        range: 0.0,
-        self_cast: true,
-        kind: Heal,
-    },
-    SkillDef {
-        id: "shidu",
-        name: "施毒术",
-        mp: 10,
-        cd: ms(4000),
-        level: 3,
-        range: 7.0,
-        self_cast: false,
-        kind: Damage(1.5),
-    },
-    SkillDef {
-        id: "huofu",
-        name: "灵魂火符",
-        mp: 12,
-        cd: ms(2000),
-        level: 5,
-        range: 7.0,
-        self_cast: false,
-        kind: Damage(2.0),
-    },
-];
+#[derive(serde::Deserialize)]
+struct SkillsCfg {
+    warrior: Vec<SkillDef>,
+    mage: Vec<SkillDef>,
+    taoist: Vec<SkillDef>,
+}
+
+/// 全部数据配置 (物品/技能/任务)。内置默认与 server/data/*.json 同源
+struct GameData {
+    items: Vec<ItemDef>,
+    skills: SkillsCfg,
+    quests: Vec<QuestDef>,
+}
+
+static DATA: std::sync::OnceLock<GameData> = std::sync::OnceLock::new();
+
+impl GameData {
+    fn builtin() -> Self {
+        GameData {
+            items: serde_json::from_str(include_str!("../data/items.json")).expect("内置 items"),
+            skills: serde_json::from_str(include_str!("../data/skills.json")).expect("内置 skills"),
+            quests: serde_json::from_str(include_str!("../data/quests.json")).expect("内置 quests"),
+        }
+    }
+
+    /// 从目录加载 (缺文件回退内置); 启动时调用一次
+    pub fn load(dir: &std::path::Path) -> Self {
+        fn read<T: serde::de::DeserializeOwned>(p: std::path::PathBuf, what: &str) -> Option<T> {
+            let text = std::fs::read_to_string(&p).ok()?;
+            match serde_json::from_str(&text) {
+                Ok(v) => {
+                    info!("{what} 配置: {p:?}");
+                    Some(v)
+                }
+                Err(e) => {
+                    tracing::error!("{what} 配置解析失败 {p:?}: {e}, 使用内置默认");
+                    None
+                }
+            }
+        }
+        let b = Self::builtin();
+        GameData {
+            items: read(dir.join("items.json"), "物品").unwrap_or(b.items),
+            skills: read(dir.join("skills.json"), "技能").unwrap_or(b.skills),
+            quests: read(dir.join("quests.json"), "任务").unwrap_or(b.quests),
+        }
+    }
+}
+
+/// 启动时注入数据配置 (未调用则用内置默认 — 测试路径)
+pub fn init_data(dir: &std::path::Path) {
+    let _ = DATA.set(GameData::load(dir));
+}
+
+fn data() -> &'static GameData {
+    DATA.get_or_init(GameData::builtin)
+}
 
 fn skills_for(class: protocol::CharacterClass) -> &'static [SkillDef] {
+    let d = data();
     match class {
-        protocol::CharacterClass::Warrior => &WARRIOR_SKILLS,
-        protocol::CharacterClass::Mage => &MAGE_SKILLS,
-        protocol::CharacterClass::Taoist => &TAOIST_SKILLS,
+        protocol::CharacterClass::Warrior => &d.skills.warrior,
+        protocol::CharacterClass::Mage => &d.skills.mage,
+        protocol::CharacterClass::Taoist => &d.skills.taoist,
     }
 }
 
 // ─────────── 物品 (M3.4; 模板静态表, 掉落表走边车) ───────────
 
+#[derive(Clone, serde::Deserialize)]
 struct ItemDef {
-    template: &'static str,
-    name: &'static str,
-    slot: &'static str,
+    template: String,
+    name: String,
+    slot: String,
     attack: i32,
     defense: i32,
     hp: i32,
@@ -236,90 +194,17 @@ struct ItemDef {
     shape: u16,
 }
 
-static ITEM_DEFS: [ItemDef; 7] = [
-    ItemDef {
-        template: "wooden_sword",
-        name: "木剑",
-        slot: "weapon",
-        attack: 2,
-        defense: 0,
-        hp: 0,
-        image: 30,
-        shape: 0,
-    },
-    ItemDef {
-        template: "iron_sword",
-        name: "铁剑",
-        slot: "weapon",
-        attack: 6,
-        defense: 0,
-        hp: 0,
-        image: 35,
-        shape: 5,
-    },
-    ItemDef {
-        template: "cloth_armor",
-        name: "布衣",
-        slot: "armor",
-        attack: 0,
-        defense: 2,
-        hp: 0,
-        image: 60,
-        shape: 1,
-    },
-    ItemDef {
-        template: "leather_armor",
-        name: "皮甲",
-        slot: "armor",
-        attack: 0,
-        defense: 4,
-        hp: 10,
-        image: 61,
-        shape: 2,
-    },
-    ItemDef {
-        template: "leather_helmet",
-        name: "皮盔",
-        slot: "helmet",
-        attack: 0,
-        defense: 2,
-        hp: 0,
-        image: 105,
-        shape: 0,
-    },
-    ItemDef {
-        template: "amber_necklace",
-        name: "琥珀项链",
-        slot: "necklace",
-        attack: 2,
-        defense: 0,
-        hp: 0,
-        image: 196,
-        shape: 0,
-    },
-    ItemDef {
-        template: "copper_ring",
-        name: "铜戒指",
-        slot: "ring",
-        attack: 1,
-        defense: 0,
-        hp: 0,
-        image: 144,
-        shape: 0,
-    },
-];
-
 fn item_def(template: &str) -> Option<&'static ItemDef> {
-    ITEM_DEFS.iter().find(|d| d.template == template)
+    data().items.iter().find(|d| d.template == template)
 }
 
 fn make_item(template: &str) -> Option<protocol::ItemInfo> {
     let d = item_def(template)?;
     Some(protocol::ItemInfo {
         id: uuid::Uuid::new_v4().to_string(),
-        template: d.template.to_string(),
-        name: d.name.to_string(),
-        slot: d.slot.to_string(),
+        template: d.template.clone(),
+        name: d.name.clone(),
+        slot: d.slot.clone(),
         attack: d.attack,
         defense: d.defense,
         hp: d.hp,
@@ -352,41 +237,18 @@ pub struct DropEntry {
 
 // ─────────── 任务 (M3.5; 三链新手任务, 迁自旧服务器) ───────────
 
+#[derive(Clone, serde::Deserialize)]
 struct QuestDef {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: String,
     /// (怪物模板, 数量)
-    objectives: &'static [(&'static str, u32)],
+    objectives: Vec<(String, u32)>,
     exp_reward: u64,
-    prereq: Option<&'static str>,
+    prereq: Option<String>,
 }
 
-static QUEST_DEFS: [QuestDef; 3] = [
-    QuestDef {
-        id: "hunt_chicken",
-        name: "新手试炼·猎鸡",
-        objectives: &[("chicken", 3)],
-        exp_reward: 50,
-        prereq: None,
-    },
-    QuestDef {
-        id: "hunt_deer",
-        name: "猎鹿行动",
-        objectives: &[("deer", 2)],
-        exp_reward: 80,
-        prereq: Some("hunt_chicken"),
-    },
-    QuestDef {
-        id: "scarecrow_menace",
-        name: "稻田除害",
-        objectives: &[("scarecrow", 2)],
-        exp_reward: 150,
-        prereq: Some("hunt_deer"),
-    },
-];
-
 fn quest_def(id: &str) -> Option<&'static QuestDef> {
-    QUEST_DEFS.iter().find(|q| q.id == id)
+    data().quests.iter().find(|q| q.id == id)
 }
 
 /// 任务进度 (持久化)
@@ -625,8 +487,15 @@ impl Game {
         (self.rng >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    pub async fn run(mut self, mut events: mpsc::UnboundedReceiver<ConnEvent>) {
+    pub async fn run(
+        mut self,
+        mut events: mpsc::UnboundedReceiver<ConnEvent>,
+        admin: Option<mpsc::UnboundedReceiver<crate::admin::AdminCmd>>,
+    ) {
+        let started = Instant::now();
         let mut tick = tokio::time::interval(TICK);
+        // 无管理台时用永不来消息的空通道占位
+        let mut admin = admin.unwrap_or_else(|| mpsc::unbounded_channel().1);
         loop {
             tokio::select! {
                 ev = events.recv() => {
@@ -636,7 +505,97 @@ impl Game {
                         None => break,
                     }
                 }
+                Some(cmd) = admin.recv() => self.handle_admin(cmd, started).await,
                 _ = tick.tick() => self.tick().await,
+            }
+        }
+    }
+
+    /// 全员立即存档
+    async fn save_all(&self) {
+        for (id, p) in &self.players {
+            let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
+            let _ = self.db.save_progress(id, p.level, p.exp).await;
+            let _ = self.db.save_items(id, &p.inventory, &p.equipment).await;
+            let _ = self.db.save_quests(id, &p.quests).await;
+        }
+    }
+
+    /// 管理台命令 (与玩法同循环, 无并发状态)
+    async fn handle_admin(&mut self, cmd: crate::admin::AdminCmd, started: Instant) {
+        use crate::admin::{AdminCmd, PlayerRow, StatusSnapshot};
+        match cmd {
+            AdminCmd::Status(reply) => {
+                let players = self
+                    .players
+                    .values()
+                    .map(|p| PlayerRow {
+                        name: p.character.name.clone(),
+                        level: p.level,
+                        zone: self
+                            .zones
+                            .get(&p.zone)
+                            .map(|z| z.name.clone())
+                            .unwrap_or_else(|| p.zone.clone()),
+                        x: p.x,
+                        y: p.y,
+                        hp: p.hp,
+                        max_hp: p.max_hp,
+                        connected: p.connected,
+                    })
+                    .collect();
+                let _ = reply.send(StatusSnapshot {
+                    uptime_secs: started.elapsed().as_secs(),
+                    players,
+                    monsters_alive: self.monsters.iter().filter(|m| m.alive()).count(),
+                    monsters_total: self.monsters.len(),
+                    ground_items: self.ground.len(),
+                    zones: self.zones.values().map(|z| z.name.clone()).collect(),
+                });
+            }
+            AdminCmd::Broadcast(message) => {
+                let conns: Vec<String> = self
+                    .players
+                    .values()
+                    .filter(|p| p.connected)
+                    .map(|p| p.conn_id.clone())
+                    .collect();
+                broadcast_to(
+                    &self.sessions,
+                    &conns,
+                    ServerMessage::Notification {
+                        message: format!("[公告] {message}"),
+                        notification_type: "system".into(),
+                    },
+                )
+                .await;
+            }
+            AdminCmd::Kick { name, done } => {
+                let conn = self
+                    .players
+                    .values()
+                    .find(|p| p.character.name == name && p.connected)
+                    .map(|p| p.conn_id.clone());
+                let kicked = match conn {
+                    Some(c) => {
+                        send_to(
+                            &self.sessions,
+                            &c,
+                            ServerMessage::Error {
+                                message: "已被管理员断开连接".into(),
+                            },
+                        )
+                        .await;
+                        self.on_disconnect(&c).await;
+                        true
+                    }
+                    None => false,
+                };
+                let _ = done.send(kicked);
+            }
+            AdminCmd::SaveAll(done) => {
+                self.save_all().await;
+                let _ = done.send(());
             }
         }
     }
@@ -1067,7 +1026,7 @@ impl Game {
                 id: s.id.to_string(),
                 name: s.name.to_string(),
                 mp_cost: s.mp,
-                cooldown_ms: s.cd.as_millis() as u64,
+                cooldown_ms: s.cd().as_millis() as u64,
                 required_level: s.level,
                 range: s.range,
                 self_cast: s.self_cast,
@@ -1296,10 +1255,11 @@ impl Game {
         let Some(p) = self.players.get(char_id) else {
             return;
         };
-        let quests = QUEST_DEFS
+        let quests = data()
+            .quests
             .iter()
             .filter_map(|def| {
-                let prog = p.quests.get(def.id);
+                let prog = p.quests.get(&def.id);
                 let state = match prog {
                     Some(q) if q.state == 2 => "completed",
                     Some(_) => "active",
@@ -1307,6 +1267,7 @@ impl Game {
                         // 前置完成才可接
                         let ok = def
                             .prereq
+                            .as_deref()
                             .is_none_or(|pr| p.quests.get(pr).is_some_and(|q| q.state == 2));
                         if !ok {
                             return None;
@@ -1354,6 +1315,7 @@ impl Game {
             }
             let prereq_ok = def
                 .prereq
+                .as_deref()
                 .is_none_or(|pr| p.quests.get(pr).is_some_and(|q| q.state == 2));
             if !prereq_ok {
                 return;
@@ -1677,7 +1639,7 @@ impl Game {
             if p.level < def.level {
                 return;
             }
-            if p.cooldowns.get(def.id).is_some_and(|&t| now < t) {
+            if p.cooldowns.get(&def.id).is_some_and(|&t| now < t) {
                 return;
             }
             if p.mp < def.mp {
@@ -1713,7 +1675,7 @@ impl Game {
         {
             let p = self.players.get_mut(&char_id).unwrap();
             p.mp -= def.mp;
-            p.cooldowns.insert(def.id.to_string(), now + def.cd);
+            p.cooldowns.insert(def.id.clone(), now + def.cd());
         }
         // 结算
         let dmg_base = attack_for(level) + self.players[&char_id].equip_attack();
@@ -1897,12 +1859,7 @@ impl Game {
         }
         if now.duration_since(self.last_save) > SAVE_EVERY {
             self.last_save = now;
-            for (id, p) in &self.players {
-                let _ = self.db.save_position(id, &p.zone, p.x, p.y).await;
-                let _ = self.db.save_progress(id, p.level, p.exp).await;
-                let _ = self.db.save_items(id, &p.inventory, &p.equipment).await;
-                let _ = self.db.save_quests(id, &p.quests).await;
-            }
+            self.save_all().await;
         }
         // 怪物 AI (有玩家在线才跑)
         if !self.players.is_empty() {
@@ -2302,7 +2259,7 @@ mod tests {
             assert_eq!(skills.len(), 3);
             let mut last_level = 0;
             for s in skills {
-                assert!(ids.insert(s.id), "技能 id 重复: {}", s.id);
+                assert!(ids.insert(s.id.clone()), "技能 id 重复: {}", s.id);
                 assert!(s.level >= last_level);
                 last_level = s.level;
             }
@@ -2310,13 +2267,17 @@ mod tests {
         // 物品模板唯一 + 槽位合法
         let slots = ["weapon", "armor", "helmet", "necklace", "ring"];
         let mut templates = std::collections::HashSet::new();
-        for d in &ITEM_DEFS {
-            assert!(templates.insert(d.template), "物品模板重复: {}", d.template);
-            assert!(slots.contains(&d.slot), "非法槽位: {}", d.slot);
+        for d in &data().items {
+            assert!(
+                templates.insert(d.template.clone()),
+                "物品模板重复: {}",
+                d.template
+            );
+            assert!(slots.contains(&d.slot.as_str()), "非法槽位: {}", d.slot);
         }
         // 任务前置指向存在的任务
-        for q in &QUEST_DEFS {
-            if let Some(pr) = q.prereq {
+        for q in &data().quests {
+            if let Some(pr) = q.prereq.as_deref() {
                 assert!(quest_def(pr).is_some(), "任务 {} 前置 {pr} 不存在", q.id);
             }
         }

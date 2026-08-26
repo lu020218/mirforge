@@ -17,6 +17,7 @@
 //! ```
 //! `spawn` 省略取地图中心；出生点与传送落点都会自动吸附到最近可走格。
 
+mod admin;
 mod db;
 mod game;
 mod gateway;
@@ -186,6 +187,18 @@ async fn main() {
     let addr = std::env::var("MIRFORGE_ADDR").unwrap_or_else(|_| "127.0.0.1:4000".into());
     let db_path = std::env::var("MIRFORGE_DB").unwrap_or_else(|_| "mirforge.db".into());
 
+    // 数据配置 (物品/技能/任务): MIRFORGE_DATA 或 data/、server/data/; 缺省内置
+    let data_dir = std::env::var("MIRFORGE_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            ["data", "server/data"]
+                .iter()
+                .map(PathBuf::from)
+                .find(|p| p.is_dir())
+                .unwrap_or_else(|| PathBuf::from("data"))
+        });
+    game::init_data(&data_dir);
+
     let idx = mir_formats::scan::ResourceIndex::scan(Path::new(&root));
     // 边车目录里的每个 <map>.json 就是一个区域
     let dir = zones_dir();
@@ -240,6 +253,7 @@ async fn main() {
     let (gw, events) = gateway::Gateway::new();
     let sessions = gw.sessions();
     let game = game::Game::new(zones, default_zone, db, sessions);
-    tokio::spawn(game.run(events));
+    let admin_rx = admin::spawn();
+    tokio::spawn(game.run(events, admin_rx));
     Arc::new(gw).listen(&addr).await.expect("网关监听失败");
 }

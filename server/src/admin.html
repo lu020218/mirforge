@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>MirForge 管理台</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 28px 36px; background: #0d0f18; color: #e8e2d0;
+         font: 14px/1.6 "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 18px; letter-spacing: 6px; color: #c9a55c; font-weight: 600; }
+  .cards { display: flex; gap: 14px; margin: 18px 0; flex-wrap: wrap; }
+  .card { background: rgba(13,15,24,.9); border: 1px solid #2a2d3c; border-radius: 4px;
+          padding: 12px 20px; min-width: 120px; }
+  .card b { display: block; font-size: 22px; color: #ffd876; }
+  .card span { font-size: 12px; color: #9a917c; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #1c1f2e; font-size: 13px; }
+  th { color: #9a917c; font-weight: normal; }
+  td .off { color: #5b5648; }
+  button { background: #372d19; color: #ffd876; border: 1px solid #6b5a32; border-radius: 3px;
+           padding: 5px 14px; cursor: pointer; font-family: inherit; }
+  button:hover { background: #4a3c22; }
+  input { background: #0e1017; color: #e8e2d0; border: 1px solid #2a2d3c; border-radius: 3px;
+          padding: 6px 10px; font-family: inherit; width: 320px; }
+  .row { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
+  #msg { color: #7bd88f; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>MIRFORGE 管理台</h1>
+<div class="cards">
+  <div class="card"><b id="c-uptime">-</b><span>运行时长</span></div>
+  <div class="card"><b id="c-players">-</b><span>在线玩家</span></div>
+  <div class="card"><b id="c-monsters">-</b><span>怪物 存活/总数</span></div>
+  <div class="card"><b id="c-ground">-</b><span>地面物品</span></div>
+  <div class="card"><b id="c-zones">-</b><span>区域</span></div>
+</div>
+<div class="row">
+  <input id="bc" placeholder="全服公告内容…">
+  <button onclick="broadcastMsg()">发送公告</button>
+  <button onclick="saveAll()">立即存档</button>
+  <span id="msg"></span>
+</div>
+<table>
+  <thead><tr><th>角色</th><th>等级</th><th>区域</th><th>坐标</th><th>HP</th><th>状态</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+const token = localStorage.getItem('admToken') || '';
+const hdr = token ? { 'x-admin-token': token } : {};
+function fmtUp(s) {
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  return h > 0 ? `${h}h${m}m` : `${m}m${s%60}s`;
+}
+async function tick() {
+  try {
+    const r = await fetch('/api/status', { headers: hdr });
+    if (r.status === 401) { document.getElementById('msg').textContent =
+      '未授权: localStorage.setItem("admToken", "<token>") 后刷新'; return; }
+    const d = await r.json();
+    c('c-uptime', fmtUp(d.uptime_secs));
+    c('c-players', d.players.filter(p => p.connected).length);
+    c('c-monsters', d.monsters_alive + '/' + d.monsters_total);
+    c('c-ground', d.ground_items);
+    c('c-zones', d.zones.length);
+    document.getElementById('rows').innerHTML = d.players.map(p => `<tr>
+      <td>${p.name}</td><td>${p.level}</td><td>${p.zone}</td>
+      <td>${p.x.toFixed(1)}, ${p.y.toFixed(1)}</td><td>${p.hp}/${p.max_hp}</td>
+      <td>${p.connected ? '在线' : '<span class=off>重连窗</span>'}</td>
+      <td><button onclick="kick('${p.name}')">踢下线</button></td></tr>`).join('');
+  } catch (e) { /* 服务器未就绪 */ }
+}
+function c(id, v) { document.getElementById(id).textContent = v; }
+async function broadcastMsg() {
+  const message = document.getElementById('bc').value.trim();
+  if (!message) return;
+  await fetch('/api/broadcast', { method: 'POST',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ message }) });
+  document.getElementById('bc').value = '';
+  flash('公告已发送');
+}
+async function kick(name) {
+  await fetch('/api/kick', { method: 'POST',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ name }) });
+  flash(name + ' 已踢下线'); tick();
+}
+async function saveAll() {
+  await fetch('/api/save', { method: 'POST', headers: hdr });
+  flash('已存档');
+}
+function flash(t) { const m = document.getElementById('msg');
+  m.textContent = t; setTimeout(() => m.textContent = '', 2500); }
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
