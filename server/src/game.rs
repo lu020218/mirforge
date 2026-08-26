@@ -1912,8 +1912,13 @@ impl Game {
                 }
                 let speed = if m.chasing { CHASE_SPEED } else { WANDER_SPEED };
                 let step = (speed * dt).min(dist);
-                let (sx, sy) = (dx / dist * step, dy / dist * step);
-                m.dir = dir8_from(dx, dy) as u8;
+                // 8 向量化移动 (原版语义): 位移严格沿朝向轴, 斜差由后续
+                // tick 折线补齐 — 客户端朝向与位移因此恒一致
+                let dir = dir8_from(dx, dy);
+                m.dir = dir as u8;
+                let (vx, vy) = sim::DIR8[dir];
+                let adv = step.min(dx * vx + dy * vy);
+                let (sx, sy) = (vx * adv, vy * adv);
                 let (nx, ny) = zone.walk.try_move(m.x, m.y, sx, sy, BODY_RADIUS);
                 if (nx - m.x).abs() < 1e-9 && (ny - m.y).abs() < 1e-9 {
                     m.target = None; // 完全卡死则放弃本次目标
@@ -2180,6 +2185,29 @@ mod tests {
         g.monsters[0].next_decide = now;
         g.monster_ai(now);
         assert!(!g.monsters[0].chasing, "被动怪不应追击");
+    }
+
+    #[tokio::test]
+    async fn monster_moves_along_dir8() {
+        let mut g = test_game().await;
+        // 玩家在斜向偏 10° 处 (非 8 向轴) → 追击位移仍须严格沿 8 向
+        g.players
+            .insert("char1".into(), test_player("c1", "z1", 14.0, 10.7));
+        let now = Instant::now();
+        g.monsters[0].next_decide = now;
+        let (x0, y0) = (g.monsters[0].x, g.monsters[0].y);
+        g.monster_ai(now);
+        let m = &g.monsters[0];
+        let (dx, dy) = (m.x - x0, m.y - y0);
+        assert!(dx.hypot(dy) > 1e-6, "追击应产生位移");
+        let (vx, vy) = sim::DIR8[m.dir as usize];
+        // 位移与朝向向量共线 (叉积≈0) 且同向
+        assert!(
+            (dx * vy - dy * vx).abs() < 1e-9,
+            "位移 ({dx},{dy}) 未沿 dir{} 轴",
+            m.dir
+        );
+        assert!(dx * vx + dy * vy > 0.0);
     }
 
     #[tokio::test]
