@@ -24,3 +24,5 @@ Thumbs.db
 
 # 设计画布产物 (2MB+, 由 design/*.dc.html 重新生成)
 design/mirforge-ui-design.html
+*.db-shm
+*.db-wal
