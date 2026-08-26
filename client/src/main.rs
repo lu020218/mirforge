@@ -231,8 +231,25 @@ struct Remote {
     walk_phase: f64,
     /// 最近实际位移时刻 (行走动画 0.25s 去抖, 防插值追上目标后站/走高频交替)
     last_move_t: f64,
+    /// 当前 8 向段已走距离 (换向粒度控制)
+    seg_walked: f64,
     last_seen: f64,
 }
+
+/// 8 向单位向量 (编号与 sim::dir8_from 一致: 0=北, 顺时针)
+const DIR8_VEC: [(f64, f64); 8] = {
+    const D: f64 = std::f64::consts::FRAC_1_SQRT_2;
+    [
+        (0.0, -1.0),
+        (D, -D),
+        (1.0, 0.0),
+        (D, D),
+        (0.0, 1.0),
+        (-D, D),
+        (-1.0, 0.0),
+        (-D, -D),
+    ]
+};
 
 #[derive(Resource, Default)]
 struct Remotes(HashMap<String, Remote>);
@@ -1673,11 +1690,25 @@ fn remote_step(
         };
         let step = (speed * dt).max(dist * 4.0 * dt);
         if dist > 0.02 && r.anim < 3 {
-            r.dir = dir8_from(d.x, d.y);
-            let adv = dist.min(step);
-            r.pos += d / dist * adv;
-            r.walk_phase += adv;
-            r.last_move_t = now;
+            // 8 向量化插值 (原版语义): 位移严格沿 8 向之一, 朝向=位移方向,
+            // 斜差以折线补齐 — 消除"朝左走却向上/下滑"的连续斜移观感
+            let v = DIR8_VEC[r.dir];
+            let along = d.x * v.0 + d.y * v.1;
+            // 当前方向已无进展 (目标在侧后方) 或本段走满 0.5 格 → 重选主导方向
+            if along < 0.01 || r.seg_walked >= 0.5 {
+                r.dir = dir8_from(d.x, d.y);
+                r.seg_walked = 0.0;
+            }
+            let v = DIR8_VEC[r.dir];
+            let along = (d.x * v.0 + d.y * v.1).max(0.0);
+            let adv = step.min(along);
+            if adv > 0.0 {
+                r.pos.x += v.0 * adv;
+                r.pos.y += v.1 * adv;
+                r.walk_phase += adv;
+                r.seg_walked += adv;
+                r.last_move_t = now;
+            }
         } else if r.anim < 3 && dist > 0.0 {
             r.pos = r.target;
         }
