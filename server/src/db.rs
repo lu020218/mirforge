@@ -55,6 +55,10 @@ impl Db {
                 .connect_with(opts)
                 .await?
         } else {
+            // WAL: 写不阻塞读, 断电/崩溃可恢复; busy_timeout 防瞬时锁冲突
+            let opts = opts
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .busy_timeout(std::time::Duration::from_secs(5));
             SqlitePoolOptions::new().connect_with(opts).await?
         };
         sqlx::query(
