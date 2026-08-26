@@ -745,8 +745,8 @@ struct Player {
     attack_start: Option<f64>,
 }
 
-/// 普攻动作时长 (6 帧 × 90ms) 与客户端侧冷却
-const ATTACK_ANIM_SECS: f64 = 0.54;
+/// 普攻动作时长 (8 帧 × 90ms) 与客户端侧冷却
+const ATTACK_ANIM_SECS: f64 = 0.72;
 const ATTACK_CD_SECS: f64 = 0.6;
 /// 攻击射程 (格)
 const ATTACK_RANGE: f64 = 2.4;
@@ -955,9 +955,10 @@ fn player_sprite(
         return;
     };
     let now_t = time.elapsed_secs_f64();
-    // 帧表 (男, CArmour 实证布局): 站 0+dir*4 (4帧); 走 32+dir*6; 跑 80+dir*6; 攻 128+dir*6 (一次性)
+    // 帧表 (男, CArmour 实证布局): 站 0+dir*4 (4帧); 走 32+dir*6; 跑 80+dir*6;
+    // 攻 128+dir*8 (8帧/向, 一次性 — 逐帧 dump 实证, 6 帧/向会串向)
     let frame_idx = if let Some(t) = p.attack_start.filter(|t| now_t - t < ATTACK_ANIM_SECS) {
-        128 + p.dir * 6 + (((now_t - t) / 0.09) as usize).min(5)
+        128 + p.dir * 8 + (((now_t - t) / 0.09) as usize).min(7)
     } else if p.moving && p.running {
         80 + p.dir * 6 + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
     } else if p.moving {
