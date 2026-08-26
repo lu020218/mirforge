@@ -231,8 +231,6 @@ struct Remote {
     walk_phase: f64,
     /// 最近实际位移时刻 (行走动画 0.25s 去抖, 防插值追上目标后站/走高频交替)
     last_move_t: f64,
-    /// 当前 8 向段已走距离 (换向粒度控制)
-    seg_walked: f64,
     last_seen: f64,
 }
 
@@ -1675,14 +1673,11 @@ fn remote_step(
         };
         let step = (speed * dt).max(dist * 4.0 * dt);
         if dist > 0.05 && r.anim < 3 {
-            // 8 向量化插值 (服务器移动同为 8 向, target 轨迹即折线):
-            // 位移严格沿 8 向之一, 朝向=位移方向, 斜差以折线补齐
+            // 8 向量化插值: 服务器移动同为 8 向懒转向, target 轨迹即折线;
+            // 客户端严格重放 — 沿当前朝向走到投影耗尽才换向 (与服务器同规则)
             let v = sim::DIR8[r.dir];
-            let along = d.x * v.0 + d.y * v.1;
-            // 当前方向已无进展 (目标在侧后方) 或本段走满 0.5 格 → 重选主导方向
-            if along < 0.01 || r.seg_walked >= 0.5 {
+            if d.x * v.0 + d.y * v.1 < 0.01 {
                 r.dir = dir8_from(d.x, d.y);
-                r.seg_walked = 0.0;
             }
             let v = sim::DIR8[r.dir];
             let along = (d.x * v.0 + d.y * v.1).max(0.0);
@@ -1691,7 +1686,6 @@ fn remote_step(
                 r.pos.x += v.0 * adv;
                 r.pos.y += v.1 * adv;
                 r.walk_phase += adv;
-                r.seg_walked += adv;
                 r.last_move_t = now;
             }
         } else if r.anim < 3 && dist > 0.0 {

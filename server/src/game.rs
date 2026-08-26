@@ -1912,9 +1912,16 @@ impl Game {
                 }
                 let speed = if m.chasing { CHASE_SPEED } else { WANDER_SPEED };
                 let step = (speed * dt).min(dist);
-                // 8 向量化移动 (原版语义): 位移严格沿朝向轴, 斜差由后续
-                // tick 折线补齐 — 客户端朝向与位移因此恒一致
-                let dir = dir8_from(dx, dy);
+                // 8 向量化移动 (原版语义): 位移严格沿朝向轴。转向贪心懒惰:
+                // 沿当前朝向仍有进展就不换向 (走完该轴分量才重选主导方向),
+                // 一段斜线最多转向一两次 — 避免逐 tick 重算导致的高频摆头
+                let cur = (m.dir as usize) % 8;
+                let (cvx, cvy) = sim::DIR8[cur];
+                let dir = if dx * cvx + dy * cvy > 1e-6 {
+                    cur
+                } else {
+                    dir8_from(dx, dy)
+                };
                 m.dir = dir as u8;
                 let (vx, vy) = sim::DIR8[dir];
                 let adv = step.min(dx * vx + dy * vy);
