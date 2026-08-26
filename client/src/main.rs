@@ -990,7 +990,9 @@ struct Zoom(u32);
 
 impl Default for Zoom {
     fn default() -> Self {
-        Zoom(2)
+        // 默认 1× = 不缩放, 源像素与物理像素 1:1 (最锐利);
+        // 高分屏嫌人物小可用 PageUp/+ 提档或 F 循环
+        Zoom(1)
     }
 }
 
