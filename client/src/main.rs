@@ -962,7 +962,7 @@ fn debug_panel(
 }
 
 /// 按动作/方向/时间挑帧并更新精灵与变换 (paperdoll: 衣甲换库 + 武器叠层)
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn player_sprite(
     mut commands: Commands,
     time: Res<Time>,
