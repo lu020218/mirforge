@@ -1239,7 +1239,7 @@ impl Game {
             }
             let Some(def) = quest_def(qid) else { continue };
             for (i, (target, required)) in def.objectives.iter().enumerate() {
-                if target == &template && prog.counts[i] < *required {
+                if *target == template && prog.counts[i] < *required {
                     prog.counts[i] += 1;
                     changed = true;
                 }
