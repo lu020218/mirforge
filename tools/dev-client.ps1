@@ -11,13 +11,18 @@ param(
 
 Set-Location (Join-Path $PSScriptRoot "..")
 
+# 显式路径无效时回退自动探测 (环境变量残留旧路径的常见坑)
+if ($Res -and -not (Test-Path (Join-Path $Res "Map"))) {
+    Write-Warning "MIRFORGE_RES=$Res 无效 (缺 Map/ 子目录), 回退自动探测"
+    $Res = $null
+}
 if (-not $Res) {
     # 默认使用仓库内 resources/ (不入库, 见 .gitignore)
     $c = Join-Path (Get-Location) "resources"
     if (Test-Path (Join-Path $c "Map")) { $Res = $c }
 }
-if (-not $Res -or -not (Test-Path (Join-Path $Res "Map"))) {
-    Write-Error "找不到传奇资源目录 (需含 Map/ 子目录)。请设置 `$env:MIRFORGE_RES 或用 -Res 参数指定。"
+if (-not $Res) {
+    Write-Error "找不到传奇资源目录 (需含 Map/ 子目录)。请将资源放入仓库根 resources/, 或设置 `$env:MIRFORGE_RES / -Res 参数。"
     exit 2
 }
 
