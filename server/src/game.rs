@@ -82,9 +82,9 @@ fn exp_required(level: u32) -> u64 {
 
 // ─────────── 游戏数据 (JSON 配置驱动, server/data/*.json 可覆盖内置默认) ───────────
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SkillKind {
+pub enum SkillKind {
     /// 单体伤害 (攻击 × 倍率)
     Damage(f64),
     /// 以目标/自身为圆心的范围伤害
@@ -93,8 +93,8 @@ enum SkillKind {
     Heal,
 }
 
-#[derive(Clone, serde::Deserialize)]
-struct SkillDef {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillDef {
     id: String,
     name: String,
     mp: i32,
@@ -111,21 +111,23 @@ impl SkillDef {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct SkillsCfg {
-    warrior: Vec<SkillDef>,
-    mage: Vec<SkillDef>,
-    taoist: Vec<SkillDef>,
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillsCfg {
+    pub warrior: Vec<SkillDef>,
+    pub mage: Vec<SkillDef>,
+    pub taoist: Vec<SkillDef>,
 }
 
 /// 全部数据配置 (物品/技能/任务)。内置默认与 server/data/*.json 同源
-struct GameData {
-    items: Vec<ItemDef>,
-    skills: SkillsCfg,
-    quests: Vec<QuestDef>,
+#[derive(Clone)]
+pub struct GameData {
+    pub items: Vec<ItemDef>,
+    pub skills: SkillsCfg,
+    pub quests: Vec<QuestDef>,
 }
 
-static DATA: std::sync::OnceLock<GameData> = std::sync::OnceLock::new();
+static DATA: std::sync::RwLock<Option<std::sync::Arc<GameData>>> = std::sync::RwLock::new(None);
+static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 impl GameData {
     fn builtin() -> Self {
@@ -162,26 +164,85 @@ impl GameData {
 
 /// 启动时注入数据配置 (未调用则用内置默认 — 测试路径)
 pub fn init_data(dir: &std::path::Path) {
-    let _ = DATA.set(GameData::load(dir));
+    let _ = DATA_DIR.set(dir.to_path_buf());
+    *DATA.write().unwrap() = Some(std::sync::Arc::new(GameData::load(dir)));
 }
 
-fn data() -> &'static GameData {
-    DATA.get_or_init(GameData::builtin)
+/// 配置文件目录 (管理台写回用; 未 init 时为 None)
+pub fn data_dir() -> Option<&'static std::path::Path> {
+    DATA_DIR.get().map(|p| p.as_path())
 }
 
-fn skills_for(class: protocol::CharacterClass) -> &'static [SkillDef] {
+pub fn data() -> std::sync::Arc<GameData> {
+    if let Some(d) = DATA.read().unwrap().as_ref() {
+        return d.clone();
+    }
+    let mut w = DATA.write().unwrap();
+    w.get_or_insert_with(|| std::sync::Arc::new(GameData::builtin()))
+        .clone()
+}
+
+/// 热替换配置 (管理台校验通过后调用)
+pub fn set_data(d: GameData) {
+    *DATA.write().unwrap() = Some(std::sync::Arc::new(d));
+}
+
+impl GameData {
+    /// 业务校验: id 唯一 / 槽位合法 / 任务前置存在。错误列表为空即通过
+    pub fn validate(&self) -> Vec<String> {
+        let mut errs = Vec::new();
+        let slots = ["weapon", "armor", "helmet", "necklace", "ring"];
+        let mut tpl = std::collections::HashSet::new();
+        for d in &self.items {
+            if !tpl.insert(&d.template) {
+                errs.push(format!("物品模板重复: {}", d.template));
+            }
+            if !slots.contains(&d.slot.as_str()) {
+                errs.push(format!("物品 {} 槽位非法: {}", d.template, d.slot));
+            }
+        }
+        let mut sid = std::collections::HashSet::new();
+        for s in self
+            .skills
+            .warrior
+            .iter()
+            .chain(&self.skills.mage)
+            .chain(&self.skills.taoist)
+        {
+            if !sid.insert(&s.id) {
+                errs.push(format!("技能 id 重复: {}", s.id));
+            }
+        }
+        let qids: std::collections::HashSet<&str> =
+            self.quests.iter().map(|q| q.id.as_str()).collect();
+        let mut qseen = std::collections::HashSet::new();
+        for q in &self.quests {
+            if !qseen.insert(&q.id) {
+                errs.push(format!("任务 id 重复: {}", q.id));
+            }
+            if let Some(pr) = q.prereq.as_deref() {
+                if !qids.contains(pr) {
+                    errs.push(format!("任务 {} 前置不存在: {pr}", q.id));
+                }
+            }
+        }
+        errs
+    }
+}
+
+fn skills_for(class: protocol::CharacterClass) -> Vec<SkillDef> {
     let d = data();
     match class {
-        protocol::CharacterClass::Warrior => &d.skills.warrior,
-        protocol::CharacterClass::Mage => &d.skills.mage,
-        protocol::CharacterClass::Taoist => &d.skills.taoist,
+        protocol::CharacterClass::Warrior => d.skills.warrior.clone(),
+        protocol::CharacterClass::Mage => d.skills.mage.clone(),
+        protocol::CharacterClass::Taoist => d.skills.taoist.clone(),
     }
 }
 
 // ─────────── 物品 (M3.4; 模板静态表, 掉落表走边车) ───────────
 
-#[derive(Clone, serde::Deserialize)]
-struct ItemDef {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ItemDef {
     template: String,
     name: String,
     slot: String,
@@ -194,8 +255,12 @@ struct ItemDef {
     shape: u16,
 }
 
-fn item_def(template: &str) -> Option<&'static ItemDef> {
-    data().items.iter().find(|d| d.template == template)
+fn item_def(template: &str) -> Option<ItemDef> {
+    data()
+        .items
+        .iter()
+        .find(|d| d.template == template)
+        .cloned()
 }
 
 fn make_item(template: &str) -> Option<protocol::ItemInfo> {
@@ -237,8 +302,8 @@ pub struct DropEntry {
 
 // ─────────── 任务 (M3.5; 三链新手任务, 迁自旧服务器) ───────────
 
-#[derive(Clone, serde::Deserialize)]
-struct QuestDef {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuestDef {
     id: String,
     name: String,
     /// (怪物模板, 数量)
@@ -247,8 +312,8 @@ struct QuestDef {
     prereq: Option<String>,
 }
 
-fn quest_def(id: &str) -> Option<&'static QuestDef> {
-    data().quests.iter().find(|q| q.id == id)
+fn quest_def(id: &str) -> Option<QuestDef> {
+    data().quests.iter().find(|q| q.id == id).cloned()
 }
 
 /// 任务进度 (持久化)
@@ -552,6 +617,19 @@ impl Game {
                     ground_items: self.ground.len(),
                     zones: self.zones.values().map(|z| z.name.clone()).collect(),
                 });
+            }
+            AdminCmd::ConfigReloaded => {
+                // 在线玩家即时重推技能表 (数值/新技能立即可见)
+                let ids: Vec<String> = self
+                    .players
+                    .iter()
+                    .filter(|(_, p)| p.connected)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in ids {
+                    self.send_skill_list(&id).await;
+                }
+                info!("配置热重载: 已重推 {} 名在线玩家技能表", self.players.len());
             }
             AdminCmd::Broadcast(message) => {
                 let conns: Vec<String> = self
@@ -1631,7 +1709,8 @@ impl Game {
             return;
         };
         let class = self.players[&char_id].character.class;
-        let Some(def) = skills_for(class).iter().find(|s| s.id == skill_id) else {
+        let skills = skills_for(class);
+        let Some(def) = skills.iter().find(|s| s.id == skill_id) else {
             return;
         };
         {
@@ -2267,7 +2346,8 @@ mod tests {
         // 物品模板唯一 + 槽位合法
         let slots = ["weapon", "armor", "helmet", "necklace", "ring"];
         let mut templates = std::collections::HashSet::new();
-        for d in &data().items {
+        let dref = data();
+        for d in &dref.items {
             assert!(
                 templates.insert(d.template.clone()),
                 "物品模板重复: {}",
@@ -2276,7 +2356,7 @@ mod tests {
             assert!(slots.contains(&d.slot.as_str()), "非法槽位: {}", d.slot);
         }
         // 任务前置指向存在的任务
-        for q in &data().quests {
+        for q in &dref.quests {
             if let Some(pr) = q.prereq.as_deref() {
                 assert!(quest_def(pr).is_some(), "任务 {} 前置 {pr} 不存在", q.id);
             }

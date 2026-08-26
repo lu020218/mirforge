@@ -18,6 +18,8 @@ use tokio::sync::{mpsc, oneshot};
 /// 管理命令 (游戏循环内处理)
 pub enum AdminCmd {
     Status(oneshot::Sender<StatusSnapshot>),
+    /// 配置已热替换 (通知在线玩家刷新技能表等)
+    ConfigReloaded,
     Broadcast(String),
     Kick {
         name: String,
@@ -139,6 +141,101 @@ async fn api_save(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Serialize)]
+struct ConfigPayload {
+    items: serde_json::Value,
+    skills: serde_json::Value,
+    quests: serde_json::Value,
+}
+
+async fn api_config_get(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ConfigPayload>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let d = crate::game::data();
+    Ok(Json(ConfigPayload {
+        items: serde_json::to_value(&d.items).unwrap_or_default(),
+        skills: serde_json::to_value(&d.skills).unwrap_or_default(),
+        quests: serde_json::to_value(&d.quests).unwrap_or_default(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PutConfigReq {
+    kind: String,
+    /// 对应类别的完整 JSON (与 server/data/*.json 同构)
+    value: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct PutConfigResp {
+    ok: bool,
+    errors: Vec<String>,
+}
+
+async fn api_config_put(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PutConfigReq>,
+) -> Result<Json<PutConfigResp>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let fail = |e: String| {
+        Json(PutConfigResp {
+            ok: false,
+            errors: vec![e],
+        })
+    };
+    // 以当前生效配置为基, 替换目标类别 → 整体校验
+    let cur = crate::game::data();
+    let mut next = (*cur).clone();
+    let parsed: Result<(), String> = (|| {
+        match req.kind.as_str() {
+            "items" => {
+                next.items =
+                    serde_json::from_value(req.value.clone()).map_err(|e| format!("items: {e}"))?
+            }
+            "skills" => {
+                next.skills =
+                    serde_json::from_value(req.value.clone()).map_err(|e| format!("skills: {e}"))?
+            }
+            "quests" => {
+                next.quests =
+                    serde_json::from_value(req.value.clone()).map_err(|e| format!("quests: {e}"))?
+            }
+            k => return Err(format!("未知配置类别: {k}")),
+        }
+        Ok(())
+    })();
+    if let Err(e) = parsed {
+        return Ok(fail(e));
+    }
+    let errors = next.validate();
+    if !errors.is_empty() {
+        return Ok(Json(PutConfigResp { ok: false, errors }));
+    }
+    // 写回文件 (白名单文件名, 无路径拼接风险)
+    if let Some(dir) = crate::game::data_dir() {
+        let path = dir.join(format!("{}.json", req.kind));
+        let mut pretty = serde_json::to_string_pretty(&req.value).unwrap_or_default();
+        pretty.push('\n');
+        if let Err(e) = std::fs::write(&path, pretty) {
+            return Ok(fail(format!("写入 {path:?} 失败: {e}")));
+        }
+    }
+    crate::game::set_data(next);
+    let _ = st.tx.send(AdminCmd::ConfigReloaded);
+    tracing::info!("配置已更新并热重载: {}", req.kind);
+    Ok(Json(PutConfigResp {
+        ok: true,
+        errors: Vec::new(),
+    }))
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("admin.html"))
 }
@@ -162,6 +259,7 @@ pub fn spawn() -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         .route("/api/broadcast", post(api_broadcast))
         .route("/api/kick", post(api_kick))
         .route("/api/save", post(api_save))
+        .route("/api/config", get(api_config_get).put(api_config_put))
         .with_state(state);
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {

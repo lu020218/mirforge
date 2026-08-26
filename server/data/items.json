@@ -1,9 +1,72 @@
 [
-  { "template": "wooden_sword", "name": "木剑", "slot": "weapon", "attack": 2, "defense": 0, "hp": 0, "image": 30, "shape": 0 },
-  { "template": "iron_sword", "name": "铁剑", "slot": "weapon", "attack": 6, "defense": 0, "hp": 0, "image": 35, "shape": 5 },
-  { "template": "cloth_armor", "name": "布衣", "slot": "armor", "attack": 0, "defense": 2, "hp": 0, "image": 60, "shape": 1 },
-  { "template": "leather_armor", "name": "皮甲", "slot": "armor", "attack": 0, "defense": 4, "hp": 10, "image": 61, "shape": 2 },
-  { "template": "leather_helmet", "name": "皮盔", "slot": "helmet", "attack": 0, "defense": 2, "hp": 0, "image": 105, "shape": 0 },
-  { "template": "amber_necklace", "name": "琥珀项链", "slot": "necklace", "attack": 2, "defense": 0, "hp": 0, "image": 196, "shape": 0 },
-  { "template": "copper_ring", "name": "铜戒指", "slot": "ring", "attack": 1, "defense": 0, "hp": 0, "image": 144, "shape": 0 }
+  {
+    "attack": 2,
+    "defense": 0,
+    "hp": 0,
+    "image": 30,
+    "name": "木剑",
+    "shape": 0,
+    "slot": "weapon",
+    "template": "wooden_sword"
+  },
+  {
+    "attack": 6,
+    "defense": 0,
+    "hp": 0,
+    "image": 35,
+    "name": "铁剑",
+    "shape": 5,
+    "slot": "weapon",
+    "template": "iron_sword"
+  },
+  {
+    "attack": 0,
+    "defense": 2,
+    "hp": 0,
+    "image": 60,
+    "name": "布衣",
+    "shape": 1,
+    "slot": "armor",
+    "template": "cloth_armor"
+  },
+  {
+    "attack": 0,
+    "defense": 4,
+    "hp": 10,
+    "image": 61,
+    "name": "皮甲",
+    "shape": 2,
+    "slot": "armor",
+    "template": "leather_armor"
+  },
+  {
+    "attack": 0,
+    "defense": 2,
+    "hp": 0,
+    "image": 105,
+    "name": "皮盔",
+    "shape": 0,
+    "slot": "helmet",
+    "template": "leather_helmet"
+  },
+  {
+    "attack": 2,
+    "defense": 0,
+    "hp": 0,
+    "image": 196,
+    "name": "琥珀项链",
+    "shape": 0,
+    "slot": "necklace",
+    "template": "amber_necklace"
+  },
+  {
+    "attack": 1,
+    "defense": 0,
+    "hp": 0,
+    "image": 144,
+    "name": "铜戒指",
+    "shape": 0,
+    "slot": "ring",
+    "template": "copper_ring"
+  }
 ]

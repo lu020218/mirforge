@@ -24,10 +24,26 @@
           padding: 6px 10px; font-family: inherit; width: 320px; }
   .row { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
   #msg { color: #7bd88f; font-size: 12px; }
+  .tabs { display: flex; gap: 4px; margin-top: 22px; border-bottom: 1px solid #2a2d3c; }
+  .tabs button { border-radius: 3px 3px 0 0; border-bottom: none; background: #171a26; color: #9a917c; }
+  .tabs button.on { background: #372d19; color: #ffd876; }
+  .pane { display: none; padding-top: 12px; }
+  .pane.on { display: block; }
+  textarea { width: 100%; min-height: 320px; background: #0e1017; color: #cfc8b4;
+             border: 1px solid #2a2d3c; border-radius: 3px; padding: 10px;
+             font: 12px/1.5 Consolas, monospace; box-sizing: border-box; }
+  td input { width: 70px; padding: 3px 6px; }
+  td input.wide { width: 110px; }
+  #cfg-err { color: #e04040; font-size: 12px; white-space: pre-line; }
 </style>
 </head>
 <body>
 <h1>MIRFORGE 管理台</h1>
+<div class="tabs">
+  <button id="tab-status" class="on" onclick="showTab('status')">状态</button>
+  <button id="tab-config" onclick="showTab('config')">配置</button>
+</div>
+<div id="pane-status" class="pane on">
 <div class="cards">
   <div class="card"><b id="c-uptime">-</b><span>运行时长</span></div>
   <div class="card"><b id="c-players">-</b><span>在线玩家</span></div>
@@ -45,6 +61,28 @@
   <thead><tr><th>角色</th><th>等级</th><th>区域</th><th>坐标</th><th>HP</th><th>状态</th><th></th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
+</div>
+
+<div id="pane-config" class="pane">
+  <div class="row">
+    <button onclick="loadCfg()">重新载入</button>
+    <button onclick="saveCfg('items')">保存物品</button>
+    <button onclick="saveCfg('skills')">保存技能</button>
+    <button onclick="saveCfg('quests')">保存任务</button>
+    <span style="color:#9a917c;font-size:12px">保存 = 校验 → 写回 server/data/*.json → 热重载 (在线玩家立即生效)</span>
+  </div>
+  <div id="cfg-err"></div>
+  <h3 style="color:#c9a55c;font-size:14px">物品 items.json</h3>
+  <table id="item-table">
+    <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="row"><button onclick="addItemRow()">+ 新增物品</button></div>
+  <h3 style="color:#c9a55c;font-size:14px">技能 skills.json <span style="color:#5b5648;font-size:12px">(kind: {"damage":2.5} / {"aoe":{"radius":3,"mult":1.2}} / "heal")</span></h3>
+  <textarea id="skills-json" spellcheck="false"></textarea>
+  <h3 style="color:#c9a55c;font-size:14px">任务 quests.json</h3>
+  <textarea id="quests-json" spellcheck="false"></textarea>
+</div>
 <script>
 const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
@@ -92,6 +130,62 @@ async function saveAll() {
 }
 function flash(t) { const m = document.getElementById('msg');
   m.textContent = t; setTimeout(() => m.textContent = '', 2500); }
+function showTab(t) {
+  for (const k of ['status', 'config']) {
+    document.getElementById('tab-' + k).classList.toggle('on', k === t);
+    document.getElementById('pane-' + k).classList.toggle('on', k === t);
+  }
+  if (t === 'config') loadCfg();
+}
+const ITEM_COLS = ['template','name','slot','attack','defense','hp','image','shape'];
+const NUM_COLS = new Set(['attack','defense','hp','image','shape']);
+function itemRow(it) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = ITEM_COLS.map(c =>
+    `<td><input class="${c === 'template' || c === 'name' ? 'wide' : ''}" data-c="${c}" value="${it[c] ?? (NUM_COLS.has(c) ? 0 : '')}"></td>`
+  ).join('') + `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
+  return tr;
+}
+async function loadCfg() {
+  const r = await fetch('/api/config', { headers: hdr });
+  if (!r.ok) return;
+  const d = await r.json();
+  const tb = document.querySelector('#item-table tbody');
+  tb.innerHTML = '';
+  d.items.forEach(it => tb.appendChild(itemRow(it)));
+  document.getElementById('skills-json').value = JSON.stringify(d.skills, null, 2);
+  document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
+  document.getElementById('cfg-err').textContent = '';
+}
+function addItemRow() {
+  document.querySelector('#item-table tbody').appendChild(itemRow(
+    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, defense: 0, hp: 0, image: 0, shape: 0 }));
+}
+function collectItems() {
+  return [...document.querySelectorAll('#item-table tbody tr')].map(tr => {
+    const o = {};
+    tr.querySelectorAll('input').forEach(inp => {
+      const c = inp.dataset.c;
+      o[c] = NUM_COLS.has(c) ? Number(inp.value) || 0 : inp.value.trim();
+    });
+    return o;
+  });
+}
+async function saveCfg(kind) {
+  let value;
+  try {
+    value = kind === 'items' ? collectItems()
+          : JSON.parse(document.getElementById(kind + '-json').value);
+  } catch (e) {
+    document.getElementById('cfg-err').textContent = 'JSON 语法错误: ' + e.message; return;
+  }
+  const r = await fetch('/api/config', { method: 'PUT',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ kind, value }) });
+  const resp = await r.json();
+  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.errors.join('\n');
+  if (resp.ok) flash(kind + ' 已保存并热重载');
+}
 tick(); setInterval(tick, 2000);
 </script>
 </body>
