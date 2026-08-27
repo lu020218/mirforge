@@ -621,6 +621,41 @@ async fn api_map_thumb(
         .unwrap())
 }
 
+/// 地图原图瓦片: 每块 16x16 格 (768x512px)
+async fn api_map_tile(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxPath((map, tx, ty)): AxPath<(String, u32, u32)>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let (done, rx) = oneshot::channel();
+    let map_name = map.clone();
+    st.tx
+        .send(AdminCmd::MapThumbInfo { map, done })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let info = rx
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let root = RES_ROOT.get().cloned().ok_or(StatusCode::NOT_FOUND)?;
+    let png = tokio::task::spawn_blocking(move || {
+        let map = mir_formats::map::parse(&std::fs::read(&info.path).ok()?).ok()?;
+        Some(crate::map_render::tile_cached(
+            &root, &map_name, &map, tx, ty,
+        ))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=86400")
+        .body(axum::body::Body::from(png.to_vec()))
+        .unwrap())
+}
+
 /// 小地图选择网格: mmap.Lib 帧缩放到单元格 (5 列)
 async fn api_minimap_grid(
     State(st): State<AppState>,
@@ -752,6 +787,7 @@ pub fn spawn(
         .route("/api/frame/:kind/:n", get(api_frame_png))
         .route("/api/minimaps", get(api_minimap_grid))
         .route("/api/mapthumb/:map", get(api_map_thumb))
+        .route("/api/maptile/:map/:tx/:ty", get(api_map_tile))
         .with_state(state);
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {

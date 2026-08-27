@@ -25,6 +25,7 @@ mod config_store;
 mod db;
 mod game;
 mod gateway;
+mod map_render;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
