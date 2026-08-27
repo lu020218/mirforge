@@ -555,7 +555,7 @@ async fn api_map_thumb(
                         }
                     }
                 }
-                let v = if total == 0 { 0 } else { walk * 255 / total };
+                let v = (walk * 255).checked_div(total).unwrap_or(0);
                 let g = 40 + (v * 150 / 255) as u8;
                 img.put_pixel(tx2, ty, image::Rgba([g, g, (g as u16 + 14) as u8, 255]));
             }
