@@ -128,8 +128,17 @@
     </div>
     <div style="display:flex;gap:20px;margin-top:10px;flex-wrap:wrap">
       <div>
-        <div style="color:#9a917c;font-size:12px;margin-bottom:4px">地图示意 (浅=可走 / 金=出生点 / 青=传送门 / 红=刷新点)</div>
-        <img id="ze-thumb" style="max-width:512px;border:1px solid #2a2d3c;border-radius:3px;background:#0e1017">
+        <div style="color:#9a917c;font-size:12px;margin-bottom:4px">
+          地图示意 (浅=可走 / 金=出生点 / 青=传送门 / 红=刷新点)
+          <span style="color:#5b5648">— 先点下方"取点"按钮, 再点图取坐标</span>
+        </div>
+        <div class="row" style="margin:0 0 6px">
+          <button id="pick-spawn" onclick="startPick('spawn')">取点: 出生点</button>
+          <button id="pick-portal" onclick="startPick('portal')">取点: 新传送门</button>
+          <button id="pick-mob" onclick="startPick('mob')">取点: 新刷新点</button>
+          <span id="pick-hint" style="color:#7bd88f;font-size:12px"></span>
+        </div>
+        <img id="ze-thumb" onclick="thumbClick(event)" style="max-width:512px;border:1px solid #2a2d3c;border-radius:3px;background:#0e1017">
       </div>
       <div>
         <div style="color:#9a917c;font-size:12px;margin-bottom:4px">小地图预览</div>
@@ -396,7 +405,8 @@ function renderZoneList() {
     const mm = sc.minimap != null ? `帧 ${sc.minimap}` : '<span class=off>未配置</span>';
     return `<tr data-map="${z.map}"><td>${z.map}</td><td>${z.name}</td><td>${sp}</td><td>${mm}</td>
       <td>${(sc.portals || []).length}</td><td>${(sc.monsters || []).length}</td><td>${mon}</td>
-      <td><button onclick="toggleZone('${z.map}')">${z.map === zoneEditing ? '收起' : '编辑'}</button></td></tr>`;
+      <td><button onclick="toggleZone('${z.map}')">${z.map === zoneEditing ? '收起' : '编辑'}</button>
+      <button onclick="delZone('${z.map}')" style="background:#3a1c1c;color:#e08080;border-color:#6b3232">移除</button></td></tr>`;
   }).join('');
 }
 function numCell(v, w) { return `<td><input value="${v ?? ''}" style="width:${w || 60}px"></td>`; }
@@ -456,7 +466,8 @@ function showZone(map) {
   (sc.monsters || []).forEach(m => sb.appendChild(spawnRow(m)));
   document.getElementById('ze-mm').value = sc.minimap ?? '';
   syncMinimapPreview();
-  document.getElementById('ze-thumb').src = `/api/mapthumb/${encodeURIComponent(map)}?_=${Date.now()}`;
+  loadThumb(map);
+  endPick();
   mountZoneEditor(map);
 }
 /// 把编辑面板挂到该地图所在行的下方 (手风琴式行内展开)
@@ -569,6 +580,60 @@ async function saveZone() {
   const resp = await r.json();
   document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
   if (resp.ok) { flash(zoneEditing + ' 已保存并热重载'); loadZones(); }
+}
+async function delZone(map) {
+  if (!confirm(`确定移除区域 ${map}? (配置将从库中删除, 地图文件不受影响)`)) return;
+  const r = await fetch('/api/zones', { method: 'DELETE',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ map }) });
+  const resp = await r.json();
+  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
+  if (resp.ok) {
+    if (zoneEditing === map) closeZone();
+    flash(map + ' 已移除');
+    loadZones();
+  }
+}
+// ── 在地图示意图上取坐标 ──
+let pickMode = null, thumbDims = null;
+function startPick(mode) {
+  pickMode = mode;
+  const label = { spawn: '出生点', portal: '新传送门', mob: '新刷新点' }[mode];
+  document.getElementById('pick-hint').textContent = `点击地图设置${label}坐标 (Esc 取消)`;
+  document.getElementById('ze-thumb').style.cursor = 'crosshair';
+}
+function endPick() {
+  pickMode = null;
+  document.getElementById('pick-hint').textContent = '';
+  document.getElementById('ze-thumb').style.cursor = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') endPick(); });
+async function loadThumb(map) {
+  const r = await fetch(`/api/mapthumb/${encodeURIComponent(map)}?_=${Date.now()}`, { headers: hdr });
+  if (!r.ok) return;
+  thumbDims = { w: Number(r.headers.get('x-map-width')), h: Number(r.headers.get('x-map-height')) };
+  const blob = await r.blob();
+  document.getElementById('ze-thumb').src = URL.createObjectURL(blob);
+}
+function thumbClick(ev) {
+  if (!pickMode || !thumbDims) return;
+  const img = ev.target, r = img.getBoundingClientRect();
+  // 图像像素 → 地图格 (缩略图等比例覆盖整图)
+  const gx = Math.round((ev.clientX - r.left) / r.width * thumbDims.w * 10) / 10 + 0.5;
+  const gy = Math.round((ev.clientY - r.top) / r.height * thumbDims.h * 10) / 10 + 0.5;
+  if (pickMode === 'spawn') {
+    document.getElementById('ze-sx').value = gx;
+    document.getElementById('ze-sy').value = gy;
+  } else if (pickMode === 'portal') {
+    const tr = portalRow({ x: gx, y: gy, to: Object.keys(zoneData).find(m => m !== zoneEditing) || zoneEditing });
+    document.querySelector('#portal-table tbody').appendChild(tr);
+  } else {
+    const tr = spawnRow({ template: 'chicken', image: 3, x: gx, y: gy, count: 3, radius: 4, passive: true, hp: 12, damage: 0, exp: 5, drops: [] });
+    document.querySelector('#spawn-table tbody').appendChild(tr);
+  }
+  document.getElementById('pick-hint').textContent = `已取 (${gx}, ${gy}) — 记得保存区域`;
+  pickMode = null;
+  document.getElementById('ze-thumb').style.cursor = '';
 }
 async function addZone() {
   const map = document.getElementById('zone-avail').value;

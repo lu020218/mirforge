@@ -448,6 +448,24 @@ pub async fn save_zone(pool: &SqlitePool, map: &str, sc: &ZoneSidecar) -> Result
     tx.commit().await
 }
 
+/// 删除区域配置 (含传送门/刷新点/掉落)
+pub async fn delete_zone(pool: &SqlitePool, map: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM cfg_drops WHERE spawn_id IN (SELECT id FROM cfg_spawns WHERE map = ?)",
+    )
+    .bind(map)
+    .execute(&mut *tx)
+    .await?;
+    for t in ["cfg_spawns", "cfg_portals", "cfg_zones"] {
+        sqlx::query(&format!("DELETE FROM {t} WHERE map = ?"))
+            .bind(map)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
 // ─────────── 首次种子导入（库为空时，从 JSON 文件/内置默认灌入一次） ───────────
 
 pub async fn seed_from_files(

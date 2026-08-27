@@ -39,6 +39,11 @@ pub enum AdminCmd {
         map: String,
         done: oneshot::Sender<Result<(), String>>,
     },
+    /// 移除区域 (仅在无人在场且无传送门指向时允许)
+    DeleteZone {
+        map: String,
+        done: oneshot::Sender<Result<(), String>>,
+    },
     /// 地图缩略图所需信息 (文件路径 + 标记点)
     MapThumbInfo {
         map: String,
@@ -345,6 +350,28 @@ async fn api_zones_put(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
+async fn api_zones_delete(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AddZoneReq>,
+) -> Result<Json<ZoneOpResp>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let (tx, rx) = oneshot::channel();
+    st.tx
+        .send(AdminCmd::DeleteZone {
+            map: req.map.clone(),
+            done: tx,
+        })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let r = rx.await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    if r.is_ok() {
+        audit("delete_zone", &req.map);
+    }
+    Ok(zone_resp(r))
+}
+
 async fn api_zones_add(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -534,7 +561,7 @@ async fn api_map_thumb(
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let png = tokio::task::spawn_blocking(move || {
+    let out = tokio::task::spawn_blocking(move || {
         let mapdata = mir_formats::map::parse(&std::fs::read(&info.path).ok()?).ok()?;
         let (mw, mh) = (mapdata.width, mapdata.height);
         // 缩放到长边 ≤ 512
@@ -580,13 +607,16 @@ async fn api_map_thumb(
         mark(info.spawn.0, info.spawn.1, [255, 216, 118, 255], 3);
         let mut buf = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
-        Some(buf.into_inner())
+        Some((buf.into_inner(), mw, mh))
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (png, mw, mh) = out.ok_or(StatusCode::NOT_FOUND)?;
     Ok(axum::response::Response::builder()
         .header("content-type", "image/png")
+        // 前端按图像宽高与格数的比例换算点击坐标
+        .header("x-map-width", mw.to_string())
+        .header("x-map-height", mh.to_string())
         .body(axum::body::Body::from(png))
         .unwrap())
 }
@@ -713,7 +743,10 @@ pub fn spawn(
         .route("/api/config", get(api_config_get).put(api_config_put))
         .route(
             "/api/zones",
-            get(api_zones_get).put(api_zones_put).post(api_zones_add),
+            get(api_zones_get)
+                .put(api_zones_put)
+                .post(api_zones_add)
+                .delete(api_zones_delete),
         )
         .route("/api/icons", get(api_icons_grid))
         .route("/api/frame/:kind/:n", get(api_frame_png))

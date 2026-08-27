@@ -805,6 +805,36 @@ impl Game {
         Ok(())
     }
 
+    /// 移除区域: 缺省区/有人在场/被传送门指向 时拒绝
+    async fn delete_zone(&mut self, map: &str) -> Result<(), String> {
+        if !self.zones.contains_key(map) {
+            return Err(format!("区域不存在: {map}"));
+        }
+        if map == self.default_zone {
+            return Err("缺省出生区域不可移除".into());
+        }
+        let present = self.players.values().filter(|p| p.zone == map).count();
+        if present > 0 {
+            return Err(format!("尚有 {present} 名角色在该区域内"));
+        }
+        let refs: Vec<String> = self
+            .zones
+            .values()
+            .filter(|z| z.id != map && z.portals.iter().any(|p| p.to_zone == map))
+            .map(|z| z.name.clone())
+            .collect();
+        if !refs.is_empty() {
+            return Err(format!("以下区域仍有传送门指向此地图: {}", refs.join(", ")));
+        }
+        crate::config_store::delete_zone(self.db.pool(), map)
+            .await
+            .map_err(|e| format!("删除配置失败: {e}"))?;
+        self.monsters.retain(|m| m.zone != map);
+        self.zones.remove(map);
+        info!("区域已移除: {map}");
+        Ok(())
+    }
+
     /// 全员立即存档
     async fn save_all(&self) {
         for (id, p) in &self.players {
@@ -928,6 +958,9 @@ impl Game {
                     crate::admin::audit("put_zone", &map);
                 }
                 let _ = done.send(r);
+            }
+            AdminCmd::DeleteZone { map, done } => {
+                let _ = done.send(self.delete_zone(&map).await);
             }
             AdminCmd::MapThumbInfo { map, done } => {
                 let info = self.zones.get(&map).and_then(|z| {
