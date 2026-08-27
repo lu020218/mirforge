@@ -226,14 +226,14 @@ pub enum SkillKind {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkillDef {
-    id: String,
-    name: String,
-    mp: i32,
-    cd_ms: u64,
-    level: u32,
-    range: f64,
-    self_cast: bool,
-    kind: SkillKind,
+    pub id: String,
+    pub name: String,
+    pub mp: i32,
+    pub cd_ms: u64,
+    pub level: u32,
+    pub range: f64,
+    pub self_cast: bool,
+    pub kind: SkillKind,
 }
 
 impl SkillDef {
@@ -258,7 +258,6 @@ pub struct GameData {
 }
 
 static DATA: std::sync::RwLock<Option<std::sync::Arc<GameData>>> = std::sync::RwLock::new(None);
-static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 impl GameData {
     fn builtin() -> Self {
@@ -269,17 +268,17 @@ impl GameData {
         }
     }
 
-    /// 从目录加载 (缺文件回退内置); 启动时调用一次
-    pub fn load(dir: &std::path::Path) -> Self {
+    /// 从 JSON 目录读取种子数据 (仅首次建库时用; 缺文件回退内置默认)
+    pub fn seed_source(dir: &std::path::Path) -> Self {
         fn read<T: serde::de::DeserializeOwned>(p: std::path::PathBuf, what: &str) -> Option<T> {
             let text = std::fs::read_to_string(&p).ok()?;
             match serde_json::from_str(&text) {
                 Ok(v) => {
-                    info!("{what} 配置: {p:?}");
+                    info!("{what} 种子: {p:?}");
                     Some(v)
                 }
                 Err(e) => {
-                    tracing::error!("{what} 配置解析失败 {p:?}: {e}, 使用内置默认");
+                    tracing::error!("{what} 种子解析失败 {p:?}: {e}, 使用内置默认");
                     None
                 }
             }
@@ -291,17 +290,6 @@ impl GameData {
             quests: read(dir.join("quests.json"), "任务").unwrap_or(b.quests),
         }
     }
-}
-
-/// 启动时注入数据配置 (未调用则用内置默认 — 测试路径)
-pub fn init_data(dir: &std::path::Path) {
-    let _ = DATA_DIR.set(dir.to_path_buf());
-    *DATA.write().unwrap() = Some(std::sync::Arc::new(GameData::load(dir)));
-}
-
-/// 配置文件目录 (管理台写回用; 未 init 时为 None)
-pub fn data_dir() -> Option<&'static std::path::Path> {
-    DATA_DIR.get().map(|p| p.as_path())
 }
 
 pub fn data() -> std::sync::Arc<GameData> {
@@ -374,16 +362,16 @@ fn skills_for(class: protocol::CharacterClass) -> Vec<SkillDef> {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ItemDef {
-    template: String,
-    name: String,
-    slot: String,
-    attack: i32,
-    defense: i32,
-    hp: i32,
+    pub template: String,
+    pub name: String,
+    pub slot: String,
+    pub attack: i32,
+    pub defense: i32,
+    pub hp: i32,
     /// Items.Lib 图标帧号
-    image: u16,
+    pub image: u16,
     /// 外观库号 (weapon → CWeapon, armor → CArmour)
-    shape: u16,
+    pub shape: u16,
 }
 
 fn item_def(template: &str) -> Option<ItemDef> {
@@ -435,12 +423,12 @@ pub struct DropEntry {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuestDef {
-    id: String,
-    name: String,
+    pub id: String,
+    pub name: String,
     /// (怪物模板, 数量)
-    objectives: Vec<(String, u32)>,
-    exp_reward: u64,
-    prereq: Option<String>,
+    pub objectives: Vec<(String, u32)>,
+    pub exp_reward: u64,
+    pub prereq: Option<String>,
 }
 
 fn quest_def(id: &str) -> Option<QuestDef> {
@@ -638,8 +626,6 @@ pub struct Game {
     monsters: Vec<Monster>,
     /// 全部可用 .map 文件 (含未接入区域; 管理台新增地图用)
     map_files: HashMap<String, std::path::PathBuf>,
-    /// 边车目录 (管理台写回)
-    zones_dir: std::path::PathBuf,
     /// 地面物品 (掉落/丢弃)
     ground: Vec<GroundItem>,
     next_drop_id: u64,
@@ -663,7 +649,6 @@ impl Game {
         db: Db,
         sessions: Sessions,
         map_files: HashMap<String, std::path::PathBuf>,
-        zones_dir: std::path::PathBuf,
     ) -> Self {
         let mut rng: u64 = 0x9E3779B97F4A7C15;
         let mut monsters = Vec::new();
@@ -681,7 +666,6 @@ impl Game {
             tokens: HashMap::new(),
             monsters,
             map_files,
-            zones_dir,
             ground: Vec::new(),
             next_drop_id: 1,
             rng: 0x00C0_FFEE_1234_5678,
@@ -752,11 +736,10 @@ impl Game {
             .cloned()
             .ok_or_else(|| format!("找不到地图文件: {map}"))?;
         let zone = load_zone(&map_path, map, sidecar.clone()).ok_or("地图解析失败".to_string())?;
-        // 写回边车文件
-        let path = self.zones_dir.join(format!("{map}.json"));
-        let mut pretty = serde_json::to_string_pretty(&value).unwrap_or_default();
-        pretty.push('\n');
-        std::fs::write(&path, pretty).map_err(|e| format!("写入 {path:?} 失败: {e}"))?;
+        // 持久化到配置库
+        crate::config_store::save_zone(self.db.pool(), map, &sidecar)
+            .await
+            .map_err(|e| format!("保存区域失败: {e}"))?;
         // 热应用: 替换区域 + 重建该区怪物 (先广播 removed)
         let removed: Vec<String> = self
             .monsters
@@ -811,10 +794,9 @@ impl Game {
             .ok_or_else(|| format!("资源目录中没有该地图: {map}"))?;
         let sidecar = ZoneSidecar::default();
         let zone = load_zone(&map_path, &map, sidecar.clone()).ok_or("地图解析失败".to_string())?;
-        let path = self.zones_dir.join(format!("{map}.json"));
-        let mut pretty = serde_json::to_string_pretty(&sidecar).unwrap_or_default();
-        pretty.push('\n');
-        std::fs::write(&path, pretty).map_err(|e| format!("写入 {path:?} 失败: {e}"))?;
+        crate::config_store::save_zone(self.db.pool(), &map, &sidecar)
+            .await
+            .map_err(|e| format!("保存区域失败: {e}"))?;
         info!("新区域已接入: {map} ({})", zone.name);
         self.zones.insert(map.clone(), zone);
         Ok(())
@@ -2550,14 +2532,7 @@ mod tests {
     async fn test_game() -> Game {
         let db = Db::open(":memory:").await.unwrap();
         let (gw, _rx) = crate::gateway::Gateway::new();
-        Game::new(
-            test_zones(),
-            "z1".into(),
-            db,
-            gw.sessions(),
-            HashMap::new(),
-            std::path::PathBuf::from("zones"),
-        )
+        Game::new(test_zones(), "z1".into(), db, gw.sessions(), HashMap::new())
     }
 
     fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {

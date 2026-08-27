@@ -80,6 +80,7 @@ pub struct PlayerRow {
 struct AppState {
     tx: mpsc::UnboundedSender<AdminCmd>,
     token: Option<String>,
+    db: crate::db::Db,
 }
 
 fn authed(state: &AppState, headers: &HeaderMap) -> bool {
@@ -245,14 +246,15 @@ async fn api_config_put(
     if !errors.is_empty() {
         return Ok(Json(PutConfigResp { ok: false, errors }));
     }
-    // 写回文件 (白名单文件名, 无路径拼接风险)
-    if let Some(dir) = crate::game::data_dir() {
-        let path = dir.join(format!("{}.json", req.kind));
-        let mut pretty = serde_json::to_string_pretty(&req.value).unwrap_or_default();
-        pretty.push('\n');
-        if let Err(e) = std::fs::write(&path, pretty) {
-            return Ok(fail(format!("写入 {path:?} 失败: {e}")));
-        }
+    // 持久化到数据库 (整表事务替换)
+    let pool = st.db.pool();
+    let saved = match req.kind.as_str() {
+        "items" => crate::config_store::save_items(pool, &next.items).await,
+        "skills" => crate::config_store::save_skills(pool, &next.skills).await,
+        _ => crate::config_store::save_quests(pool, &next.quests).await,
+    };
+    if let Err(e) = saved {
+        return Ok(fail(format!("保存失败: {e}")));
     }
     crate::game::set_data(next);
     let _ = st.tx.send(AdminCmd::ConfigReloaded);
@@ -521,7 +523,10 @@ async fn index() -> Html<&'static str> {
 }
 
 /// 启动管理台 HTTP 服务; 返回命令接收端 (游戏循环消费)
-pub fn spawn(res_root: std::path::PathBuf) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
+pub fn spawn(
+    res_root: std::path::PathBuf,
+    db: crate::db::Db,
+) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
     let _ = RES_ROOT.set(res_root);
     let addr = std::env::var("MIRFORGE_ADMIN").unwrap_or_else(|_| "127.0.0.1:4001".into());
     if addr == "off" {
@@ -533,7 +538,7 @@ pub fn spawn(res_root: std::path::PathBuf) -> Option<mpsc::UnboundedReceiver<Adm
         return None;
     }
     let (tx, rx) = mpsc::unbounded_channel();
-    let state = AppState { tx, token };
+    let state = AppState { tx, token, db };
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(api_status))

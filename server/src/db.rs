@@ -5,8 +5,16 @@ use protocol::{CharacterClass, CharacterSummary};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
+#[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
+}
+
+impl Db {
+    /// 连接池（配置存储模块共用同一库）
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
 }
 
 #[derive(Debug, Clone)]
