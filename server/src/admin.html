@@ -34,6 +34,10 @@
              font: 12px/1.5 Consolas, monospace; box-sizing: border-box; }
   td input { width: 70px; padding: 3px 6px; }
   td input.wide { width: 110px; }
+  td input[type=checkbox] { width: auto; }
+  td select { background: #0e1017; color: #e8e2d0; border: 1px solid #2a2d3c;
+              border-radius: 3px; padding: 3px 6px; }
+  td input:disabled { opacity: .3; }
   #cfg-err { color: #e04040; font-size: 12px; white-space: pre-line; }
   td img.icon { width: 32px; height: 32px; object-fit: contain; vertical-align: middle;
                 background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; cursor: pointer; }
@@ -85,8 +89,12 @@
     <tbody></tbody>
   </table>
   <div class="row"><button onclick="addItemRow()">+ 新增物品</button></div>
-  <h3 style="color:#c9a55c;font-size:14px">技能 skills.json <span style="color:#5b5648;font-size:12px">(kind: {"damage":2.5} / {"aoe":{"radius":3,"mult":1.2}} / "heal")</span></h3>
-  <textarea id="skills-json" spellcheck="false"></textarea>
+  <h3 style="color:#c9a55c;font-size:14px">技能 skills.json</h3>
+  <table id="skill-table">
+    <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th title="damage:伤害倍率 / aoe:半径">参数1</th><th title="aoe:伤害倍率">参数2</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="row"><button onclick="addSkillRow()">+ 新增技能</button></div>
   <h3 style="color:#c9a55c;font-size:14px">任务 quests.json</h3>
   <textarea id="quests-json" spellcheck="false"></textarea>
   <h3 style="color:#c9a55c;font-size:14px">区域 zones/*.json <span style="color:#5b5648;font-size:12px">(保存后该区怪物按新配置立即重建)</span></h3>
@@ -206,6 +214,62 @@ function pickIcon(ev) {
   document.getElementById('picker').classList.remove('on');
 }
 function closePicker(ev) { if (ev.target.id === 'picker') ev.target.classList.remove('on'); }
+const CLASSES = { warrior: '战士', mage: '法师', taoist: '道士' };
+const KTYPES = { damage: '单体伤害', aoe: '范围伤害', heal: '治疗' };
+function parseKind(kind) {
+  if (kind === 'heal') return { t: 'heal', p1: '', p2: '' };
+  if (kind.damage !== undefined) return { t: 'damage', p1: kind.damage, p2: '' };
+  if (kind.aoe) return { t: 'aoe', p1: kind.aoe.radius, p2: kind.aoe.mult };
+  return { t: 'damage', p1: 1, p2: '' };
+}
+function skillRow(cls, sk) {
+  const k = parseKind(sk.kind ?? { damage: 1 });
+  const tr = document.createElement('tr');
+  const opt = (obj, sel) => Object.entries(obj).map(([v, t]) =>
+    `<option value="${v}" ${v === sel ? 'selected' : ''}>${t}</option>`).join('');
+  tr.innerHTML = `
+    <td><select data-c="class">${opt(CLASSES, cls)}</select></td>
+    <td><input class="wide" data-c="id" value="${sk.id ?? ''}"></td>
+    <td><input class="wide" data-c="name" value="${sk.name ?? ''}"></td>
+    <td><input data-c="mp" value="${sk.mp ?? 0}"></td>
+    <td><input data-c="cd_ms" value="${sk.cd_ms ?? 1000}"></td>
+    <td><input data-c="level" value="${sk.level ?? 1}"></td>
+    <td><input data-c="range" value="${sk.range ?? 0}"></td>
+    <td><input type="checkbox" data-c="self_cast" ${sk.self_cast ? 'checked' : ''}></td>
+    <td><select data-c="ktype">${opt(KTYPES, k.t)}</select></td>
+    <td><input data-c="p1" value="${k.p1}"></td>
+    <td><input data-c="p2" value="${k.p2}"></td>
+    <td><button onclick="this.closest('tr').remove()">删</button></td>`;
+  const sync = () => {
+    const t = tr.querySelector('[data-c=ktype]').value;
+    tr.querySelector('[data-c=p1]').disabled = t === 'heal';
+    tr.querySelector('[data-c=p2]').disabled = t !== 'aoe';
+  };
+  tr.querySelector('[data-c=ktype]').addEventListener('change', sync);
+  sync();
+  return tr;
+}
+function addSkillRow() {
+  document.querySelector('#skill-table tbody').appendChild(
+    skillRow('warrior', { id: 'new_skill', name: '新技能', mp: 5, cd_ms: 3000, level: 1, range: 2.5, self_cast: false, kind: { damage: 1.5 } }));
+}
+function collectSkills() {
+  const out = { warrior: [], mage: [], taoist: [] };
+  for (const tr of document.querySelectorAll('#skill-table tbody tr')) {
+    const v = c => { const el = tr.querySelector(`[data-c=${c}]`); return el.type === 'checkbox' ? el.checked : el.value; };
+    const t = v('ktype');
+    const kind = t === 'heal' ? 'heal'
+      : t === 'aoe' ? { aoe: { radius: Number(v('p1')) || 0, mult: Number(v('p2')) || 0 } }
+      : { damage: Number(v('p1')) || 0 };
+    out[v('class')].push({
+      id: v('id').trim(), name: v('name').trim(),
+      mp: Number(v('mp')) || 0, cd_ms: Number(v('cd_ms')) || 0,
+      level: Number(v('level')) || 1, range: Number(v('range')) || 0,
+      self_cast: v('self_cast'), kind,
+    });
+  }
+  return out;
+}
 async function loadCfg() {
   const r = await fetch('/api/config', { headers: hdr });
   if (!r.ok) return;
@@ -213,7 +277,10 @@ async function loadCfg() {
   const tb = document.querySelector('#item-table tbody');
   tb.innerHTML = '';
   d.items.forEach(it => tb.appendChild(itemRow(it)));
-  document.getElementById('skills-json').value = JSON.stringify(d.skills, null, 2);
+  const sb = document.querySelector('#skill-table tbody');
+  sb.innerHTML = '';
+  for (const cls of Object.keys(CLASSES))
+    (d.skills[cls] || []).forEach(sk => sb.appendChild(skillRow(cls, sk)));
   document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
   document.getElementById('cfg-err').textContent = '';
 }
@@ -235,6 +302,7 @@ async function saveCfg(kind) {
   let value;
   try {
     value = kind === 'items' ? collectItems()
+          : kind === 'skills' ? collectSkills()
           : JSON.parse(document.getElementById(kind + '-json').value);
   } catch (e) {
     document.getElementById('cfg-err').textContent = 'JSON 语法错误: ' + e.message; return;
@@ -284,6 +352,7 @@ async function addZone() {
   document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
   if (resp.ok) { flash(map + ' 已接入 (记得配置客户端小地图帧号与传送门)'); loadZones(); }
 }
+if (location.hash === '#config') showTab('config');
 tick(); setInterval(tick, 2000);
 </script>
 </body>
