@@ -39,6 +39,9 @@
               border-radius: 3px; padding: 3px 6px; }
   td input:disabled { opacity: .3; }
   #cfg-err { color: #e04040; font-size: 12px; white-space: pre-line; }
+  tr.detail > td { padding: 0 0 10px; border-bottom: 1px solid #2a2d3c; }
+  tr.editing > td { background: rgba(201,165,92,.07); }
+  tr.editing > td:first-child { box-shadow: inset 2px 0 0 #c9a55c; }
   td img.icon { width: 32px; height: 32px; object-fit: contain; vertical-align: middle;
                 background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; cursor: pointer; }
   #picker { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 10; }
@@ -109,7 +112,8 @@
     <tbody></tbody>
   </table>
 
-  <div id="zone-edit" style="display:none;margin-top:18px;border:1px solid #2a2d3c;border-radius:4px;padding:14px 18px">
+  <div id="ze-holder" style="display:none"></div>
+  <div id="zone-edit" style="display:none;border-left:2px solid #6b5a32;border-radius:0 4px 4px 0;padding:12px 18px;background:rgba(201,165,92,.04)">
     <div class="row" style="margin-top:0">
       <b id="ze-title" style="color:#ffd876"></b>
       <span style="color:#9a917c;font-size:12px">区域名</span>
@@ -383,14 +387,16 @@ function renderAvail() {
     `可接入 ${zoneAvail.length} 张${f ? ` / 匹配 ${list.length}` : ''}`;
 }
 function renderZoneList() {
+  // 面板此刻可能挂在某个明细行里, 先寄存, 否则 innerHTML 会连它一起清掉
+  document.getElementById('ze-holder').appendChild(document.getElementById('zone-edit'));
   document.querySelector('#zone-table tbody').innerHTML = Object.values(zoneData).map(z => {
     const sc = z.sidecar || {};
     const mon = (sc.monsters || []).reduce((n, m) => n + (m.count || 1), 0);
     const sp = sc.spawn ? `${sc.spawn[0]}, ${sc.spawn[1]}` : '<span class=off>地图中心</span>';
     const mm = sc.minimap != null ? `帧 ${sc.minimap}` : '<span class=off>未配置</span>';
-    return `<tr><td>${z.map}</td><td>${z.name}</td><td>${sp}</td><td>${mm}</td>
+    return `<tr data-map="${z.map}"><td>${z.map}</td><td>${z.name}</td><td>${sp}</td><td>${mm}</td>
       <td>${(sc.portals || []).length}</td><td>${(sc.monsters || []).length}</td><td>${mon}</td>
-      <td><button onclick="showZone('${z.map}')">编辑</button></td></tr>`;
+      <td><button onclick="toggleZone('${z.map}')">${z.map === zoneEditing ? '收起' : '编辑'}</button></td></tr>`;
   }).join('');
 }
 function numCell(v, w) { return `<td><input value="${v ?? ''}" style="width:${w || 60}px"></td>`; }
@@ -421,6 +427,18 @@ function spawnRow(m) {
     tr.querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0));
   return tr;
 }
+function toggleZone(map) {
+  if (zoneEditing === map) { closeZone(); renderZoneList(); return; }
+  showZone(map);
+  renderButtonLabels();
+}
+/// 仅刷新按钮文案 (不重建行, 保留已展开的明细)
+function renderButtonLabels() {
+  document.querySelectorAll('#zone-table tbody tr[data-map]').forEach(tr => {
+    const b = tr.querySelector('button');
+    if (b) b.textContent = tr.dataset.map === zoneEditing ? '收起' : '编辑';
+  });
+}
 function showZone(map) {
   const z = zoneData[map];
   if (!z) return;
@@ -439,7 +457,28 @@ function showZone(map) {
   document.getElementById('ze-mm').value = sc.minimap ?? '';
   syncMinimapPreview();
   document.getElementById('ze-thumb').src = `/api/mapthumb/${encodeURIComponent(map)}?_=${Date.now()}`;
-  document.getElementById('zone-edit').style.display = 'block';
+  mountZoneEditor(map);
+}
+/// 把编辑面板挂到该地图所在行的下方 (手风琴式行内展开)
+function mountZoneEditor(map) {
+  const tbody = document.querySelector('#zone-table tbody');
+  // 先把面板寄存回 holder, 再删旧明细行 — 否则连面板一起被销毁
+  document.getElementById('ze-holder').appendChild(document.getElementById('zone-edit'));
+  tbody.querySelectorAll('tr.detail').forEach(tr => tr.remove());
+  tbody.querySelectorAll('tr.editing').forEach(tr => tr.classList.remove('editing'));
+  const row = tbody.querySelector(`tr[data-map="${map}"]`);
+  if (!row) return;
+  row.classList.add('editing');
+  const detail = document.createElement('tr');
+  detail.className = 'detail';
+  const td = document.createElement('td');
+  td.colSpan = row.cells.length;
+  detail.appendChild(td);
+  row.after(detail);
+  const panel = document.getElementById('zone-edit');
+  td.appendChild(panel);
+  panel.style.display = 'block';
+  panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 function syncMinimapPreview() {
   const v = document.getElementById('ze-mm').value.trim();
@@ -471,7 +510,15 @@ function pickMinimap(ev) {
   document.getElementById('mmpicker').style.display = 'none';
 }
 function closeMinimapPicker(ev) { if (ev.target.id === 'mmpicker') ev.target.style.display = 'none'; }
-function closeZone() { zoneEditing = null; document.getElementById('zone-edit').style.display = 'none'; }
+function closeZone() {
+  zoneEditing = null;
+  const panel = document.getElementById('zone-edit');
+  panel.style.display = 'none';
+  document.getElementById('ze-holder').appendChild(panel);
+  const tbody = document.querySelector('#zone-table tbody');
+  tbody.querySelectorAll('tr.detail').forEach(tr => tr.remove());
+  tbody.querySelectorAll('tr.editing').forEach(tr => tr.classList.remove('editing'));
+}
 function addPortalRow() {
   document.querySelector('#portal-table tbody').appendChild(
     portalRow({ x: 0, y: 0, to: Object.keys(zoneData)[0] || '' }));
