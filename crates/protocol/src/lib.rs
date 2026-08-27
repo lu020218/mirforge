@@ -183,6 +183,9 @@ pub enum ServerMessage {
         zone_id: String,
         zone_name: String,
         position: Position,
+        /// 小地图帧号 (Data/mmap.Lib)；None = 该区未配置小地图
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        minimap: Option<u16>,
     },
     #[serde(rename = "playerStatus")]
     PlayerStatus {

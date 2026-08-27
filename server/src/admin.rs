@@ -39,6 +39,19 @@ pub enum AdminCmd {
         map: String,
         done: oneshot::Sender<Result<(), String>>,
     },
+    /// 地图缩略图所需信息 (文件路径 + 标记点)
+    MapThumbInfo {
+        map: String,
+        done: oneshot::Sender<Option<MapThumb>>,
+    },
+}
+
+/// 缩略图渲染输入
+pub struct MapThumb {
+    pub path: std::path::PathBuf,
+    pub spawn: (f64, f64),
+    pub portals: Vec<(f64, f64)>,
+    pub spawns: Vec<(f64, f64)>,
 }
 
 #[derive(Serialize)]
@@ -367,6 +380,7 @@ fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
         "weapon" => format!("Data/CWeapon/{n:02}.Lib"),
         "armour" => format!("Data/CArmour/{n:02}.Lib"),
         "monster" => format!("Data/Monster/{n:03}.Lib"),
+        "minimap" => "Data/mmap.Lib".to_string(),
         _ => return None,
     };
     Some(root.join(rel))
@@ -479,6 +493,8 @@ async fn api_frame_png(
             "weapon" | "armour" => (n, 16usize),
             // 怪物: 朝南站立首帧
             "monster" => (n, 16usize),
+            // 小地图: 库内第 n 帧
+            "minimap" => (0u16, n as usize),
             _ => return None,
         };
         with_preview_lib(&kind, lib_n, |lib| {
@@ -493,6 +509,152 @@ async fn api_frame_png(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=3600")
+        .body(axum::body::Body::from(png))
+        .unwrap())
+}
+
+/// 地图示意缩略图: 由 .map 阻挡位生成 (可走浅色/阻挡深色),
+/// 叠加出生点(金)/传送门(青)/刷新点(红) 标记 —— 用于配置时定位坐标
+async fn api_map_thumb(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxPath(map): AxPath<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let (tx, rx) = oneshot::channel();
+    st.tx
+        .send(AdminCmd::MapThumbInfo { map, done: tx })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let info = rx
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let png = tokio::task::spawn_blocking(move || {
+        let mapdata = mir_formats::map::parse(&std::fs::read(&info.path).ok()?).ok()?;
+        let (mw, mh) = (mapdata.width, mapdata.height);
+        // 缩放到长边 ≤ 512
+        let step = ((mw.max(mh) as f32 / 512.0).ceil() as u32).max(1);
+        let (tw, th) = (mw / step, mh / step);
+        let mut img = image::RgbaImage::new(tw.max(1), th.max(1));
+        for ty in 0..th {
+            for tx2 in 0..tw {
+                // 取样本格: 该缩略像素覆盖区域内是否多数可走
+                let (mut walk, mut total) = (0u32, 0u32);
+                for dy in 0..step {
+                    for dx in 0..step {
+                        if let Some(c) = mapdata.cell(tx2 * step + dx, ty * step + dy) {
+                            total += 1;
+                            if !c.blocked {
+                                walk += 1;
+                            }
+                        }
+                    }
+                }
+                let v = if total == 0 { 0 } else { walk * 255 / total };
+                let g = 40 + (v * 150 / 255) as u8;
+                img.put_pixel(tx2, ty, image::Rgba([g, g, (g as u16 + 14) as u8, 255]));
+            }
+        }
+        let mut mark = |x: f64, y: f64, c: [u8; 4], r: i32| {
+            let (px, py) = ((x as u32 / step) as i32, (y as u32 / step) as i32);
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let (mx, my) = (px + dx, py + dy);
+                    if mx >= 0 && my >= 0 && (mx as u32) < tw && (my as u32) < th {
+                        img.put_pixel(mx as u32, my as u32, image::Rgba(c));
+                    }
+                }
+            }
+        };
+        for (x, y) in &info.spawns {
+            mark(*x, *y, [224, 64, 64, 255], 1);
+        }
+        for (x, y) in &info.portals {
+            mark(*x, *y, [90, 220, 220, 255], 2);
+        }
+        mark(info.spawn.0, info.spawn.1, [255, 216, 118, 255], 3);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+        Some(buf.into_inner())
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .body(axum::body::Body::from(png))
+        .unwrap())
+}
+
+/// 小地图选择网格: mmap.Lib 帧缩放到单元格 (5 列)
+async fn api_minimap_grid(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<IconsQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let count = q.count.clamp(1, 60);
+    let png = tokio::task::spawn_blocking(move || {
+        let (cols, cw, ch) = (5u32, 128u32, 88u32);
+        let rows = (count as u32).div_ceil(cols).max(1);
+        let mut canvas = image::RgbaImage::new(cols * cw, rows * ch);
+        for (x, y, p) in canvas.enumerate_pixels_mut() {
+            let dark = ((x / 8) + (y / 8)) % 2 == 0;
+            *p = image::Rgba(if dark {
+                [26, 28, 40, 255]
+            } else {
+                [34, 36, 50, 255]
+            });
+        }
+        with_preview_lib("minimap", 0, |lib| {
+            for i in 0..count {
+                let Ok(Some(src)) = lib.image(q.start + i) else {
+                    continue;
+                };
+                let (sw, sh) = (src.width as u32, src.height as u32);
+                if sw == 0 || sh == 0 {
+                    continue;
+                }
+                let (ox, oy) = ((i as u32 % cols) * cw, (i as u32 / cols) * ch);
+                // 等比缩放进单元格 (留 4px 边)
+                let sc = ((cw - 6) as f32 / sw as f32).min((ch - 6) as f32 / sh as f32);
+                let (dw, dh) = (
+                    ((sw as f32 * sc) as u32).max(1),
+                    ((sh as f32 * sc) as u32).max(1),
+                );
+                for dy in 0..dh {
+                    for dx in 0..dw {
+                        let (sx2, sy2) = ((dx as f32 / sc) as u32, (dy as f32 / sc) as u32);
+                        if sx2 >= sw || sy2 >= sh {
+                            continue;
+                        }
+                        let si = ((sy2 * sw + sx2) * 4) as usize;
+                        let px = &src.rgba[si..si + 4];
+                        if px[3] > 0 {
+                            canvas.put_pixel(
+                                ox + 3 + dx,
+                                oy + 3 + dy,
+                                image::Rgba([px[0], px[1], px[2], 255]),
+                            );
+                        }
+                    }
+                }
+            }
+            Some(())
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let _ = canvas.write_to(&mut buf, image::ImageFormat::Png);
+        buf.into_inner()
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(axum::response::Response::builder()
         .header("content-type", "image/png")
         .header("cache-control", "max-age=3600")
@@ -555,6 +717,8 @@ pub fn spawn(
         )
         .route("/api/icons", get(api_icons_grid))
         .route("/api/frame/:kind/:n", get(api_frame_png))
+        .route("/api/minimaps", get(api_minimap_grid))
+        .route("/api/mapthumb/:map", get(api_map_thumb))
         .with_state(state);
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {

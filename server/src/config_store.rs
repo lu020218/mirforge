@@ -60,7 +60,8 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             map TEXT PRIMARY KEY,
             name TEXT,
             spawn_x REAL,
-            spawn_y REAL
+            spawn_y REAL,
+            minimap INTEGER
         )",
         "CREATE TABLE IF NOT EXISTS cfg_portals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +94,10 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     ] {
         sqlx::query(ddl).execute(pool).await?;
     }
+    // 旧库升级 (列已存在则忽略)
+    let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN minimap INTEGER")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -201,7 +206,7 @@ pub async fn load_zone_sidecars(
     pool: &SqlitePool,
 ) -> Result<HashMap<String, ZoneSidecar>, sqlx::Error> {
     let mut out: HashMap<String, ZoneSidecar> = HashMap::new();
-    for r in sqlx::query("SELECT map, name, spawn_x, spawn_y FROM cfg_zones ORDER BY map")
+    for r in sqlx::query("SELECT map, name, spawn_x, spawn_y, minimap FROM cfg_zones ORDER BY map")
         .fetch_all(pool)
         .await?
     {
@@ -213,6 +218,7 @@ pub async fn load_zone_sidecars(
             ZoneSidecar {
                 name: r.get("name"),
                 spawn: sx.zip(sy),
+                minimap: r.get::<Option<i64>, _>("minimap").map(|v| v as u16),
                 portals: Vec::new(),
                 monsters: Vec::new(),
             },
@@ -387,13 +393,16 @@ pub async fn save_zone(pool: &SqlitePool, map: &str, sc: &ZoneSidecar) -> Result
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("INSERT INTO cfg_zones (map, name, spawn_x, spawn_y) VALUES (?, ?, ?, ?)")
-        .bind(map)
-        .bind(sc.name.as_deref())
-        .bind(sc.spawn.map(|s| s.0))
-        .bind(sc.spawn.map(|s| s.1))
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO cfg_zones (map, name, spawn_x, spawn_y, minimap) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(map)
+    .bind(sc.name.as_deref())
+    .bind(sc.spawn.map(|s| s.0))
+    .bind(sc.spawn.map(|s| s.1))
+    .bind(sc.minimap.map(|v| v as i64))
+    .execute(&mut *tx)
+    .await?;
     for p in &sc.portals {
         sqlx::query(
             "INSERT INTO cfg_portals (map, x, y, to_map, to_x, to_y) VALUES (?, ?, ?, ?, ?, ?)",

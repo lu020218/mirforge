@@ -196,6 +196,8 @@ struct Net {
     notice_rev: u32,
     /// 当前区域显示名 (小地图)
     zone_name: String,
+    /// 当前区域小地图帧号 (服务器下发, 管理台配置)
+    zone_minimap: Option<u16>,
     /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
     chatlog: Vec<(String, String)>,
     /// 地面掉落物 (服务器快照驱动)
@@ -490,25 +492,24 @@ impl ItemIcons {
 #[derive(Resource, Default)]
 pub struct MiniMap {
     pub image: Option<(Handle<Image>, Vec2)>,
-    loaded_for: String,
-}
-
-/// 地图名 → mmap.Lib 帧号 (Crystal 服务器 DB 惯例: 比奇 101, 盟重 102)
-fn minimap_index(map_name: &str) -> Option<usize> {
-    match map_name {
-        "0.map" => Some(101),
-        "2.map" => Some(102),
-        _ => None,
-    }
+    /// 已加载的 (地图名, 帧号)
+    loaded_for: (String, Option<u16>),
 }
 
 /// 切区时按地图名重载小地图帧
-fn load_minimap(mut mm: ResMut<MiniMap>, world: Res<World>, mut images: ResMut<Assets<Image>>) {
-    if mm.loaded_for == world.map_name {
+fn load_minimap(
+    mut mm: ResMut<MiniMap>,
+    world: Res<World>,
+    net: Res<Net>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    // 帧号由服务器随区域下发 (管理台配置); 离线模式无值则不显示
+    let key = (world.map_name.clone(), net.zone_minimap);
+    if mm.loaded_for == key {
         return;
     }
-    mm.loaded_for = world.map_name.clone();
-    mm.image = minimap_index(&world.map_name).and_then(|idx| {
+    mm.loaded_for = key;
+    mm.image = net.zone_minimap.map(|f| f as usize).and_then(|idx| {
         let path = world.data_root.join("mmap.Lib");
         let lib = CrystalLib::parse(std::fs::read(path).ok()?).ok()?;
         let img = lib.image(idx).ok().flatten()?;
@@ -527,7 +528,7 @@ fn load_minimap(mut mm: ResMut<MiniMap>, world: Res<World>, mut images: ResMut<A
         Some((handle, size))
     });
     if mm.image.is_none() {
-        info!("地图 {} 无小地图帧映射", world.map_name);
+        info!("地图 {} 未配置小地图帧", world.map_name);
     }
 }
 
@@ -1526,8 +1527,10 @@ fn net_pump(
                     zone_id,
                     zone_name,
                     position,
+                    minimap,
                 } => {
                     net.zone_name = zone_name;
+                    net.zone_minimap = minimap;
                     // 跨地图: 重载地图/行走网格, 回收旧分块与远程玩家
                     if zone_id.to_lowercase() != world.map_name && world.switch_map(&zone_id) {
                         for (_, e) in world.chunks.drain() {

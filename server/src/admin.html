@@ -105,7 +105,7 @@
     <span id="zone-avail-count" style="color:#5b5648;font-size:12px"></span>
   </div>
   <table id="zone-table">
-    <thead><tr><th>地图</th><th>区域名</th><th>出生点</th><th>传送门</th><th>刷新点</th><th>怪物总数</th><th></th></tr></thead>
+    <thead><tr><th>地图</th><th>区域名</th><th>出生点</th><th>小地图</th><th>传送门</th><th>刷新点</th><th>怪物总数</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
 
@@ -116,8 +116,21 @@
       <input id="ze-name" style="width:140px">
       <span style="color:#9a917c;font-size:12px">出生点 X/Y (留空=地图中心)</span>
       <input id="ze-sx" style="width:80px"><input id="ze-sy" style="width:80px">
+      <span style="color:#9a917c;font-size:12px">小地图帧</span>
+      <input id="ze-mm" style="width:70px" onchange="syncMinimapPreview()">
+      <button onclick="openMinimapPicker()">选择…</button>
       <button onclick="saveZone()">保存区域</button>
       <button onclick="closeZone()">关闭</button>
+    </div>
+    <div style="display:flex;gap:20px;margin-top:10px;flex-wrap:wrap">
+      <div>
+        <div style="color:#9a917c;font-size:12px;margin-bottom:4px">地图示意 (浅=可走 / 金=出生点 / 青=传送门 / 红=刷新点)</div>
+        <img id="ze-thumb" style="max-width:512px;border:1px solid #2a2d3c;border-radius:3px;background:#0e1017">
+      </div>
+      <div>
+        <div style="color:#9a917c;font-size:12px;margin-bottom:4px">小地图预览</div>
+        <img id="ze-mm-img" style="max-width:360px;max-height:260px;border:1px solid #2a2d3c;border-radius:3px;background:#0e1017">
+      </div>
     </div>
     <h4 style="color:#c9a55c;font-size:13px;margin:14px 0 0">传送门</h4>
     <table id="portal-table">
@@ -131,6 +144,17 @@
       <tbody></tbody>
     </table>
     <div class="row"><button onclick="addSpawnRow()">+ 刷新点</button></div>
+  </div>
+</div>
+<div id="mmpicker" onclick="closeMinimapPicker(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10;align-items:center;justify-content:center">
+  <div class="box" style="background:#0d0f18;border:1px solid #6b5a32;border-radius:4px;padding:16px;max-height:86vh;overflow:auto">
+    <div class="row" style="margin-top:0">
+      <button onclick="mmPage(-1)">上一页</button>
+      <span id="mm-range" style="color:#9a917c;font-size:12px"></span>
+      <button onclick="mmPage(1)">下一页</button>
+      <span style="color:#5b5648;font-size:12px">点击小地图选择 (5 列)</span>
+    </div>
+    <img id="mm-grid" width="640" onclick="pickMinimap(event)" style="cursor:crosshair;display:block">
   </div>
 </div>
 <div id="picker" onclick="closePicker(event)">
@@ -363,7 +387,8 @@ function renderZoneList() {
     const sc = z.sidecar || {};
     const mon = (sc.monsters || []).reduce((n, m) => n + (m.count || 1), 0);
     const sp = sc.spawn ? `${sc.spawn[0]}, ${sc.spawn[1]}` : '<span class=off>地图中心</span>';
-    return `<tr><td>${z.map}</td><td>${z.name}</td><td>${sp}</td>
+    const mm = sc.minimap != null ? `帧 ${sc.minimap}` : '<span class=off>未配置</span>';
+    return `<tr><td>${z.map}</td><td>${z.name}</td><td>${sp}</td><td>${mm}</td>
       <td>${(sc.portals || []).length}</td><td>${(sc.monsters || []).length}</td><td>${mon}</td>
       <td><button onclick="showZone('${z.map}')">编辑</button></td></tr>`;
   }).join('');
@@ -411,8 +436,41 @@ function showZone(map) {
   const sb = document.querySelector('#spawn-table tbody');
   sb.innerHTML = '';
   (sc.monsters || []).forEach(m => sb.appendChild(spawnRow(m)));
+  document.getElementById('ze-mm').value = sc.minimap ?? '';
+  syncMinimapPreview();
+  document.getElementById('ze-thumb').src = `/api/mapthumb/${encodeURIComponent(map)}?_=${Date.now()}`;
   document.getElementById('zone-edit').style.display = 'block';
 }
+function syncMinimapPreview() {
+  const v = document.getElementById('ze-mm').value.trim();
+  const img = document.getElementById('ze-mm-img');
+  if (v === '') { img.removeAttribute('src'); img.alt = '未配置'; return; }
+  img.src = '/api/frame/minimap/' + (Number(v) || 0);
+}
+// ── 小地图选择弹层 ──
+let mmStart = 0;
+const MM_COUNT = 20, MM_COLS = 5, MM_CW = 128, MM_CH = 88;
+function openMinimapPicker() {
+  const cur = Number(document.getElementById('ze-mm').value) || 0;
+  mmStart = Math.max(0, Math.floor(cur / MM_COUNT) * MM_COUNT);
+  refreshMinimapGrid();
+  document.getElementById('mmpicker').style.display = 'flex';
+}
+function refreshMinimapGrid() {
+  document.getElementById('mm-grid').src = `/api/minimaps?start=${mmStart}&count=${MM_COUNT}`;
+  document.getElementById('mm-range').textContent = `帧 ${mmStart} - ${mmStart + MM_COUNT - 1}`;
+}
+function mmPage(d) { mmStart = Math.max(0, mmStart + d * MM_COUNT); refreshMinimapGrid(); }
+function pickMinimap(ev) {
+  const img = ev.target, r = img.getBoundingClientRect();
+  const scale = img.naturalWidth / r.width;
+  const col = Math.floor((ev.clientX - r.left) * scale / MM_CW);
+  const row = Math.floor((ev.clientY - r.top) * scale / MM_CH);
+  document.getElementById('ze-mm').value = mmStart + row * MM_COLS + col;
+  syncMinimapPreview();
+  document.getElementById('mmpicker').style.display = 'none';
+}
+function closeMinimapPicker(ev) { if (ev.target.id === 'mmpicker') ev.target.style.display = 'none'; }
 function closeZone() { zoneEditing = null; document.getElementById('zone-edit').style.display = 'none'; }
 function addPortalRow() {
   document.querySelector('#portal-table tbody').appendChild(
@@ -448,9 +506,11 @@ function collectZone() {
       }),
     };
   });
+  const mm = document.getElementById('ze-mm').value.trim();
   return {
     name: name || null,
     spawn: (sx !== '' && sy !== '') ? [num(sx), num(sy)] : null,
+    minimap: mm === '' ? null : num(mm),
     portals, monsters,
   };
 }

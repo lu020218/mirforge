@@ -50,6 +50,9 @@ pub struct Zone {
 pub struct ZoneSidecar {
     pub name: Option<String>,
     pub spawn: Option<(f64, f64)>,
+    /// 小地图帧号 (Data/mmap.Lib); None = 无小地图
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimap: Option<u16>,
     #[serde(default)]
     pub portals: Vec<PortalSidecar>,
     #[serde(default)]
@@ -926,6 +929,17 @@ impl Game {
                 }
                 let _ = done.send(r);
             }
+            AdminCmd::MapThumbInfo { map, done } => {
+                let info = self.zones.get(&map).and_then(|z| {
+                    Some(crate::admin::MapThumb {
+                        path: self.map_files.get(&map)?.clone(),
+                        spawn: z.spawn,
+                        portals: z.portals.iter().map(|p| (p.x, p.y)).collect(),
+                        spawns: z.monster_spawns.iter().map(|m| (m.x, m.y)).collect(),
+                    })
+                });
+                let _ = done.send(info);
+            }
             AdminCmd::AddZone { map, done } => {
                 let r = self.add_zone(&map).await;
                 if r.is_ok() {
@@ -1412,11 +1426,11 @@ impl Game {
             },
         )
         .await;
-        let (zone_id, zone_name) = self
+        let (zone_id, zone_name, minimap) = self
             .zones
             .get(&p.zone)
-            .map(|z| (z.id.clone(), z.name.clone()))
-            .unwrap_or((p.zone.clone(), p.zone.clone()));
+            .map(|z| (z.id.clone(), z.name.clone(), z.sidecar.minimap))
+            .unwrap_or((p.zone.clone(), p.zone.clone(), None));
         send_to(
             &self.sessions,
             conn_id,
@@ -1424,6 +1438,7 @@ impl Game {
                 zone_id,
                 zone_name,
                 position: Position { x, y },
+                minimap,
             },
         )
         .await;
@@ -2107,11 +2122,11 @@ impl Game {
         let Some(p) = self.players.get(character_id) else {
             return;
         };
-        let (zone_id, zone_name) = self
+        let (zone_id, zone_name, minimap) = self
             .zones
             .get(&p.zone)
-            .map(|z| (z.id.clone(), z.name.clone()))
-            .unwrap_or((p.zone.clone(), p.zone.clone()));
+            .map(|z| (z.id.clone(), z.name.clone(), z.sidecar.minimap))
+            .unwrap_or((p.zone.clone(), p.zone.clone(), None));
         send_to(
             &self.sessions,
             conn_id,
@@ -2119,6 +2134,7 @@ impl Game {
                 zone_id,
                 zone_name,
                 position: Position { x, y },
+                minimap,
             },
         )
         .await;
