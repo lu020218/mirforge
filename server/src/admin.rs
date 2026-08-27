@@ -366,6 +366,7 @@ fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
         "items" => "Data/Items.Lib".to_string(),
         "weapon" => format!("Data/CWeapon/{n:02}.Lib"),
         "armour" => format!("Data/CArmour/{n:02}.Lib"),
+        "monster" => format!("Data/Monster/{n:03}.Lib"),
         _ => return None,
     };
     Some(root.join(rel))
@@ -476,6 +477,8 @@ async fn api_frame_png(
             "items" => (0u16, n as usize),
             // 外观预览: 该库朝南站立首帧
             "weapon" | "armour" => (n, 16usize),
+            // 怪物: 朝南站立首帧
+            "monster" => (n, 16usize),
             _ => return None,
         };
         with_preview_lib(&kind, lib_n, |lib| {

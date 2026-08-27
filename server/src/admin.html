@@ -80,32 +80,58 @@
     <button onclick="saveCfg('items')">保存物品</button>
     <button onclick="saveCfg('skills')">保存技能</button>
     <button onclick="saveCfg('quests')">保存任务</button>
-    <span style="color:#9a917c;font-size:12px">保存 = 校验 → 写回 server/data/*.json → 热重载 (在线玩家立即生效)</span>
+    <span style="color:#9a917c;font-size:12px">保存 = 校验 → 写入配置库 → 热重载 (在线玩家立即生效)</span>
   </div>
   <div id="cfg-err"></div>
-  <h3 style="color:#c9a55c;font-size:14px">物品 items.json</h3>
+  <h3 style="color:#c9a55c;font-size:14px">物品</h3>
   <table id="item-table">
     <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   <div class="row"><button onclick="addItemRow()">+ 新增物品</button></div>
-  <h3 style="color:#c9a55c;font-size:14px">技能 skills.json</h3>
+  <h3 style="color:#c9a55c;font-size:14px">技能</h3>
   <table id="skill-table">
     <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th title="damage:伤害倍率 / aoe:半径">参数1</th><th title="aoe:伤害倍率">参数2</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   <div class="row"><button onclick="addSkillRow()">+ 新增技能</button></div>
-  <h3 style="color:#c9a55c;font-size:14px">任务 quests.json</h3>
+  <h3 style="color:#c9a55c;font-size:14px">任务 <span style="color:#5b5648;font-size:12px">(objectives: [[怪物模板, 数量]])</span></h3>
   <textarea id="quests-json" spellcheck="false"></textarea>
-  <h3 style="color:#c9a55c;font-size:14px">区域 zones/*.json <span style="color:#5b5648;font-size:12px">(保存后该区怪物按新配置立即重建)</span></h3>
+  <h3 style="color:#c9a55c;font-size:14px">区域与地图 <span style="color:#5b5648;font-size:12px">(保存后该区怪物按新配置立即重建)</span></h3>
   <div class="row">
-    <select id="zone-sel" onchange="showZone()" style="background:#0e1017;color:#e8e2d0;border:1px solid #2a2d3c;border-radius:3px;padding:6px 10px"></select>
-    <button onclick="saveZone()">保存区域</button>
-    <span style="color:#9a917c;font-size:12px">接入新地图:</span>
-    <select id="zone-avail" style="background:#0e1017;color:#e8e2d0;border:1px solid #2a2d3c;border-radius:3px;padding:6px 10px;width:140px"></select>
-    <button onclick="addZone()">接入</button>
+    <input id="zone-filter" placeholder="筛选可接入地图 (输入地图名)…" style="width:220px" oninput="renderAvail()">
+    <select id="zone-avail" style="background:#0e1017;color:#e8e2d0;border:1px solid #2a2d3c;border-radius:3px;padding:6px 10px;width:180px"></select>
+    <button onclick="addZone()">接入为新区域</button>
+    <span id="zone-avail-count" style="color:#5b5648;font-size:12px"></span>
   </div>
-  <textarea id="zone-json" spellcheck="false" style="min-height:220px"></textarea>
+  <table id="zone-table">
+    <thead><tr><th>地图</th><th>区域名</th><th>出生点</th><th>传送门</th><th>刷新点</th><th>怪物总数</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="zone-edit" style="display:none;margin-top:18px;border:1px solid #2a2d3c;border-radius:4px;padding:14px 18px">
+    <div class="row" style="margin-top:0">
+      <b id="ze-title" style="color:#ffd876"></b>
+      <span style="color:#9a917c;font-size:12px">区域名</span>
+      <input id="ze-name" style="width:140px">
+      <span style="color:#9a917c;font-size:12px">出生点 X/Y (留空=地图中心)</span>
+      <input id="ze-sx" style="width:80px"><input id="ze-sy" style="width:80px">
+      <button onclick="saveZone()">保存区域</button>
+      <button onclick="closeZone()">关闭</button>
+    </div>
+    <h4 style="color:#c9a55c;font-size:13px;margin:14px 0 0">传送门</h4>
+    <table id="portal-table">
+      <thead><tr><th>X</th><th>Y</th><th>目标地图</th><th>落点X</th><th>落点Y</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row"><button onclick="addPortalRow()">+ 传送门</button></div>
+    <h4 style="color:#c9a55c;font-size:13px;margin:14px 0 0">怪物刷新点</h4>
+    <table id="spawn-table">
+      <thead><tr><th>模板</th><th>图库</th><th>X</th><th>Y</th><th>数量</th><th>半径</th><th>被动</th><th>HP</th><th>伤害</th><th>经验</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row"><button onclick="addSpawnRow()">+ 刷新点</button></div>
+  </div>
 </div>
 <div id="picker" onclick="closePicker(event)">
   <div class="box">
@@ -314,33 +340,128 @@ async function saveCfg(kind) {
   document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.errors.join('\n');
   if (resp.ok) flash(kind + ' 已保存并热重载');
 }
-let zoneData = {};
+let zoneData = {}, zoneAvail = [], zoneEditing = null;
 async function loadZones() {
   const r = await fetch('/api/zones', { headers: hdr });
   if (!r.ok) return;
   const d = await r.json();
   zoneData = Object.fromEntries(d.zones.map(z => [z.map, z]));
-  const sel = document.getElementById('zone-sel');
-  sel.innerHTML = d.zones.map(z => `<option value="${z.map}">${z.name} [${z.map}]</option>`).join('');
-  const avail = document.getElementById('zone-avail');
-  avail.innerHTML = d.available.map(m => `<option>${m}</option>`).join('');
-  showZone();
+  zoneAvail = d.available;
+  renderZoneList();
+  renderAvail();
+  if (zoneEditing && zoneData[zoneEditing]) showZone(zoneEditing);
 }
-function showZone() {
-  const z = zoneData[document.getElementById('zone-sel').value];
-  document.getElementById('zone-json').value = z ? JSON.stringify(z.sidecar, null, 2) : '';
+function renderAvail() {
+  const f = document.getElementById('zone-filter').value.trim().toLowerCase();
+  const list = (f ? zoneAvail.filter(m => m.includes(f)) : zoneAvail).slice(0, 200);
+  document.getElementById('zone-avail').innerHTML = list.map(m => `<option>${m}</option>`).join('');
+  document.getElementById('zone-avail-count').textContent =
+    `可接入 ${zoneAvail.length} 张${f ? ` / 匹配 ${list.length}` : ''}`;
+}
+function renderZoneList() {
+  document.querySelector('#zone-table tbody').innerHTML = Object.values(zoneData).map(z => {
+    const sc = z.sidecar || {};
+    const mon = (sc.monsters || []).reduce((n, m) => n + (m.count || 1), 0);
+    const sp = sc.spawn ? `${sc.spawn[0]}, ${sc.spawn[1]}` : '<span class=off>地图中心</span>';
+    return `<tr><td>${z.map}</td><td>${z.name}</td><td>${sp}</td>
+      <td>${(sc.portals || []).length}</td><td>${(sc.monsters || []).length}</td><td>${mon}</td>
+      <td><button onclick="showZone('${z.map}')">编辑</button></td></tr>`;
+  }).join('');
+}
+function numCell(v, w) { return `<td><input value="${v ?? ''}" style="width:${w || 60}px"></td>`; }
+function portalRow(p) {
+  const tr = document.createElement('tr');
+  const opts = Object.keys(zoneData).concat(zoneAvail.slice(0, 0)).map(m =>
+    `<option value="${m}" ${m === p.to ? 'selected' : ''}>${m}</option>`).join('');
+  tr.innerHTML = numCell(p.x) + numCell(p.y) +
+    `<td><select style="width:120px">${opts}</select></td>` +
+    numCell(p.to_x ?? '') + numCell(p.to_y ?? '') +
+    `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
+  return tr;
+}
+function spawnRow(m) {
+  const tr = document.createElement('tr');
+  const drops = (m.drops || []).map(d => `${d.item}:${d.chance}`).join(', ');
+  tr.innerHTML =
+    `<td><input value="${m.template ?? ''}" style="width:90px"></td>` +
+    `<td><input value="${m.image ?? 0}" style="width:50px"> <img class="icon" src="/api/frame/monster/${m.image ?? 0}"></td>` +
+    numCell(m.x, 55) + numCell(m.y, 55) + numCell(m.count ?? 1, 45) + numCell(m.radius ?? 5, 45) +
+    `<td><input type="checkbox" ${m.passive ? 'checked' : ''}></td>` +
+    numCell(m.hp ?? 30, 50) + numCell(m.damage ?? 0, 45) + numCell(m.exp ?? 10, 45) +
+    `<td><input value="${drops}" style="width:180px" title="物品模板:概率, 逗号分隔"></td>` +
+    `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
+  // 图库号改动联动预览
+  const imgInput = tr.querySelectorAll('input')[1];
+  imgInput.addEventListener('change', e =>
+    tr.querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0));
+  return tr;
+}
+function showZone(map) {
+  const z = zoneData[map];
+  if (!z) return;
+  zoneEditing = map;
+  const sc = z.sidecar || {};
+  document.getElementById('ze-title').textContent = `${z.name} [${map}]`;
+  document.getElementById('ze-name').value = sc.name ?? '';
+  document.getElementById('ze-sx').value = sc.spawn ? sc.spawn[0] : '';
+  document.getElementById('ze-sy').value = sc.spawn ? sc.spawn[1] : '';
+  const pb = document.querySelector('#portal-table tbody');
+  pb.innerHTML = '';
+  (sc.portals || []).forEach(p => pb.appendChild(portalRow(p)));
+  const sb = document.querySelector('#spawn-table tbody');
+  sb.innerHTML = '';
+  (sc.monsters || []).forEach(m => sb.appendChild(spawnRow(m)));
+  document.getElementById('zone-edit').style.display = 'block';
+}
+function closeZone() { zoneEditing = null; document.getElementById('zone-edit').style.display = 'none'; }
+function addPortalRow() {
+  document.querySelector('#portal-table tbody').appendChild(
+    portalRow({ x: 0, y: 0, to: Object.keys(zoneData)[0] || '' }));
+}
+function addSpawnRow() {
+  document.querySelector('#spawn-table tbody').appendChild(
+    spawnRow({ template: 'chicken', image: 3, x: 0, y: 0, count: 1, radius: 4, passive: true, hp: 12, damage: 0, exp: 5, drops: [] }));
+}
+function collectZone() {
+  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const sx = document.getElementById('ze-sx').value.trim();
+  const sy = document.getElementById('ze-sy').value.trim();
+  const name = document.getElementById('ze-name').value.trim();
+  const portals = [...document.querySelectorAll('#portal-table tbody tr')].map(tr => {
+    const i = tr.querySelectorAll('input');
+    const p = { x: num(i[0].value), y: num(i[1].value), to: tr.querySelector('select').value };
+    if (i[2].value.trim() !== '') p.to_x = num(i[2].value);
+    if (i[3].value.trim() !== '') p.to_y = num(i[3].value);
+    return p;
+  });
+  const monsters = [...document.querySelectorAll('#spawn-table tbody tr')].map(tr => {
+    const i = [...tr.querySelectorAll('input')];
+    const txt = i.filter(x => x.type !== 'checkbox');
+    return {
+      template: txt[0].value.trim(), image: num(txt[1].value),
+      x: num(txt[2].value), y: num(txt[3].value), count: num(txt[4].value) || 1,
+      radius: num(txt[5].value) || 1, passive: tr.querySelector('input[type=checkbox]').checked,
+      hp: num(txt[6].value), damage: num(txt[7].value), exp: num(txt[8].value),
+      drops: txt[9].value.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+        const [item, ch] = s.split(':');
+        return { item: (item || '').trim(), chance: num(ch) };
+      }),
+    };
+  });
+  return {
+    name: name || null,
+    spawn: (sx !== '' && sy !== '') ? [num(sx), num(sy)] : null,
+    portals, monsters,
+  };
 }
 async function saveZone() {
-  const map = document.getElementById('zone-sel').value;
-  let sidecar;
-  try { sidecar = JSON.parse(document.getElementById('zone-json').value); }
-  catch (e) { document.getElementById('cfg-err').textContent = 'JSON 语法错误: ' + e.message; return; }
+  if (!zoneEditing) return;
   const r = await fetch('/api/zones', { method: 'PUT',
     headers: { ...hdr, 'content-type': 'application/json' },
-    body: JSON.stringify({ map, sidecar }) });
+    body: JSON.stringify({ map: zoneEditing, sidecar: collectZone() }) });
   const resp = await r.json();
   document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
-  if (resp.ok) { flash(map + ' 已保存并热重载'); loadZones(); }
+  if (resp.ok) { flash(zoneEditing + ' 已保存并热重载'); loadZones(); }
 }
 async function addZone() {
   const map = document.getElementById('zone-avail').value;
@@ -350,9 +471,14 @@ async function addZone() {
     body: JSON.stringify({ map }) });
   const resp = await r.json();
   document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
-  if (resp.ok) { flash(map + ' 已接入 (记得配置客户端小地图帧号与传送门)'); loadZones(); }
+  if (resp.ok) { flash(map + ' 已接入, 请配置出生点与传送门'); await loadZones(); showZone(map); }
 }
-if (location.hash === '#config') showTab('config');
+// 深链: #config 直达配置页; #zone=<map> 直达该区域编辑
+if (location.hash.startsWith('#config') || location.hash.startsWith('#zone')) {
+  showTab('config');
+  const m = location.hash.match(/^#zone=(.+)$/);
+  if (m) setTimeout(() => showZone(decodeURIComponent(m[1])), 900);
+}
 tick(); setInterval(tick, 2000);
 </script>
 </body>
