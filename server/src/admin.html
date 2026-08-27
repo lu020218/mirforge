@@ -4,196 +4,356 @@
 <meta charset="utf-8">
 <title>MirForge 管理台</title>
 <style>
-  :root { color-scheme: dark; }
-  body { margin: 0; padding: 28px 36px; background: #0d0f18; color: #e8e2d0;
+  :root {
+    color-scheme: dark;
+    --bg: #0d0f18; --panel: #12141f; --line: #23273a; --line2: #1a1d2b;
+    --gold: #c9a55c; --gold-br: #ffd876; --gold-edge: #6b5a32;
+    --text: #e8e2d0; --sub: #9a917c; --dim: #5b5648;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.6 "Microsoft YaHei", sans-serif; }
-  h1 { font-size: 18px; letter-spacing: 6px; color: #c9a55c; font-weight: 600; }
-  .cards { display: flex; gap: 14px; margin: 18px 0; flex-wrap: wrap; }
-  .card { background: rgba(13,15,24,.9); border: 1px solid #2a2d3c; border-radius: 4px;
-          padding: 12px 20px; min-width: 120px; }
-  .card b { display: block; font-size: 22px; color: #ffd876; }
-  .card span { font-size: 12px; color: #9a917c; }
-  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-  th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #1c1f2e; font-size: 13px; }
-  th { color: #9a917c; font-weight: normal; }
-  td .off { color: #5b5648; }
-  button { background: #372d19; color: #ffd876; border: 1px solid #6b5a32; border-radius: 3px;
-           padding: 5px 14px; cursor: pointer; font-family: inherit; }
+
+  /* ── 布局: 左侧栏 + 内容区 ── */
+  .shell { display: flex; min-height: 100vh; }
+  .side { width: 200px; flex: none; background: var(--panel);
+          border-right: 1px solid var(--line); padding: 20px 0; position: sticky;
+          top: 0; height: 100vh; overflow-y: auto; }
+  .brand { font-size: 15px; letter-spacing: 5px; color: var(--gold);
+           padding: 0 20px 18px; font-weight: 600; }
+  .nav a { display: flex; align-items: center; gap: 10px; padding: 9px 20px;
+           color: var(--sub); text-decoration: none; font-size: 14px;
+           border-left: 3px solid transparent; cursor: pointer; }
+  .nav a:hover { background: rgba(201,165,92,.06); color: var(--text); }
+  .nav a.on { background: rgba(201,165,92,.1); color: var(--gold-br);
+              border-left-color: var(--gold); }
+  .nav .ico { width: 18px; text-align: center; opacity: .9; }
+  .nav .sec { color: var(--dim); font-size: 11px; letter-spacing: 2px;
+              padding: 16px 20px 6px; }
+  .side .foot { color: var(--dim); font-size: 11px; padding: 18px 20px 0; }
+
+  .main { flex: 1; min-width: 0; padding: 22px 28px 60px; }
+  .head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
+  .head h2 { font-size: 19px; margin: 0; color: var(--text); font-weight: 600; }
+  .head .desc { color: var(--sub); font-size: 12px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+             margin: 16px 0; }
+  .card-box { background: var(--panel); border: 1px solid var(--line);
+              border-radius: 5px; padding: 16px 18px; margin-bottom: 18px; }
+  .card-box > h3 { margin: 0 0 10px; font-size: 14px; color: var(--gold);
+                   font-weight: 600; }
+  .page { display: none; }
+  .page.on { display: block; }
+
+  /* ── 通用控件 ── */
+  .cards { display: flex; gap: 14px; flex-wrap: wrap; }
+  .card { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 5px; padding: 14px 22px; min-width: 130px; }
+  .card b { display: block; font-size: 24px; color: var(--gold-br); }
+  .card span { font-size: 12px; color: var(--sub); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line2);
+           font-size: 13px; }
+  th { color: var(--sub); font-weight: normal; background: rgba(255,255,255,.015); }
+  tbody tr:hover > td { background: rgba(255,255,255,.02); }
+  .off { color: var(--dim); }
+  button { background: #372d19; color: var(--gold-br); border: 1px solid var(--gold-edge);
+           border-radius: 3px; padding: 5px 14px; cursor: pointer; font-family: inherit;
+           font-size: 13px; }
   button:hover { background: #4a3c22; }
-  input { background: #0e1017; color: #e8e2d0; border: 1px solid #2a2d3c; border-radius: 3px;
-          padding: 6px 10px; font-family: inherit; width: 320px; }
-  .row { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
-  #msg { color: #7bd88f; font-size: 12px; }
-  .tabs { display: flex; gap: 4px; margin-top: 22px; border-bottom: 1px solid #2a2d3c; }
-  .tabs button { border-radius: 3px 3px 0 0; border-bottom: none; background: #171a26; color: #9a917c; }
-  .tabs button.on { background: #372d19; color: #ffd876; }
-  .pane { display: none; padding-top: 12px; }
-  .pane.on { display: block; }
-  textarea { width: 100%; min-height: 320px; background: #0e1017; color: #cfc8b4;
-             border: 1px solid #2a2d3c; border-radius: 3px; padding: 10px;
-             font: 12px/1.5 Consolas, monospace; box-sizing: border-box; }
+  button.ghost { background: transparent; color: var(--sub); border-color: var(--line); }
+  button.ghost:hover { background: rgba(255,255,255,.04); color: var(--text); }
+  button.danger { background: #3a1c1c; color: #e08080; border-color: #6b3232; }
+  input, select, textarea { background: #0e1017; color: var(--text);
+           border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px;
+           font-family: inherit; font-size: 13px; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold-edge); }
   td input { width: 70px; padding: 3px 6px; }
   td input.wide { width: 110px; }
   td input[type=checkbox] { width: auto; }
-  td select { background: #0e1017; color: #e8e2d0; border: 1px solid #2a2d3c;
-              border-radius: 3px; padding: 3px 6px; }
+  td select { padding: 3px 6px; }
   td input:disabled { opacity: .3; }
-  #cfg-err { color: #e04040; font-size: 12px; white-space: pre-line; }
-  tr.detail > td { padding: 0 0 10px; border-bottom: 1px solid #2a2d3c; }
-  tr.editing > td { background: rgba(201,165,92,.07); }
-  tr.editing > td:first-child { box-shadow: inset 2px 0 0 #c9a55c; }
+  textarea { width: 100%; min-height: 280px; color: #cfc8b4;
+             font: 12px/1.5 Consolas, monospace; }
+  .hint { color: var(--dim); font-size: 12px; }
+  .ok-msg { color: #7bd88f; font-size: 12px; }
+  .err-msg { color: #e04040; font-size: 12px; white-space: pre-line; }
   td img.icon { width: 32px; height: 32px; object-fit: contain; vertical-align: middle;
-                background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; cursor: pointer; }
-  #picker { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 10; }
+                background: #0e1017; border: 1px solid var(--line); border-radius: 3px;
+                cursor: pointer; }
+
+  /* ── 地图页 ── */
+  tr.detail > td { padding: 0 0 10px; border-bottom: 1px solid var(--line); }
+  tr.editing > td { background: rgba(201,165,92,.07); }
+  tr.editing > td:first-child { box-shadow: inset 2px 0 0 var(--gold); }
+  #picker, #mmpicker { display: none; position: fixed; inset: 0;
+                       background: rgba(0,0,0,.65); z-index: 20; }
   #picker.on { display: flex; align-items: center; justify-content: center; }
-  #picker .box { background: #0d0f18; border: 1px solid #6b5a32; border-radius: 4px;
-                 padding: 16px; max-height: 80vh; overflow: auto; }
-  #picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
+  #picker .box, #mmpicker .box { background: var(--panel); border: 1px solid var(--gold-edge);
+                 border-radius: 5px; padding: 16px; max-height: 86vh; overflow: auto; }
+  #picker img, #mmpicker img { image-rendering: pixelated; cursor: crosshair; display: block; }
 </style>
 </head>
 <body>
-<h1>MIRFORGE 管理台</h1>
-<div class="tabs">
-  <button id="tab-status" class="on" onclick="showTab('status')">状态</button>
-  <button id="tab-config" onclick="showTab('config')">配置</button>
-</div>
-<div id="pane-status" class="pane on">
-<div class="cards">
-  <div class="card"><b id="c-uptime">-</b><span>运行时长</span></div>
-  <div class="card"><b id="c-players">-</b><span>在线玩家</span></div>
-  <div class="card"><b id="c-monsters">-</b><span>怪物 存活/总数</span></div>
-  <div class="card"><b id="c-ground">-</b><span>地面物品</span></div>
-  <div class="card"><b id="c-zones">-</b><span>区域</span></div>
-</div>
-<div class="row">
-  <input id="bc" placeholder="全服公告内容…">
-  <button onclick="broadcastMsg()">发送公告</button>
-  <button onclick="saveAll()">立即存档</button>
-  <span id="msg"></span>
-</div>
-<table>
-  <thead><tr><th>角色</th><th>等级</th><th>区域</th><th>坐标</th><th>HP</th><th>状态</th><th></th></tr></thead>
-  <tbody id="rows"></tbody>
-</table>
-</div>
-
-<div id="pane-config" class="pane">
-  <div class="row">
-    <button onclick="loadCfg()">重新载入</button>
-    <button onclick="saveCfg('items')">保存物品</button>
-    <button onclick="saveCfg('skills')">保存技能</button>
-    <button onclick="saveCfg('quests')">保存任务</button>
-    <span style="color:#9a917c;font-size:12px">保存 = 校验 → 写入配置库 → 热重载 (在线玩家立即生效)</span>
-  </div>
-  <div id="cfg-err"></div>
-  <h3 style="color:#c9a55c;font-size:14px">物品</h3>
-  <table id="item-table">
-    <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <div class="row"><button onclick="addItemRow()">+ 新增物品</button></div>
-  <h3 style="color:#c9a55c;font-size:14px">技能</h3>
-  <table id="skill-table">
-    <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th title="damage:伤害倍率 / aoe:半径">参数1</th><th title="aoe:伤害倍率">参数2</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <div class="row"><button onclick="addSkillRow()">+ 新增技能</button></div>
-  <h3 style="color:#c9a55c;font-size:14px">任务 <span style="color:#5b5648;font-size:12px">(objectives: [[怪物模板, 数量]])</span></h3>
-  <textarea id="quests-json" spellcheck="false"></textarea>
-  <h3 style="color:#c9a55c;font-size:14px">区域与地图 <span style="color:#5b5648;font-size:12px">(保存后该区怪物按新配置立即重建)</span></h3>
-  <div class="row">
-    <input id="zone-filter" placeholder="筛选可接入地图 (输入地图名)…" style="width:220px" oninput="renderAvail()">
-    <select id="zone-avail" style="background:#0e1017;color:#e8e2d0;border:1px solid #2a2d3c;border-radius:3px;padding:6px 10px;width:180px"></select>
-    <button onclick="addZone()">接入为新区域</button>
-    <span id="zone-avail-count" style="color:#5b5648;font-size:12px"></span>
-  </div>
-  <table id="zone-table">
-    <thead><tr><th>地图</th><th>区域名</th><th>出生点</th><th>小地图</th><th>传送门</th><th>刷新点</th><th>怪物总数</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-
-  <div id="ze-holder" style="display:none"></div>
-  <div id="zone-edit" style="display:none;border-left:2px solid #6b5a32;border-radius:0 4px 4px 0;padding:12px 18px;background:rgba(201,165,92,.04)">
-    <div class="row" style="margin-top:0">
-      <b id="ze-title" style="color:#ffd876"></b>
-      <span style="color:#9a917c;font-size:12px">区域名</span>
-      <input id="ze-name" style="width:140px">
-      <span style="color:#9a917c;font-size:12px">出生点 X/Y (留空=地图中心)</span>
-      <input id="ze-sx" style="width:80px"><input id="ze-sy" style="width:80px">
-      <span style="color:#9a917c;font-size:12px">小地图帧</span>
-      <input id="ze-mm" style="width:70px" onchange="syncMinimapPreview()">
-      <button onclick="openMinimapPicker()">选择…</button>
-      <button onclick="saveZone()">保存区域</button>
-      <button onclick="closeZone()">关闭</button>
+<div class="shell">
+  <nav class="side">
+    <div class="brand">MIRFORGE</div>
+    <div class="nav">
+      <a id="nav-dashboard" onclick="go('dashboard')"><span class="ico">◈</span>Dashboard</a>
+      <div class="sec">游戏配置</div>
+      <a id="nav-items" onclick="go('items')"><span class="ico">⚔</span>物品设置</a>
+      <a id="nav-skills" onclick="go('skills')"><span class="ico">✦</span>技能设置</a>
+      <a id="nav-quests" onclick="go('quests')"><span class="ico">✧</span>任务设置</a>
+      <a id="nav-maps" onclick="go('maps')"><span class="ico">▦</span>地图设置</a>
+      <div class="sec">运维</div>
+      <a id="nav-server" onclick="go('server')"><span class="ico">⚙</span>服务器设置</a>
     </div>
-    <div class="row" style="margin:10px 0 6px">
-      <button id="pick-spawn" onclick="startPick('spawn')">取点: 出生点</button>
-      <button id="pick-portal" onclick="startPick('portal')">取点: 新传送门</button>
-      <button id="pick-mob" onclick="startPick('mob')">取点: 新刷新点</button>
-      <span style="color:#5b5648;font-size:12px">左键点图取坐标 · 右键拖动 · 滚轮缩放</span>
-      <button onclick="zoomBy(1/1.25)">−</button>
-      <span id="zoom-label" style="color:#ffd876;font-size:12px;min-width:44px;text-align:center">100%</span>
-      <button onclick="zoomBy(1.25)">+</button>
-      <button onclick="setZoom(1, true)">1:1</button>
-      <button onclick="fitZoom()">适应</button>
-      <span id="pick-hint" style="color:#7bd88f;font-size:12px"></span>
-    </div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-      <div id="mapview" oncontextmenu="return false"
-           style="position:relative;width:900px;height:520px;overflow:hidden;
-                  border:1px solid #2a2d3c;border-radius:3px;background:#0e1017;cursor:default">
-        <div id="mapworld" style="position:absolute;left:0;top:0;transform-origin:0 0">
-          <img id="mapbg" style="position:absolute;left:0;top:0;opacity:.85;image-rendering:auto">
+    <div class="foot">配置存于 SQLite<br>保存即热重载</div>
+  </nav>
+
+  <div class="main">
+    <!-- ═══ Dashboard ═══ -->
+    <section id="page-dashboard" class="page">
+      <div class="head"><h2>Dashboard</h2><span class="desc">运行状态总览</span></div>
+      <div class="cards" style="margin:16px 0 20px">
+        <div class="card"><b id="c-uptime">-</b><span>运行时长</span></div>
+        <div class="card"><b id="c-players">-</b><span>在线玩家</span></div>
+        <div class="card"><b id="c-monsters">-</b><span>怪物 存活/总数</span></div>
+        <div class="card"><b id="c-ground">-</b><span>地面物品</span></div>
+        <div class="card"><b id="c-zones">-</b><span>区域</span></div>
+      </div>
+      <div class="card-box">
+        <h3>在线角色</h3>
+        <table>
+          <thead><tr><th>角色</th><th>等级</th><th>区域</th><th>坐标</th><th>HP</th><th>状态</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ 物品 ═══ -->
+    <section id="page-items" class="page">
+      <div class="head"><h2>物品设置</h2><span class="desc">装备与道具模板</span></div>
+      <div class="toolbar">
+        <button onclick="saveCfg('items')">保存物品</button>
+        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <button class="ghost" onclick="addItemRow()">+ 新增物品</button>
+        <span class="hint">图标点击可从图库选择 · 保存后在线玩家立即生效</span>
+        <span id="msg-items" class="ok-msg"></span>
+      </div>
+      <div id="err-items" class="err-msg"></div>
+      <div class="card-box">
+        <table id="item-table">
+          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ 技能 ═══ -->
+    <section id="page-skills" class="page">
+      <div class="head"><h2>技能设置</h2><span class="desc">三职业技能表</span></div>
+      <div class="toolbar">
+        <button onclick="saveCfg('skills')">保存技能</button>
+        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <button class="ghost" onclick="addSkillRow()">+ 新增技能</button>
+        <span class="hint">参数随类型联动: 单体=倍率 / 范围=半径+倍率 / 治疗=无参</span>
+        <span id="msg-skills" class="ok-msg"></span>
+      </div>
+      <div id="err-skills" class="err-msg"></div>
+      <div class="card-box">
+        <table id="skill-table">
+          <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th>参数1</th><th>参数2</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ 任务 ═══ -->
+    <section id="page-quests" class="page">
+      <div class="head"><h2>任务设置</h2><span class="desc">任务链与目标</span></div>
+      <div class="toolbar">
+        <button onclick="saveCfg('quests')">保存任务</button>
+        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <span class="hint">objectives: [[怪物模板, 数量]] · prereq 为前置任务 id 或 null</span>
+        <span id="msg-quests" class="ok-msg"></span>
+      </div>
+      <div id="err-quests" class="err-msg"></div>
+      <div class="card-box">
+        <textarea id="quests-json" spellcheck="false"></textarea>
+      </div>
+    </section>
+
+    <!-- ═══ 地图 ═══ -->
+    <section id="page-maps" class="page">
+      <div class="head"><h2>地图设置</h2><span class="desc">区域 · 出生点 · 传送门 · 怪物刷新</span></div>
+      <div class="toolbar">
+        <input id="zone-filter" placeholder="筛选可接入地图…" style="width:200px" oninput="renderAvail()">
+        <select id="zone-avail" style="width:180px"></select>
+        <button onclick="addZone()">接入为新区域</button>
+        <span id="zone-avail-count" class="hint"></span>
+        <span id="msg-maps" class="ok-msg"></span>
+      </div>
+      <div id="err-maps" class="err-msg"></div>
+      <div class="card-box">
+        <table id="zone-table">
+          <thead><tr><th>地图</th><th>区域名</th><th>出生点</th><th>小地图</th><th>传送门</th><th>刷新点</th><th>怪物总数</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="ze-holder" style="display:none"></div>
+        <div id="zone-edit" style="display:none;border-left:2px solid var(--gold-edge);
+             border-radius:0 4px 4px 0;padding:12px 18px;background:rgba(201,165,92,.04)">
+          <div class="toolbar" style="margin-top:0">
+            <b id="ze-title" style="color:var(--gold-br)"></b>
+            <span class="hint">区域名</span><input id="ze-name" style="width:130px">
+            <span class="hint">出生点 X/Y</span>
+            <input id="ze-sx" style="width:74px"><input id="ze-sy" style="width:74px">
+            <span class="hint">小地图帧</span><input id="ze-mm" style="width:64px" onchange="syncMinimapPreview()">
+            <button class="ghost" onclick="openMinimapPicker()">选择…</button>
+            <button onclick="saveZone()">保存区域</button>
+            <button class="ghost" onclick="closeZone()">关闭</button>
+          </div>
+          <div class="toolbar">
+            <button class="ghost" onclick="startPick('spawn')">取点: 出生点</button>
+            <button class="ghost" onclick="startPick('portal')">取点: 新传送门</button>
+            <button class="ghost" onclick="startPick('mob')">取点: 新刷新点</button>
+            <span class="hint">左键取坐标 · 右键拖动 · 滚轮缩放</span>
+            <button class="ghost" onclick="zoomBy(1/1.25)">−</button>
+            <span id="zoom-label" style="color:var(--gold-br);font-size:12px;min-width:44px;text-align:center">100%</span>
+            <button class="ghost" onclick="zoomBy(1.25)">+</button>
+            <button class="ghost" onclick="setZoom(1, true)">1:1</button>
+            <button class="ghost" onclick="fitZoom()">适应</button>
+            <span id="pick-hint" class="ok-msg"></span>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+            <div id="mapview" oncontextmenu="return false"
+                 style="position:relative;width:900px;height:520px;overflow:hidden;
+                        border:1px solid var(--line);border-radius:3px;background:#0e1017">
+              <div id="mapworld" style="position:absolute;left:0;top:0;transform-origin:0 0">
+                <img id="mapbg" style="position:absolute;left:0;top:0;opacity:.85">
+              </div>
+            </div>
+            <div>
+              <div class="hint" style="margin-bottom:4px">总览 (点击跳转)</div>
+              <img id="ze-thumb" onclick="thumbJump(event)"
+                   style="width:200px;border:1px solid var(--line);border-radius:3px;
+                          background:#0e1017;cursor:crosshair">
+              <div class="hint" style="margin:8px 0 4px">小地图预览</div>
+              <img id="ze-mm-img" style="max-width:200px;max-height:150px;
+                   border:1px solid var(--line);border-radius:3px;background:#0e1017">
+              <div id="map-pos" class="hint" style="margin-top:6px"></div>
+            </div>
+          </div>
+          <h4 style="color:var(--gold);font-size:13px;margin:14px 0 0">传送门</h4>
+          <table id="portal-table">
+            <thead><tr><th>X</th><th>Y</th><th>目标地图</th><th>落点X</th><th>落点Y</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div class="toolbar"><button class="ghost" onclick="addPortalRow()">+ 传送门</button></div>
+          <h4 style="color:var(--gold);font-size:13px;margin:14px 0 0">怪物刷新点</h4>
+          <table id="spawn-table">
+            <thead><tr><th>模板</th><th>图库</th><th>X</th><th>Y</th><th>数量</th><th>半径</th><th>被动</th><th>HP</th><th>伤害</th><th>经验</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div class="toolbar"><button class="ghost" onclick="addSpawnRow()">+ 刷新点</button></div>
         </div>
       </div>
-      <div>
-        <div style="color:#9a917c;font-size:12px;margin-bottom:4px">总览 (点击跳转)</div>
-        <img id="ze-thumb" onclick="thumbJump(event)"
-             style="width:200px;border:1px solid #2a2d3c;border-radius:3px;background:#0e1017;cursor:crosshair">
-        <div style="color:#9a917c;font-size:12px;margin:8px 0 4px">小地图预览</div>
-        <img id="ze-mm-img" style="max-width:200px;max-height:150px;border:1px solid #2a2d3c;border-radius:3px;background:#0e1017">
-        <div id="map-pos" style="color:#5b5648;font-size:12px;margin-top:6px"></div>
+    </section>
+
+    <!-- ═══ 服务器 ═══ -->
+    <section id="page-server" class="page">
+      <div class="head"><h2>服务器设置</h2><span class="desc">运维操作与访问</span></div>
+      <div class="card-box">
+        <h3>全服公告</h3>
+        <div class="toolbar" style="margin-top:0">
+          <input id="bc" placeholder="公告内容…" style="width:420px">
+          <button onclick="broadcastMsg()">发送</button>
+          <span id="msg-server" class="ok-msg"></span>
+        </div>
+        <div class="hint">公告即时推送到所有在线玩家的聊天框</div>
       </div>
-    </div>
-    <h4 style="color:#c9a55c;font-size:13px;margin:14px 0 0">传送门</h4>
-    <table id="portal-table">
-      <thead><tr><th>X</th><th>Y</th><th>目标地图</th><th>落点X</th><th>落点Y</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div class="row"><button onclick="addPortalRow()">+ 传送门</button></div>
-    <h4 style="color:#c9a55c;font-size:13px;margin:14px 0 0">怪物刷新点</h4>
-    <table id="spawn-table">
-      <thead><tr><th>模板</th><th>图库</th><th>X</th><th>Y</th><th>数量</th><th>半径</th><th>被动</th><th>HP</th><th>伤害</th><th>经验</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div class="row"><button onclick="addSpawnRow()">+ 刷新点</button></div>
+      <div class="card-box">
+        <h3>数据维护</h3>
+        <div class="toolbar" style="margin-top:0">
+          <button onclick="saveAll()">立即存档</button>
+          <span class="hint">将所有在场角色的位置/等级/背包/任务写入数据库 (平时按周期自动存档)</span>
+        </div>
+      </div>
+      <div class="card-box">
+        <h3>管理令牌</h3>
+        <div class="toolbar" style="margin-top:0">
+          <input id="tok" placeholder="x-admin-token (绑定非本机地址时必填)" style="width:420px">
+          <button onclick="saveToken()">保存到本浏览器</button>
+        </div>
+        <div class="hint">令牌存于本机 localStorage，仅本浏览器可用；留空则清除。</div>
+      </div>
+      <div class="card-box">
+        <h3>说明</h3>
+        <div class="hint" style="line-height:1.9">
+          配置（物品/技能/任务/区域）存于 SQLite 配置表，与角色存档同库；保存即热重载，无需重启。<br>
+          管理操作会记入 <code>admin-audit.log</code>（公告/配置保存/区域保存/接入/移除）。<br>
+          环境变量：<code>MIRFORGE_ADMIN</code> 管理台地址（off 关闭）·
+          <code>MIRFORGE_ADMIN_TOKEN</code> 访问令牌 ·
+          <code>MIRFORGE_DB</code> 数据库路径。
+        </div>
+      </div>
+    </section>
   </div>
 </div>
-<div id="mmpicker" onclick="closeMinimapPicker(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10;align-items:center;justify-content:center">
-  <div class="box" style="background:#0d0f18;border:1px solid #6b5a32;border-radius:4px;padding:16px;max-height:86vh;overflow:auto">
-    <div class="row" style="margin-top:0">
-      <button onclick="mmPage(-1)">上一页</button>
-      <span id="mm-range" style="color:#9a917c;font-size:12px"></span>
-      <button onclick="mmPage(1)">下一页</button>
-      <span style="color:#5b5648;font-size:12px">点击小地图选择 (5 列)</span>
+
+<div id="mmpicker" onclick="closeMinimapPicker(event)" style="align-items:center;justify-content:center">
+  <div class="box">
+    <div class="toolbar" style="margin-top:0">
+      <button class="ghost" onclick="mmPage(-1)">上一页</button>
+      <span id="mm-range" class="hint"></span>
+      <button class="ghost" onclick="mmPage(1)">下一页</button>
+      <span class="hint">点击小地图选择</span>
     </div>
-    <img id="mm-grid" width="640" onclick="pickMinimap(event)" style="cursor:crosshair;display:block">
+    <img id="mm-grid" width="640" onclick="pickMinimap(event)">
   </div>
 </div>
 <div id="picker" onclick="closePicker(event)">
   <div class="box">
-    <div class="row" style="margin-top:0">
-      <button onclick="pickerPage(-1)">上一页</button>
-      <span id="picker-range" style="color:#9a917c;font-size:12px"></span>
-      <button onclick="pickerPage(1)">下一页</button>
-      <span style="color:#5b5648;font-size:12px">点击图标选择</span>
+    <div class="toolbar" style="margin-top:0">
+      <button class="ghost" onclick="pickerPage(-1)">上一页</button>
+      <span id="picker-range" class="hint"></span>
+      <button class="ghost" onclick="pickerPage(1)">下一页</button>
+      <span class="hint">点击图标选择</span>
     </div>
     <img id="picker-img" width="480" onclick="pickIcon(event)">
   </div>
 </div>
+
 <script>
 const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
+
+// ── 页面路由 ──
+const PAGES = ['dashboard', 'items', 'skills', 'quests', 'maps', 'server'];
+let curPage = 'dashboard';
+function go(p, silent) {
+  if (!PAGES.includes(p)) p = 'dashboard';
+  curPage = p;
+  for (const k of PAGES) {
+    document.getElementById('nav-' + k).classList.toggle('on', k === p);
+    document.getElementById('page-' + k).classList.toggle('on', k === p);
+  }
+  if (!silent) location.hash = '#' + p;
+  if (p === 'items' || p === 'skills' || p === 'quests') loadCfg();
+  if (p === 'maps') loadZones();
+}
+/// 当前页的提示/错误位（各页独立，互不干扰）
+function msgEl() { return document.getElementById('msg-' + (curPage === 'dashboard' ? 'server' : curPage)); }
+function errEl() { return document.getElementById('err-' + (['items','skills','quests','maps'].includes(curPage) ? curPage : 'maps')); }
+function flash(t) { const m = msgEl(); if (!m) return;
+  m.textContent = t; setTimeout(() => { if (m.textContent === t) m.textContent = ''; }, 2500); }
+function showErr(t) { const e = errEl(); if (e) e.textContent = t || ''; }
+function saveToken() {
+  const v = document.getElementById('tok').value.trim();
+  if (v) localStorage.setItem('admToken', v); else localStorage.removeItem('admToken');
+  flash('已保存，刷新页面生效');
+}
+
 function fmtUp(s) {
   const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
   return h > 0 ? `${h}h${m}m` : `${m}m${s%60}s`;
@@ -201,19 +361,19 @@ function fmtUp(s) {
 async function tick() {
   try {
     const r = await fetch('/api/status', { headers: hdr });
-    if (r.status === 401) { document.getElementById('msg').textContent =
-      '未授权: localStorage.setItem("admToken", "<token>") 后刷新'; return; }
+    if (r.status === 401) { c('c-uptime', '未授权'); return; }
     const d = await r.json();
     c('c-uptime', fmtUp(d.uptime_secs));
     c('c-players', d.players.filter(p => p.connected).length);
     c('c-monsters', d.monsters_alive + '/' + d.monsters_total);
     c('c-ground', d.ground_items);
     c('c-zones', d.zones.length);
-    document.getElementById('rows').innerHTML = d.players.map(p => `<tr>
+    document.getElementById('rows').innerHTML = d.players.length ? d.players.map(p => `<tr>
       <td>${p.name}</td><td>${p.level}</td><td>${p.zone}</td>
       <td>${p.x.toFixed(1)}, ${p.y.toFixed(1)}</td><td>${p.hp}/${p.max_hp}</td>
       <td>${p.connected ? '在线' : '<span class=off>重连窗</span>'}</td>
-      <td><button onclick="kick('${p.name}')">踢下线</button></td></tr>`).join('');
+      <td><button class="ghost" onclick="kick('${p.name}')">踢下线</button></td></tr>`).join('')
+      : '<tr><td colspan="7" class="off">暂无在线角色</td></tr>';
   } catch (e) { /* 服务器未就绪 */ }
 }
 function c(id, v) { document.getElementById(id).textContent = v; }
@@ -236,15 +396,8 @@ async function saveAll() {
   await fetch('/api/save', { method: 'POST', headers: hdr });
   flash('已存档');
 }
-function flash(t) { const m = document.getElementById('msg');
-  m.textContent = t; setTimeout(() => m.textContent = '', 2500); }
-function showTab(t) {
-  for (const k of ['status', 'config']) {
-    document.getElementById('tab-' + k).classList.toggle('on', k === t);
-    document.getElementById('pane-' + k).classList.toggle('on', k === t);
-  }
-  if (t === 'config') { loadCfg(); loadZones(); }
-}
+
+// ── 物品 ──
 const ITEM_COLS = ['template','name','slot','attack','defense','hp','image','shape'];
 const NUM_COLS = new Set(['attack','defense','hp','image','shape']);
 function itemRow(it) {
@@ -253,14 +406,27 @@ function itemRow(it) {
     const inp = `<input class="${c === 'template' || c === 'name' ? 'wide' : ''}" data-c="${c}" value="${it[c] ?? (NUM_COLS.has(c) ? 0 : '')}">`;
     if (c === 'image') return `<td>${inp} <img class="icon" title="点击从图库选择" src="/api/frame/items/${it.image ?? 0}" onclick="openPicker(this)"></td>`;
     return `<td>${inp}</td>`;
-  }).join('') + `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
-  // 手改帧号时同步预览
+  }).join('') + `<td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   tr.querySelector('input[data-c="image"]').addEventListener('change', e => {
     tr.querySelector('img.icon').src = '/api/frame/items/' + (Number(e.target.value) || 0);
   });
   return tr;
 }
-// ── 图标选择弹层 ──
+function addItemRow() {
+  document.querySelector('#item-table tbody').appendChild(itemRow(
+    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, defense: 0, hp: 0, image: 0, shape: 0 }));
+}
+function collectItems() {
+  return [...document.querySelectorAll('#item-table tbody tr')].map(tr => {
+    const o = {};
+    tr.querySelectorAll('input').forEach(inp => {
+      const c = inp.dataset.c;
+      o[c] = NUM_COLS.has(c) ? Number(inp.value) || 0 : inp.value.trim();
+    });
+    return o;
+  });
+}
+// 图标选择弹层
 let pickerStart = 0, pickerTarget = null;
 const PICK_COUNT = 100, PICK_COLS = 10, PICK_CELL = 48;
 function openPicker(imgEl) {
@@ -287,6 +453,8 @@ function pickIcon(ev) {
   document.getElementById('picker').classList.remove('on');
 }
 function closePicker(ev) { if (ev.target.id === 'picker') ev.target.classList.remove('on'); }
+
+// ── 技能 ──
 const CLASSES = { warrior: '战士', mage: '法师', taoist: '道士' };
 const KTYPES = { damage: '单体伤害', aoe: '范围伤害', heal: '治疗' };
 function parseKind(kind) {
@@ -312,7 +480,7 @@ function skillRow(cls, sk) {
     <td><select data-c="ktype">${opt(KTYPES, k.t)}</select></td>
     <td><input data-c="p1" value="${k.p1}"></td>
     <td><input data-c="p2" value="${k.p2}"></td>
-    <td><button onclick="this.closest('tr').remove()">删</button></td>`;
+    <td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   const sync = () => {
     const t = tr.querySelector('[data-c=ktype]').value;
     tr.querySelector('[data-c=p1]').disabled = t === 'heal';
@@ -343,6 +511,8 @@ function collectSkills() {
   }
   return out;
 }
+
+// ── 配置读写 ──
 async function loadCfg() {
   const r = await fetch('/api/config', { headers: hdr });
   if (!r.ok) return;
@@ -355,21 +525,7 @@ async function loadCfg() {
   for (const cls of Object.keys(CLASSES))
     (d.skills[cls] || []).forEach(sk => sb.appendChild(skillRow(cls, sk)));
   document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
-  document.getElementById('cfg-err').textContent = '';
-}
-function addItemRow() {
-  document.querySelector('#item-table tbody').appendChild(itemRow(
-    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, defense: 0, hp: 0, image: 0, shape: 0 }));
-}
-function collectItems() {
-  return [...document.querySelectorAll('#item-table tbody tr')].map(tr => {
-    const o = {};
-    tr.querySelectorAll('input').forEach(inp => {
-      const c = inp.dataset.c;
-      o[c] = NUM_COLS.has(c) ? Number(inp.value) || 0 : inp.value.trim();
-    });
-    return o;
-  });
+  showErr('');
 }
 async function saveCfg(kind) {
   let value;
@@ -378,15 +534,17 @@ async function saveCfg(kind) {
           : kind === 'skills' ? collectSkills()
           : JSON.parse(document.getElementById(kind + '-json').value);
   } catch (e) {
-    document.getElementById('cfg-err').textContent = 'JSON 语法错误: ' + e.message; return;
+    showErr('JSON 语法错误: ' + e.message); return;
   }
   const r = await fetch('/api/config', { method: 'PUT',
     headers: { ...hdr, 'content-type': 'application/json' },
     body: JSON.stringify({ kind, value }) });
   const resp = await r.json();
-  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.errors.join('\n');
-  if (resp.ok) flash(kind + ' 已保存并热重载');
+  showErr(resp.ok ? '' : resp.errors.join('\n'));
+  if (resp.ok) flash('已保存并热重载');
 }
+
+// ── 地图区域 ──
 let zoneData = {}, zoneAvail = [], zoneEditing = null;
 async function loadZones() {
   const r = await fetch('/api/zones', { headers: hdr });
@@ -416,18 +574,18 @@ function renderZoneList() {
     return `<tr data-map="${z.map}"><td>${z.map}</td><td>${z.name}</td><td>${sp}</td><td>${mm}</td>
       <td>${(sc.portals || []).length}</td><td>${(sc.monsters || []).length}</td><td>${mon}</td>
       <td><button onclick="toggleZone('${z.map}')">${z.map === zoneEditing ? '收起' : '编辑'}</button>
-      <button onclick="delZone('${z.map}')" style="background:#3a1c1c;color:#e08080;border-color:#6b3232">移除</button></td></tr>`;
+      <button class="danger" onclick="delZone('${z.map}')">移除</button></td></tr>`;
   }).join('');
 }
 function numCell(v, w) { return `<td><input value="${v ?? ''}" style="width:${w || 60}px"></td>`; }
 function portalRow(p) {
   const tr = document.createElement('tr');
-  const opts = Object.keys(zoneData).concat(zoneAvail.slice(0, 0)).map(m =>
+  const opts = Object.keys(zoneData).map(m =>
     `<option value="${m}" ${m === p.to ? 'selected' : ''}>${m}</option>`).join('');
   tr.innerHTML = numCell(p.x) + numCell(p.y) +
     `<td><select style="width:120px">${opts}</select></td>` +
     numCell(p.to_x ?? '') + numCell(p.to_y ?? '') +
-    `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
+    `<td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   return tr;
 }
 function spawnRow(m) {
@@ -440,8 +598,7 @@ function spawnRow(m) {
     `<td><input type="checkbox" ${m.passive ? 'checked' : ''}></td>` +
     numCell(m.hp ?? 30, 50) + numCell(m.damage ?? 0, 45) + numCell(m.exp ?? 10, 45) +
     `<td><input value="${drops}" style="width:180px" title="物品模板:概率, 逗号分隔"></td>` +
-    `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
-  // 图库号改动联动预览
+    `<td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   const imgInput = tr.querySelectorAll('input')[1];
   imgInput.addEventListener('change', e =>
     tr.querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0));
@@ -501,13 +658,22 @@ function mountZoneEditor(map) {
   panel.style.display = 'block';
   panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
+function closeZone() {
+  zoneEditing = null;
+  const panel = document.getElementById('zone-edit');
+  panel.style.display = 'none';
+  document.getElementById('ze-holder').appendChild(panel);
+  const tbody = document.querySelector('#zone-table tbody');
+  tbody.querySelectorAll('tr.detail').forEach(tr => tr.remove());
+  tbody.querySelectorAll('tr.editing').forEach(tr => tr.classList.remove('editing'));
+}
 function syncMinimapPreview() {
   const v = document.getElementById('ze-mm').value.trim();
   const img = document.getElementById('ze-mm-img');
   if (v === '') { img.removeAttribute('src'); img.alt = '未配置'; return; }
   img.src = '/api/frame/minimap/' + (Number(v) || 0);
 }
-// ── 小地图选择弹层 ──
+// 小地图选择弹层
 let mmStart = 0;
 const MM_COUNT = 20, MM_COLS = 5, MM_CW = 128, MM_CH = 88;
 function openMinimapPicker() {
@@ -531,15 +697,6 @@ function pickMinimap(ev) {
   document.getElementById('mmpicker').style.display = 'none';
 }
 function closeMinimapPicker(ev) { if (ev.target.id === 'mmpicker') ev.target.style.display = 'none'; }
-function closeZone() {
-  zoneEditing = null;
-  const panel = document.getElementById('zone-edit');
-  panel.style.display = 'none';
-  document.getElementById('ze-holder').appendChild(panel);
-  const tbody = document.querySelector('#zone-table tbody');
-  tbody.querySelectorAll('tr.detail').forEach(tr => tr.remove());
-  tbody.querySelectorAll('tr.editing').forEach(tr => tr.classList.remove('editing'));
-}
 function addPortalRow() {
   document.querySelector('#portal-table tbody').appendChild(
     portalRow({ x: 0, y: 0, to: Object.keys(zoneData)[0] || '' }));
@@ -588,7 +745,7 @@ async function saveZone() {
     headers: { ...hdr, 'content-type': 'application/json' },
     body: JSON.stringify({ map: zoneEditing, sidecar: collectZone() }) });
   const resp = await r.json();
-  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
+  showErr(resp.ok ? '' : resp.error);
   if (resp.ok) { flash(zoneEditing + ' 已保存并热重载'); loadZones(); }
 }
 async function delZone(map) {
@@ -597,14 +754,25 @@ async function delZone(map) {
     headers: { ...hdr, 'content-type': 'application/json' },
     body: JSON.stringify({ map }) });
   const resp = await r.json();
-  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
+  showErr(resp.ok ? '' : resp.error);
   if (resp.ok) {
     if (zoneEditing === map) closeZone();
     flash(map + ' 已移除');
     loadZones();
   }
 }
-// ── 地图原图视口 (瓦片拼接 + 右键拖动) ──
+async function addZone() {
+  const map = document.getElementById('zone-avail').value;
+  if (!map) return;
+  const r = await fetch('/api/zones', { method: 'POST',
+    headers: { ...hdr, 'content-type': 'application/json' },
+    body: JSON.stringify({ map }) });
+  const resp = await r.json();
+  showErr(resp.ok ? '' : resp.error);
+  if (resp.ok) { flash(map + ' 已接入, 请配置出生点与传送门'); await loadZones(); showZone(map); }
+}
+
+// ── 地图原图视口 (瓦片拼接 + 右键拖动 + 滚轮缩放) ──
 const TILE_CELLS = 16, CW = 48, CH = 32;
 const TILE_W = TILE_CELLS * CW, TILE_H = TILE_CELLS * CH;
 let pickMode = null, mapDims = null, viewX = 0, viewY = 0, zoom = 1, loadedTiles = new Set();
@@ -672,7 +840,7 @@ function setZoom(z, center) {
   clampView();
   applyView();
 }
-/// 以视口内某点 (px,py 为视口内屏幕坐标) 为锚缩放 — 光标位置不动
+/// 以视口内某点为锚缩放 — 光标位置不动
 function setZoomAt(z, px, py) {
   const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   const wx = viewX + px / zoom, wy = viewY + py / zoom;
@@ -704,7 +872,6 @@ function applyView() {
   const world = document.getElementById('mapworld');
   // 先平移后缩放 (CSS 从右往左应用): 屏幕 = (世界 - view) × zoom
   world.style.transform = `scale(${zoom}) translate(${-viewX}px, ${-viewY}px)`;
-  // 放大时保持像素锐利, 缩小时让浏览器平滑降采样
   world.style.imageRendering = zoom >= 1 ? 'pixelated' : 'auto';
   ensureTiles();
   drawMarkers();
@@ -766,7 +933,7 @@ function drawMarkers() {
     add(parseFloat(t[2].value) || 0, parseFloat(t[3].value) || 0, '#e04040', '刷新点 ' + t[0].value);
   });
 }
-/// 右键拖动 + 左键取点 + 滚轮
+/// 右键拖动 + 左键取点 + 滚轮缩放
 (function bindMapView() {
   let dragging = false, lastX = 0, lastY = 0;
   document.addEventListener('mousedown', e => {
@@ -825,25 +992,30 @@ function thumbJump(ev) {
   const img = ev.target, r = img.getBoundingClientRect();
   centerOn((ev.clientX - r.left) / r.width * mapDims.w, (ev.clientY - r.top) / r.height * mapDims.h);
 }
-async function addZone() {
-  const map = document.getElementById('zone-avail').value;
-  if (!map) return;
-  const r = await fetch('/api/zones', { method: 'POST',
-    headers: { ...hdr, 'content-type': 'application/json' },
-    body: JSON.stringify({ map }) });
-  const resp = await r.json();
-  document.getElementById('cfg-err').textContent = resp.ok ? '' : resp.error;
-  if (resp.ok) { flash(map + ' 已接入, 请配置出生点与传送门'); await loadZones(); showZone(map); }
-}
-// 深链: #config 直达配置页; #zone=<map> 直达该区域编辑
-if (location.hash.startsWith('#config') || location.hash.startsWith('#zone')) {
-  showTab('config');
-  const m = location.hash.match(/^#zone=([^&]+)(?:&z=([\d.]+))?/);
-  if (m) setTimeout(() => {
-    showZone(decodeURIComponent(m[1]));
-    if (m[2]) setTimeout(() => setZoom(parseFloat(m[2]), true), 700);
-  }, 900);
-}
+
+// ── 启动: 解析深链 ──
+// #dashboard | #items | #skills | #quests | #maps | #server
+// #zone=<map>[&z=<zoom>] 直达某区域编辑
+(function boot() {
+  document.getElementById('tok').value = token;
+  const h = location.hash;
+  const zm = h.match(/^#zone=([^&]+)(?:&z=([\d.]+))?/);
+  if (zm) {
+    go('maps', true);
+    setTimeout(() => {
+      showZone(decodeURIComponent(zm[1]));
+      if (zm[2]) setTimeout(() => setZoom(parseFloat(zm[2]), true), 700);
+    }, 900);
+  } else {
+    go((h || '#dashboard').slice(1), true);
+  }
+  // 兼容旧链接 #config
+  if (h === '#config') go('items', true);
+})();
+window.addEventListener('hashchange', () => {
+  const h = location.hash.slice(1);
+  if (PAGES.includes(h) && h !== curPage) go(h, true);
+});
 tick(); setInterval(tick, 2000);
 </script>
 </body>
