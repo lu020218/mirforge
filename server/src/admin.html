@@ -225,25 +225,27 @@
             <button class="ghost" onclick="fitZoom()">适应</button>
             <span id="pick-hint" class="ok-msg"></span>
           </div>
-          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-            <div id="mapview" oncontextmenu="return false"
-                 style="position:relative;width:900px;height:520px;overflow:hidden;
-                        border:1px solid var(--line);border-radius:3px;background:#0e1017">
-              <div id="mapworld" style="position:absolute;left:0;top:0;transform-origin:0 0">
-                <img id="mapbg" style="position:absolute;left:0;top:0;opacity:.85">
-              </div>
+          <div id="mapview" oncontextmenu="return false"
+               style="position:relative;width:100%;height:620px;overflow:hidden;
+                      border:1px solid var(--line);border-radius:3px;background:#0e1017">
+            <div id="mapworld" style="position:absolute;left:0;top:0;transform-origin:0 0">
+              <img id="mapbg" style="position:absolute;left:0;top:0;opacity:.85">
             </div>
-            <div>
-              <div class="hint" style="margin-bottom:4px">总览 (点击跳转)</div>
-              <img id="ze-thumb" onclick="thumbJump(event)"
-                   style="width:200px;border:1px solid var(--line);border-radius:3px;
-                          background:#0e1017;cursor:crosshair">
-              <div class="hint" style="margin:8px 0 4px">小地图预览</div>
-              <img id="ze-mm-img" style="max-width:200px;max-height:150px;
-                   border:1px solid var(--line);border-radius:3px;background:#0e1017">
-              <div id="map-pos" class="hint" style="margin-top:6px"></div>
+            <!-- 左上: 视口坐标 -->
+            <div id="map-pos" style="position:absolute;left:8px;top:8px;padding:3px 8px;
+                 background:rgba(13,15,24,.78);border:1px solid var(--line);border-radius:3px;
+                 color:var(--sub);font-size:12px;pointer-events:none"></div>
+            <!-- 右下: 小地图 (点击跳转) -->
+            <div id="mm-overlay" style="position:absolute;right:10px;bottom:10px;
+                 background:rgba(13,15,24,.82);border:1px solid var(--gold-edge);
+                 border-radius:4px;padding:5px">
+              <img id="ze-mm-img" onclick="jumpFromMini(event)" title="点击跳转"
+                   style="display:block;max-width:260px;max-height:200px;cursor:crosshair">
+              <div id="mm-cap" style="color:var(--dim);font-size:11px;text-align:center;
+                   margin-top:2px"></div>
             </div>
           </div>
+          <img id="ze-thumb" style="display:none">
           <h4 style="color:var(--gold);font-size:13px;margin:14px 0 0">传送门</h4>
           <table id="portal-table">
             <thead><tr><th>X</th><th>Y</th><th>目标地图</th><th>落点X</th><th>落点Y</th><th></th></tr></thead>
@@ -670,8 +672,15 @@ function closeZone() {
 function syncMinimapPreview() {
   const v = document.getElementById('ze-mm').value.trim();
   const img = document.getElementById('ze-mm-img');
-  if (v === '') { img.removeAttribute('src'); img.alt = '未配置'; return; }
-  img.src = '/api/frame/minimap/' + (Number(v) || 0);
+  const cap = document.getElementById('mm-cap');
+  if (v === '') {
+    // 未配置小地图 → 用地形示意图兜底, 跳转能力不受影响
+    img.src = document.getElementById('ze-thumb').src || '';
+    cap.textContent = '未配置小地图 (示意图)';
+  } else {
+    img.src = '/api/frame/minimap/' + (Number(v) || 0);
+    cap.textContent = '小地图 · 点击跳转';
+  }
 }
 // 小地图选择弹层
 let mmStart = 0;
@@ -813,6 +822,7 @@ async function initMapView(map) {
   const sc = (zoneData[map]?.sidecar) || {};
   const c = sc.spawn || [mapDims.w / 2, mapDims.h / 2];
   centerOn(c[0], c[1]);
+  syncMinimapPreview(); // 示意图就绪后再刷新一次 (未配置小地图时需要它兜底)
 }
 /// 视口中心对准格坐标
 function centerOn(cx, cy) {
@@ -939,6 +949,8 @@ function drawMarkers() {
   document.addEventListener('mousedown', e => {
     const v = document.getElementById('mapview');
     if (!v || !v.contains(e.target)) return;
+    // 叠层 (小地图/坐标条) 上的操作不影响地图
+    if (e.target.closest('#mm-overlay')) return;
     if (e.button === 2) {
       dragging = true; lastX = e.clientX; lastY = e.clientY;
       v.style.cursor = 'grabbing';
@@ -966,6 +978,7 @@ function drawMarkers() {
   document.addEventListener('wheel', e => {
     const v = document.getElementById('mapview');
     if (!v || !v.contains(e.target) || !mapDims) return;
+    if (e.target.closest('#mm-overlay')) return;
     const r = v.getBoundingClientRect();
     setZoomAt(zoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX - r.left, e.clientY - r.top);
     e.preventDefault();
@@ -986,9 +999,10 @@ function applyPick(gx, gy) {
   endPick();
   drawMarkers();
 }
-/// 点总览图跳转视口
-function thumbJump(ev) {
+/// 点小地图跳转视口 (小地图/示意图均覆盖整张地图, 按比例换算)
+function jumpFromMini(ev) {
   if (!mapDims) return;
+  ev.stopPropagation();
   const img = ev.target, r = img.getBoundingClientRect();
   centerOn((ev.clientX - r.left) / r.width * mapDims.w, (ev.clientY - r.top) / r.height * mapDims.h);
 }
