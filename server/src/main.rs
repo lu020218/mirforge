@@ -144,7 +144,7 @@ async fn main() {
         })
         .collect();
     let game = game::Game::new(zones, default_zone, db, sessions, map_files, dir.clone());
-    let admin_rx = admin::spawn();
+    let admin_rx = admin::spawn(PathBuf::from(&root));
     tokio::spawn(game.run(events, admin_rx));
     Arc::new(gw).listen(&addr).await.expect("网关监听失败");
 }

@@ -7,7 +7,7 @@
 //! 管理命令经 mpsc 注入游戏主循环 (与网关事件同一 select), 状态查询
 //! 走 oneshot 请求-响应 —— 无锁, 不与 20Hz tick 抢状态。
 
-use axum::extract::State;
+use axum::extract::{Path as AxPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::routing::{get, post};
@@ -126,6 +126,7 @@ async fn api_broadcast(
     if !authed(&st, &headers) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    audit("broadcast", &req.message);
     st.tx
         .send(AdminCmd::Broadcast(req.message))
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
@@ -255,7 +256,7 @@ async fn api_config_put(
     }
     crate::game::set_data(next);
     let _ = st.tx.send(AdminCmd::ConfigReloaded);
-    tracing::info!("配置已更新并热重载: {}", req.kind);
+    audit("put_config", &req.kind);
     Ok(Json(PutConfigResp {
         ok: true,
         errors: Vec::new(),
@@ -349,12 +350,179 @@ async fn api_zones_add(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
+// ── 资源帧预览 (图标/外观选择器) ──
+
+static RES_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static PREVIEW_LIBS: std::sync::Mutex<
+    Option<std::collections::HashMap<String, Option<mir_formats::crystal_lib::CrystalLib>>>,
+> = std::sync::Mutex::new(None);
+
+/// 预览库白名单: 路径固定, 杜绝任意文件读取
+fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
+    let root = RES_ROOT.get()?;
+    let rel = match kind {
+        "items" => "Data/Items.Lib".to_string(),
+        "weapon" => format!("Data/CWeapon/{n:02}.Lib"),
+        "armour" => format!("Data/CArmour/{n:02}.Lib"),
+        _ => return None,
+    };
+    Some(root.join(rel))
+}
+
+fn with_preview_lib<R>(
+    kind: &str,
+    n: u16,
+    f: impl FnOnce(&mir_formats::crystal_lib::CrystalLib) -> Option<R>,
+) -> Option<R> {
+    let key = format!("{kind}/{n}");
+    let mut guard = PREVIEW_LIBS.lock().ok()?;
+    let cache = guard.get_or_insert_with(Default::default);
+    if !cache.contains_key(&key) {
+        let lib = preview_lib_path(kind, n)
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|d| mir_formats::crystal_lib::CrystalLib::parse(d).ok());
+        cache.insert(key.clone(), lib);
+    }
+    cache.get(&key).and_then(|l| l.as_ref()).and_then(f)
+}
+
+#[derive(Deserialize)]
+struct IconsQuery {
+    #[serde(default)]
+    start: usize,
+    #[serde(default = "default_icon_count")]
+    count: usize,
+}
+
+fn default_icon_count() -> usize {
+    100
+}
+
+/// 图标网格 PNG: 10 列 × 48px 单元, 棋盘底; 前端按坐标换算帧号
+async fn api_icons_grid(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<IconsQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let count = q.count.min(400);
+    let cols = 10usize;
+    let cell = 48u32;
+    let rows = count.div_ceil(cols).max(1);
+    let png = tokio::task::spawn_blocking(move || {
+        let mut canvas = image::RgbaImage::new(cols as u32 * cell, rows as u32 * cell);
+        for (x, y, p) in canvas.enumerate_pixels_mut() {
+            let dark = ((x / 8) + (y / 8)) % 2 == 0;
+            *p = image::Rgba(if dark {
+                [26, 28, 40, 255]
+            } else {
+                [34, 36, 50, 255]
+            });
+        }
+        with_preview_lib("items", 0, |lib| {
+            for i in 0..count {
+                let Ok(Some(img)) = lib.image(q.start + i) else {
+                    continue;
+                };
+                let (ox, oy) = (((i % cols) as u32) * cell, ((i / cols) as u32) * cell);
+                // 居中放置, 超出裁剪
+                let (w, h) = (img.width as u32, img.height as u32);
+                let dx = ox + cell.saturating_sub(w) / 2;
+                let dy = oy + cell.saturating_sub(h) / 2;
+                for y in 0..h.min(cell) {
+                    for x in 0..w.min(cell) {
+                        let si = ((y * w + x) * 4) as usize;
+                        let px = &img.rgba[si..si + 4];
+                        if px[3] > 0 && dx + x < canvas.width() && dy + y < canvas.height() {
+                            canvas.put_pixel(
+                                dx + x,
+                                dy + y,
+                                image::Rgba([px[0], px[1], px[2], px[3]]),
+                            );
+                        }
+                    }
+                }
+            }
+            Some(())
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let _ = canvas.write_to(&mut buf, image::ImageFormat::Png);
+        buf.into_inner()
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=3600")
+        .body(axum::body::Body::from(png))
+        .unwrap())
+}
+
+/// 单帧 PNG: items 图标 / weapon-armour 站立帧 (帧 16 = 朝南)
+async fn api_frame_png(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxPath((kind, n)): AxPath<(String, u16)>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let png = tokio::task::spawn_blocking(move || {
+        let (lib_n, frame) = match kind.as_str() {
+            "items" => (0u16, n as usize),
+            // 外观预览: 该库朝南站立首帧
+            "weapon" | "armour" => (n, 16usize),
+            _ => return None,
+        };
+        with_preview_lib(&kind, lib_n, |lib| {
+            let img = lib.image(frame).ok().flatten()?;
+            let buf =
+                image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.rgba.clone())?;
+            let mut out = std::io::Cursor::new(Vec::new());
+            buf.write_to(&mut out, image::ImageFormat::Png).ok()?;
+            Some(out.into_inner())
+        })
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=3600")
+        .body(axum::body::Body::from(png))
+        .unwrap())
+}
+
+/// 审计日志: 管理台写操作追加一行 JSON 到 admin-audit.log
+pub fn audit(action: &str, detail: &str) {
+    let line = serde_json::json!({
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        "action": action,
+        "detail": detail,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("admin-audit.log")
+    {
+        let _ = writeln!(f, "{line}");
+    }
+    tracing::info!("管理操作: {action} {detail}");
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("admin.html"))
 }
 
 /// 启动管理台 HTTP 服务; 返回命令接收端 (游戏循环消费)
-pub fn spawn() -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
+pub fn spawn(res_root: std::path::PathBuf) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
+    let _ = RES_ROOT.set(res_root);
     let addr = std::env::var("MIRFORGE_ADMIN").unwrap_or_else(|_| "127.0.0.1:4001".into());
     if addr == "off" {
         return None;
@@ -377,6 +545,8 @@ pub fn spawn() -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
             "/api/zones",
             get(api_zones_get).put(api_zones_put).post(api_zones_add),
         )
+        .route("/api/icons", get(api_icons_grid))
+        .route("/api/frame/:kind/:n", get(api_frame_png))
         .with_state(state);
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind(&addr).await {

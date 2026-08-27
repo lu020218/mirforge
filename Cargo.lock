@@ -3555,6 +3555,7 @@ dependencies = [
  "axum",
  "bcrypt",
  "futures-util",
+ "image",
  "mir-formats",
  "protocol",
  "serde",

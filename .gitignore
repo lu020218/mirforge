@@ -26,3 +26,4 @@ Thumbs.db
 design/mirforge-ui-design.html
 *.db-shm
 *.db-wal
+admin-audit.log

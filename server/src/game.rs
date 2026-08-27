@@ -938,10 +938,18 @@ impl Game {
                 let _ = reply.send(crate::admin::ZonesInfo { zones, available });
             }
             AdminCmd::PutZone { map, sidecar, done } => {
-                let _ = done.send(self.apply_zone_sidecar(&map, sidecar).await);
+                let r = self.apply_zone_sidecar(&map, sidecar).await;
+                if r.is_ok() {
+                    crate::admin::audit("put_zone", &map);
+                }
+                let _ = done.send(r);
             }
             AdminCmd::AddZone { map, done } => {
-                let _ = done.send(self.add_zone(&map).await);
+                let r = self.add_zone(&map).await;
+                if r.is_ok() {
+                    crate::admin::audit("add_zone", &map);
+                }
+                let _ = done.send(r);
             }
         }
     }

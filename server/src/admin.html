@@ -35,6 +35,13 @@
   td input { width: 70px; padding: 3px 6px; }
   td input.wide { width: 110px; }
   #cfg-err { color: #e04040; font-size: 12px; white-space: pre-line; }
+  td img.icon { width: 32px; height: 32px; object-fit: contain; vertical-align: middle;
+                background: #0e1017; border: 1px solid #2a2d3c; border-radius: 3px; cursor: pointer; }
+  #picker { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 10; }
+  #picker.on { display: flex; align-items: center; justify-content: center; }
+  #picker .box { background: #0d0f18; border: 1px solid #6b5a32; border-radius: 4px;
+                 padding: 16px; max-height: 80vh; overflow: auto; }
+  #picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
 </style>
 </head>
 <body>
@@ -91,6 +98,17 @@
     <button onclick="addZone()">接入</button>
   </div>
   <textarea id="zone-json" spellcheck="false" style="min-height:220px"></textarea>
+</div>
+<div id="picker" onclick="closePicker(event)">
+  <div class="box">
+    <div class="row" style="margin-top:0">
+      <button onclick="pickerPage(-1)">上一页</button>
+      <span id="picker-range" style="color:#9a917c;font-size:12px"></span>
+      <button onclick="pickerPage(1)">下一页</button>
+      <span style="color:#5b5648;font-size:12px">点击图标选择</span>
+    </div>
+    <img id="picker-img" width="480" onclick="pickIcon(event)">
+  </div>
 </div>
 <script>
 const token = localStorage.getItem('admToken') || '';
@@ -150,11 +168,44 @@ const ITEM_COLS = ['template','name','slot','attack','defense','hp','image','sha
 const NUM_COLS = new Set(['attack','defense','hp','image','shape']);
 function itemRow(it) {
   const tr = document.createElement('tr');
-  tr.innerHTML = ITEM_COLS.map(c =>
-    `<td><input class="${c === 'template' || c === 'name' ? 'wide' : ''}" data-c="${c}" value="${it[c] ?? (NUM_COLS.has(c) ? 0 : '')}"></td>`
-  ).join('') + `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
+  tr.innerHTML = ITEM_COLS.map(c => {
+    const inp = `<input class="${c === 'template' || c === 'name' ? 'wide' : ''}" data-c="${c}" value="${it[c] ?? (NUM_COLS.has(c) ? 0 : '')}">`;
+    if (c === 'image') return `<td>${inp} <img class="icon" title="点击从图库选择" src="/api/frame/items/${it.image ?? 0}" onclick="openPicker(this)"></td>`;
+    return `<td>${inp}</td>`;
+  }).join('') + `<td><button onclick="this.closest('tr').remove()">删</button></td>`;
+  // 手改帧号时同步预览
+  tr.querySelector('input[data-c="image"]').addEventListener('change', e => {
+    tr.querySelector('img.icon').src = '/api/frame/items/' + (Number(e.target.value) || 0);
+  });
   return tr;
 }
+// ── 图标选择弹层 ──
+let pickerStart = 0, pickerTarget = null;
+const PICK_COUNT = 100, PICK_COLS = 10, PICK_CELL = 48;
+function openPicker(imgEl) {
+  pickerTarget = imgEl.closest('td').querySelector('input');
+  pickerStart = Math.floor((Number(pickerTarget.value) || 0) / PICK_COUNT) * PICK_COUNT;
+  refreshPicker();
+  document.getElementById('picker').classList.add('on');
+}
+function refreshPicker() {
+  document.getElementById('picker-img').src = `/api/icons?start=${pickerStart}&count=${PICK_COUNT}&_=${pickerStart}`;
+  document.getElementById('picker-range').textContent = `帧 ${pickerStart} - ${pickerStart + PICK_COUNT - 1}`;
+}
+function pickerPage(d) { pickerStart = Math.max(0, pickerStart + d * PICK_COUNT); refreshPicker(); }
+function pickIcon(ev) {
+  const img = ev.target, r = img.getBoundingClientRect();
+  const scale = img.naturalWidth / r.width;
+  const col = Math.floor((ev.clientX - r.left) * scale / PICK_CELL);
+  const row = Math.floor((ev.clientY - r.top) * scale / PICK_CELL);
+  const frame = pickerStart + row * PICK_COLS + col;
+  if (pickerTarget) {
+    pickerTarget.value = frame;
+    pickerTarget.dispatchEvent(new Event('change'));
+  }
+  document.getElementById('picker').classList.remove('on');
+}
+function closePicker(ev) { if (ev.target.id === 'picker') ev.target.classList.remove('on'); }
 async function loadCfg() {
   const r = await fetch('/api/config', { headers: hdr });
   if (!r.ok) return;
