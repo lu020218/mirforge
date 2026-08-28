@@ -437,8 +437,8 @@ fn make_item(template: &str) -> Option<protocol::ItemInfo> {
     })
 }
 
-/// 背包容量上限
-const MAX_INVENTORY: usize = 32;
+/// 背包容量上限 (与客户端 panels::BAG_SLOTS 一致)
+const MAX_INVENTORY: usize = 50;
 /// 地面物品存留时长
 const GROUND_ITEM_TTL: Duration = Duration::from_secs(60);
 

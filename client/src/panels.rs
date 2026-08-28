@@ -61,7 +61,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
         PanelKind::Bag,
         "背 包",
         (468.0, 220.0),
-        390.0, // 8×34 格 + 7×5 间隙 + 左右 41.5 内边距
+        430.0, // 内宽 428 容 10×34 格 + 9×5 间隙 = 385
     );
     spawn_panel(
         &mut commands,
@@ -431,8 +431,10 @@ pub fn refresh(
     }
 }
 
-/// 背包格数 (与服务端 MAX_INVENTORY 一致)
-const BAG_SLOTS: usize = 32;
+/// 背包格数 = 列 × 行 (与服务端 MAX_INVENTORY 一致)
+const BAG_SLOTS: usize = BAG_COLS * 5;
+/// 每行格数 — 430 面板宽下 10×34 + 9×5 + 左右 22.5 内边距刚好排满
+const BAG_COLS: usize = 10;
 /// 背包格边长 (逻辑 px)
 const BAG_CELL: f32 = 34.0;
 
@@ -483,7 +485,7 @@ fn text(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) -> i
     )
 }
 
-/// 背包: 8×4 网格 34px 格, 物品格白边, 左键穿戴 / 右键丢地上; 底栏统计
+/// 背包: 10×5 网格 34px 格, 物品格白边, 左键穿戴 / 右键丢地上; 底栏统计
 fn build_bag(
     e: &mut bevy::ecs::system::EntityCommands,
     net: &Net,
@@ -495,11 +497,13 @@ fn build_bag(
     let font = skin.font.clone();
     let used = items.len();
     e.with_children(|body| {
-        // 格区: 8 列 34px 格 gap 5, 水平 padding 居中 (8×34 + 7×5 = 307)
+        // 格区: 10 列 34px 格 gap 5 = 385, 面板内宽 428 (430 减 1px 边框×2)
+        // 用 justify_content 居中而非固定内边距 — 后者差 2px 就会挤掉一列
         body.spawn(Node {
-            padding: UiRect::axes(Val::Px(41.5), Val::Px(16.0)),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(16.0)),
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
+            justify_content: JustifyContent::Center,
             column_gap: Val::Px(5.0),
             row_gap: Val::Px(5.0),
             ..default()
