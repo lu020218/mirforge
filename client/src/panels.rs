@@ -315,16 +315,17 @@ pub fn close(
 pub fn drag(
     mut drag: ResMut<Drag>,
     windows: Query<&Window>,
+    ui_scale: Res<UiScale>,
     buttons: Res<ButtonInput<MouseButton>>,
     q_bar: Query<(&Interaction, &Parent), With<DragBar>>,
     mut q_panel: Query<&mut Node, With<Panel>>,
 ) {
-    let Ok(win) = windows.get_single() else {
+    // 必须换算成逻辑像素: node.left/top 是逻辑单位, 直接用物理光标坐标会让
+    // 面板以 1/UiScale 的倍率跑得比鼠标快 (900p 下约 1.2 倍)
+    let Some((cx, cy, _, _)) = cursor_logical(&windows, ui_scale.0) else {
         return;
     };
-    let Some(cursor) = win.cursor_position() else {
-        return;
-    };
+    let cursor = Vec2::new(cx, cy);
     if buttons.just_pressed(MouseButton::Left) {
         for (it, parent) in &q_bar {
             if *it == Interaction::Pressed {
