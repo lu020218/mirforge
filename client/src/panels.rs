@@ -441,6 +441,140 @@ pub fn item_drag(
     grab.take();
 }
 
+/// 悬停物品 Tips (原版传奇: 属性不常驻面板, 鼠标停到物品上才浮出)
+#[derive(Component)]
+pub struct Tooltip;
+
+/// 槽位键 → 中文名
+fn slot_label(slot: &str) -> &'static str {
+    match slot {
+        "weapon" => "武器",
+        "armor" => "衣服",
+        "helmet" => "头盔",
+        "necklace" => "项链",
+        "ring" => "戒指",
+        "bracelet" => "护腕",
+        _ => "物品",
+    }
+}
+
+/// Tips 内容行: 名称 + 部位 + 逐条属性
+fn tooltip_lines(i: &protocol::ItemInfo) -> Vec<(String, Color)> {
+    let mut v = vec![
+        (i.name.clone(), GOLD_BRIGHT),
+        (slot_label(&i.slot).to_string(), TEXT_DIM),
+    ];
+    if i.attack > 0 {
+        v.push((format!("攻击 +{}", i.attack), TEXT_MAIN));
+    }
+    if i.defense > 0 {
+        v.push((format!("防御 +{}", i.defense), TEXT_MAIN));
+    }
+    if i.hp > 0 {
+        v.push((format!("生命 +{}", i.hp), TEXT_MAIN));
+    }
+    if v.len() == 2 {
+        v.push(("无附加属性".into(), DISABLED));
+    }
+    v
+}
+
+/// Tips 最大宽度 (逻辑 px) — 实宽由内容决定, 这里只作贴边翻转的保守估计
+const TIP_W: f32 = 150.0;
+
+/// 悬停背包格/装备栏时浮出 Tips, 跟随光标; 手上提着物品时不显示
+#[allow(clippy::too_many_arguments)]
+pub fn tooltip(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    ui_scale: Res<UiScale>,
+    skin: Res<Skin>,
+    net: Res<Net>,
+    grab: Res<Grab>,
+    q_bag: Query<(&Interaction, &EquipItem)>,
+    q_slot: Query<(&Interaction, &EquipSlotTarget)>,
+    q_tip: Query<Entity, With<Tooltip>>,
+    mut q_node: Query<&mut Node, With<Tooltip>>,
+    mut shown: Local<Option<String>>,
+) {
+    let hovered = |it: &Interaction| matches!(it, Interaction::Hovered | Interaction::Pressed);
+    // 提着东西时不弹 Tips (挡住落点判断)
+    let item: Option<protocol::ItemInfo> = if grab.item.is_some() {
+        None
+    } else if let Some((_, e)) = q_bag.iter().find(|(it, _)| hovered(it)) {
+        net.inventory.iter().find(|i| i.id == e.0).cloned()
+    } else if let Some((_, s)) = q_slot.iter().find(|(it, _)| hovered(it)) {
+        net.equipment.get(s.0).cloned()
+    } else {
+        None
+    };
+
+    // 目标变了才重建
+    if shown.as_deref() != item.as_ref().map(|i| i.id.as_str()) {
+        *shown = item.as_ref().map(|i| i.id.clone());
+        for e in &q_tip {
+            commands.entity(e).despawn_recursive();
+        }
+        if let Some(i) = &item {
+            let lines = tooltip_lines(i);
+            commands
+                .spawn((
+                    Tooltip,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        min_width: Val::Px(88.0),
+                        max_width: Val::Px(TIP_W),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(3.0),
+                        padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(PANEL_BG),
+                    BorderColor(EDGE_GOLD),
+                    BorderRadius::all(Val::Px(3.0)),
+                    GlobalZIndex(90),
+                ))
+                .with_children(|t| {
+                    for (n, (line, color)) in lines.into_iter().enumerate() {
+                        t.spawn(text(
+                            &skin.font,
+                            line,
+                            if n == 0 { 13.0 } else { 12.0 },
+                            color,
+                        ));
+                    }
+                });
+        }
+    }
+
+    // 跟随光标: 默认放右下, 贴到窗口右/下边就翻到另一侧
+    let (Ok(win), Some(c)) = (
+        windows.get_single(),
+        windows.get_single().ok().and_then(|w| w.cursor_position()),
+    ) else {
+        return;
+    };
+    let s = ui_scale.0.max(0.01);
+    let (cx, cy) = (c.x / s, c.y / s);
+    let (ww, wh) = (win.width() / s, win.height() / s);
+    let h = 78.0; // 估高: 名称 + 部位 + 最多三条属性
+    for mut node in q_node.iter_mut() {
+        let left = if cx + 18.0 + TIP_W > ww {
+            cx - 12.0 - TIP_W
+        } else {
+            cx + 18.0
+        };
+        let top = if cy + 18.0 + h > wh {
+            (cy - 12.0 - h).max(0.0)
+        } else {
+            cy + 18.0
+        };
+        node.left = Val::Px(left.max(0.0));
+        node.top = Val::Px(top);
+    }
+}
+
 /// 提在光标上的物品图标 (跟随光标, 压在所有 UI 之上)
 #[derive(Component)]
 pub struct GrabIcon;
@@ -516,20 +650,6 @@ pub fn clicks(net: Res<Net>, mut q: Query<(&Interaction, &QuestAction), Changed<
             net.send(msg);
         }
     }
-}
-
-fn stats_line(i: &protocol::ItemInfo) -> String {
-    let mut s = Vec::new();
-    if i.attack > 0 {
-        s.push(format!("攻+{}", i.attack));
-    }
-    if i.defense > 0 {
-        s.push(format!("防+{}", i.defense));
-    }
-    if i.hp > 0 {
-        s.push(format!("血+{}", i.hp));
-    }
-    s.join(" ")
 }
 
 /// 内容重建: inventory/equipment/quests/stat 变化时刷新对应面板
@@ -707,25 +827,19 @@ fn build_bag(
                 }
             }
         });
-        // 选中说明行 (背包底部之上)
-        if let Some(it) = items.first() {
-            body.spawn(Node {
-                padding: UiRect::horizontal(Val::Px(16.0)),
-                ..default()
-            })
-            .with_children(|row| {
-                row.spawn(text(
-                    &font,
-                    format!(
-                        "{} {}  (左键提起 → 放到装备栏穿戴 / 放到地面丢弃)",
-                        it.name,
-                        stats_line(it)
-                    ),
-                    12.0,
-                    TEXT_DIM,
-                ));
-            });
-        }
+        // 物品属性走悬停 Tips (见 tooltip), 这里只留一行操作提示
+        body.spawn(Node {
+            padding: UiRect::horizontal(Val::Px(16.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn(text(
+                &font,
+                "左键提起 → 放到装备栏穿戴 / 放到地面丢弃",
+                12.0,
+                TEXT_DIM,
+            ));
+        });
         // 底栏 42px: 顶分隔线 + 统计
         body.spawn((
             Node {

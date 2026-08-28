@@ -160,6 +160,7 @@ fn main() {
                     panels::clicks,
                     panels::item_drag,
                     panels::grab_icon,
+                    panels::tooltip,
                     panels::refresh,
                 )
                     .run_if(in_state(Screen::InGame)),
