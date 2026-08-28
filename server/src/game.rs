@@ -258,6 +258,32 @@ pub struct GameData {
     pub items: Vec<ItemDef>,
     pub skills: SkillsCfg,
     pub quests: Vec<QuestDef>,
+    pub npcs: Vec<NpcDef>,
+}
+
+/// 场景 NPC 配置 (P1: 存在与展示; 对话/商店见 docs/NPC_DESIGN.md P2/P3)
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct NpcDef {
+    pub id: String,
+    pub name: String,
+    /// 所在地图 (区域 id)
+    pub map: String,
+    pub x: f64,
+    pub y: f64,
+    /// Data/NPC/{image:02}.Lib
+    pub image: u16,
+    /// 交互类型 (P1 仅记录: talk/shop/quest/teleport)
+    #[serde(default = "default_npc_kind")]
+    pub kind: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_npc_kind() -> String {
+    "talk".into()
+}
+fn default_true() -> bool {
+    true
 }
 
 static DATA: std::sync::RwLock<Option<std::sync::Arc<GameData>>> = std::sync::RwLock::new(None);
@@ -268,6 +294,7 @@ impl GameData {
             items: serde_json::from_str(include_str!("../data/items.json")).expect("内置 items"),
             skills: serde_json::from_str(include_str!("../data/skills.json")).expect("内置 skills"),
             quests: serde_json::from_str(include_str!("../data/quests.json")).expect("内置 quests"),
+            npcs: serde_json::from_str(include_str!("../data/npcs.json")).expect("内置 npcs"),
         }
     }
 
@@ -291,6 +318,7 @@ impl GameData {
             items: read(dir.join("items.json"), "物品").unwrap_or(b.items),
             skills: read(dir.join("skills.json"), "技能").unwrap_or(b.skills),
             quests: read(dir.join("quests.json"), "任务").unwrap_or(b.quests),
+            npcs: read(dir.join("npcs.json"), "NPC").unwrap_or(b.npcs),
         }
     }
 }
@@ -346,6 +374,15 @@ impl GameData {
                 if !qids.contains(pr) {
                     errs.push(format!("任务 {} 前置不存在: {pr}", q.id));
                 }
+            }
+        }
+        let mut nid = std::collections::HashSet::new();
+        for n in &self.npcs {
+            if !nid.insert(&n.id) {
+                errs.push(format!("NPC id 重复: {}", n.id));
+            }
+            if n.name.trim().is_empty() {
+                errs.push(format!("NPC {} 名称为空", n.id));
             }
         }
         errs
@@ -835,6 +872,34 @@ impl Game {
         Ok(())
     }
 
+    /// 某区域的启用 NPC (下发客户端)
+    fn npcs_of_zone(zone: &str) -> Vec<protocol::NpcInfo> {
+        data()
+            .npcs
+            .iter()
+            .filter(|n| n.enabled && n.map == zone)
+            .map(|n| protocol::NpcInfo {
+                id: n.id.clone(),
+                name: n.name.clone(),
+                x: n.x,
+                y: n.y,
+                image: n.image,
+            })
+            .collect()
+    }
+
+    /// 向某连接下发其所在区的 NPC 列表
+    async fn send_npc_list(&self, conn_id: &str, zone: &str) {
+        send_to(
+            &self.sessions,
+            conn_id,
+            ServerMessage::NpcList {
+                npcs: Self::npcs_of_zone(zone),
+            },
+        )
+        .await;
+    }
+
     /// 全员立即存档
     async fn save_all(&self) {
         for (id, p) in &self.players {
@@ -887,8 +952,18 @@ impl Game {
                     .collect();
                 for id in ids {
                     self.send_skill_list(&id).await;
+                    if let Some((conn, zone)) = self
+                        .players
+                        .get(&id)
+                        .map(|p| (p.conn_id.clone(), p.zone.clone()))
+                    {
+                        self.send_npc_list(&conn, &zone).await;
+                    }
                 }
-                info!("配置热重载: 已重推 {} 名在线玩家技能表", self.players.len());
+                info!(
+                    "配置热重载: 已重推 {} 名在线玩家技能与 NPC",
+                    self.players.len()
+                );
             }
             AdminCmd::Broadcast(message) => {
                 let conns: Vec<String> = self
@@ -1464,6 +1539,7 @@ impl Game {
             .get(&p.zone)
             .map(|z| (z.id.clone(), z.name.clone(), z.sidecar.minimap))
             .unwrap_or((p.zone.clone(), p.zone.clone(), None));
+        let zone_of_npc = zone_id.clone();
         send_to(
             &self.sessions,
             conn_id,
@@ -1475,6 +1551,7 @@ impl Game {
             },
         )
         .await;
+        self.send_npc_list(conn_id, &zone_of_npc).await;
     }
 
     /// 移动校验：步长按时间窗限幅 → sim 同源判定（客户端预测调同一函数）。
@@ -2160,6 +2237,7 @@ impl Game {
             .get(&p.zone)
             .map(|z| (z.id.clone(), z.name.clone(), z.sidecar.minimap))
             .unwrap_or((p.zone.clone(), p.zone.clone(), None));
+        let zone_of_npc = zone_id.clone();
         send_to(
             &self.sessions,
             conn_id,
@@ -2171,6 +2249,7 @@ impl Game {
             },
         )
         .await;
+        self.send_npc_list(conn_id, &zone_of_npc).await;
     }
 
     async fn on_disconnect(&mut self, conn_id: &str) {

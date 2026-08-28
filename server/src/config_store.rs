@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use sqlx::{Row, SqlitePool};
 
 use crate::game::{
-    DropSidecar, GameData, ItemDef, MonsterSidecar, PortalSidecar, QuestDef, SkillDef, SkillKind,
-    SkillsCfg, ZoneSidecar,
+    DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, PortalSidecar, QuestDef, SkillDef,
+    SkillKind, SkillsCfg, ZoneSidecar,
 };
 
 /// 建表（幂等）
@@ -85,6 +85,17 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             hp INTEGER NOT NULL DEFAULT 30,
             damage INTEGER NOT NULL DEFAULT 0,
             exp INTEGER NOT NULL DEFAULT 10
+        )",
+        "CREATE TABLE IF NOT EXISTS cfg_npcs (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            map TEXT NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            image INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'talk',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_drops (
             spawn_id INTEGER NOT NULL,
@@ -195,11 +206,55 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         }
     }
 
+    let npcs = sqlx::query(
+        "SELECT id, name, map, x, y, image, kind, enabled FROM cfg_npcs ORDER BY ord, id",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| NpcDef {
+        id: r.get("id"),
+        name: r.get("name"),
+        map: r.get("map"),
+        x: r.get("x"),
+        y: r.get("y"),
+        image: r.get::<i64, _>("image") as u16,
+        kind: r.get("kind"),
+        enabled: r.get::<i64, _>("enabled") != 0,
+    })
+    .collect();
+
     Ok(GameData {
         items,
         skills,
         quests,
+        npcs,
     })
+}
+
+pub async fn save_npcs(pool: &SqlitePool, npcs: &[NpcDef]) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM cfg_npcs")
+        .execute(&mut *tx)
+        .await?;
+    for (i, n) in npcs.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO cfg_npcs (id, name, map, x, y, image, kind, enabled, ord)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&n.id)
+        .bind(&n.name)
+        .bind(&n.map)
+        .bind(n.x)
+        .bind(n.y)
+        .bind(n.image as i64)
+        .bind(&n.kind)
+        .bind(n.enabled as i64)
+        .bind(i as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
 }
 
 pub async fn load_zone_sidecars(
@@ -476,6 +531,7 @@ pub async fn seed_from_files(
     save_items(pool, &data.items).await?;
     save_skills(pool, &data.skills).await?;
     save_quests(pool, &data.quests).await?;
+    save_npcs(pool, &data.npcs).await?;
     for (map, sc) in zones {
         save_zone(pool, map, sc).await?;
     }

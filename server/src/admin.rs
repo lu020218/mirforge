@@ -192,6 +192,7 @@ struct ConfigPayload {
     items: serde_json::Value,
     skills: serde_json::Value,
     quests: serde_json::Value,
+    npcs: serde_json::Value,
 }
 
 async fn api_config_get(
@@ -206,6 +207,7 @@ async fn api_config_get(
         items: serde_json::to_value(&d.items).unwrap_or_default(),
         skills: serde_json::to_value(&d.skills).unwrap_or_default(),
         quests: serde_json::to_value(&d.quests).unwrap_or_default(),
+        npcs: serde_json::to_value(&d.npcs).unwrap_or_default(),
     }))
 }
 
@@ -253,6 +255,10 @@ async fn api_config_put(
                 next.quests =
                     serde_json::from_value(req.value.clone()).map_err(|e| format!("quests: {e}"))?
             }
+            "npcs" => {
+                next.npcs =
+                    serde_json::from_value(req.value.clone()).map_err(|e| format!("npcs: {e}"))?
+            }
             k => return Err(format!("未知配置类别: {k}")),
         }
         Ok(())
@@ -269,6 +275,7 @@ async fn api_config_put(
     let saved = match req.kind.as_str() {
         "items" => crate::config_store::save_items(pool, &next.items).await,
         "skills" => crate::config_store::save_skills(pool, &next.skills).await,
+        "npcs" => crate::config_store::save_npcs(pool, &next.npcs).await,
         _ => crate::config_store::save_quests(pool, &next.quests).await,
     };
     if let Err(e) = saved {
@@ -408,6 +415,7 @@ fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
         "armour" => format!("Data/CArmour/{n:02}.Lib"),
         "monster" => format!("Data/Monster/{n:03}.Lib"),
         "minimap" => "Data/mmap.Lib".to_string(),
+        "npc" => format!("Data/NPC/{n:02}.Lib"),
         _ => return None,
     };
     Some(root.join(rel))
@@ -504,6 +512,69 @@ async fn api_icons_grid(
         .unwrap())
 }
 
+/// NPC 形象图库: 每格一个 NPC 库 (Data/NPC/{n:02}.Lib 的站立首帧)
+///
+/// 与 `/api/icons` 不同 — 那里是同一个库里的连续帧, 这里是逐个库取首帧。
+async fn api_npc_grid(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<IconsQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let count = q.count.min(64);
+    let (cols, cw, ch) = (8usize, 96u32, 120u32);
+    let rows = count.div_ceil(cols).max(1);
+    let start = q.start;
+    let png = tokio::task::spawn_blocking(move || {
+        let mut canvas = image::RgbaImage::new(cols as u32 * cw, rows as u32 * ch);
+        for (x, y, p) in canvas.enumerate_pixels_mut() {
+            let dark = ((x / 8) + (y / 8)) % 2 == 0;
+            *p = image::Rgba(if dark {
+                [26, 28, 40, 255]
+            } else {
+                [34, 36, 50, 255]
+            });
+        }
+        for i in 0..count {
+            let n = (start + i) as u16;
+            let (ox, oy) = (((i % cols) as u32) * cw, ((i / cols) as u32) * ch);
+            with_preview_lib("npc", n, |lib| {
+                let img = lib.image(0).ok().flatten()?;
+                let (w, h) = (img.width as u32, img.height as u32);
+                // 水平居中, 垂直贴底 (NPC 立绘基准在脚下)
+                let dx = ox + cw.saturating_sub(w) / 2;
+                let dy = oy + ch.saturating_sub(h.min(ch));
+                for y in 0..h.min(ch) {
+                    for x in 0..w.min(cw) {
+                        let si = ((y * w + x) * 4) as usize;
+                        let px = &img.rgba[si..si + 4];
+                        if px[3] > 0 && dx + x < canvas.width() && dy + y < canvas.height() {
+                            canvas.put_pixel(
+                                dx + x,
+                                dy + y,
+                                image::Rgba([px[0], px[1], px[2], px[3]]),
+                            );
+                        }
+                    }
+                }
+                Some(())
+            });
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let _ = canvas.write_to(&mut buf, image::ImageFormat::Png);
+        buf.into_inner()
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=3600")
+        .body(axum::body::Body::from(png))
+        .unwrap())
+}
+
 /// 单帧 PNG: items 图标 / weapon-armour 站立帧 (帧 16 = 朝南)
 async fn api_frame_png(
     State(st): State<AppState>,
@@ -522,6 +593,8 @@ async fn api_frame_png(
             "monster" => (n, 16usize),
             // 小地图: 库内第 n 帧
             "minimap" => (0u16, n as usize),
+            // NPC: 站立首帧
+            "npc" => (n, 0usize),
             _ => return None,
         };
         with_preview_lib(&kind, lib_n, |lib| {
@@ -784,6 +857,7 @@ pub fn spawn(
                 .delete(api_zones_delete),
         )
         .route("/api/icons", get(api_icons_grid))
+        .route("/api/npcs/grid", get(api_npc_grid))
         .route("/api/frame/:kind/:n", get(api_frame_png))
         .route("/api/minimaps", get(api_minimap_grid))
         .route("/api/mapthumb/:map", get(api_map_thumb))

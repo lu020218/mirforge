@@ -229,11 +229,24 @@ pub enum ServerMessage {
         position: Position,
         targets: Vec<String>,
     },
+    /// 本区 NPC 全量快照 (进区/切区/配置热重载时下发)
+    #[serde(rename = "npcList")]
+    NpcList { npcs: Vec<NpcInfo> },
     #[serde(rename = "inventoryState")]
     InventoryState {
         inventory: Vec<ItemInfo>,
         equipment: std::collections::HashMap<String, ItemInfo>,
     },
+}
+
+/// 场景 NPC（静态，站立 4 帧循环；`image` = Data/NPC/{image:02}.Lib）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NpcInfo {
+    pub id: String,
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub image: u16,
 }
 
 /// 一件物品（实例）。slot: weapon/armor/helmet/necklace/ring

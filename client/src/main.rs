@@ -140,6 +140,7 @@ fn main() {
                 cast_skills,
                 player_sprite,
                 remote_step,
+                npc_step,
                 float_damage,
                 fx_step,
                 upload_dirty_pages,
@@ -198,6 +199,10 @@ struct Net {
     zone_name: String,
     /// 当前区域小地图帧号 (服务器下发, 管理台配置)
     zone_minimap: Option<u16>,
+    /// 当前区域 NPC (服务器下发)
+    npcs: Vec<protocol::NpcInfo>,
+    /// NPC 列表版本 (变化时重建精灵)
+    npc_rev: u32,
     /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
     chatlog: Vec<(String, String)>,
     /// 地面掉落物 (服务器快照驱动)
@@ -275,6 +280,8 @@ enum Layer {
     Mon(u16),
     /// 技能特效 (0=Magic.Lib, 1=Magic2.Lib)
     Fx(u8),
+    /// NPC (Data/NPC/{n:02}.Lib)
+    Npc(u16),
 }
 
 #[derive(Clone, Copy)]
@@ -311,6 +318,7 @@ impl World {
             Layer::Hum(n) => return Some(format!("CArmour/{n:02}")),
             Layer::Weapon(n) => return Some(format!("CWeapon/{n:02}")),
             Layer::Mon(n) => return Some(format!("Monster/{n:03}")),
+            Layer::Npc(n) => return Some(format!("NPC/{n:02}")),
             Layer::Fx(0) => return Some("Magic".into()),
             Layer::Fx(_) => return Some("Magic2".into()),
             _ => {}
@@ -1523,6 +1531,10 @@ fn net_pump(
                     net.status = format!("角色 {name} 已创建");
                 }
                 ServerMessage::LoginSuccess { player_id, .. } => net.my_id = Some(player_id),
+                ServerMessage::NpcList { npcs } => {
+                    net.npcs = npcs;
+                    net.npc_rev += 1;
+                }
                 ServerMessage::ZoneChanged {
                     zone_id,
                     zone_name,
@@ -2014,6 +2026,81 @@ fn remote_step(
     }
     for id in gone {
         remotes.0.remove(&id);
+    }
+}
+
+/// 场景 NPC 精灵 (随区域/热重载重建)
+#[derive(Component)]
+struct NpcSprite {
+    /// NPC 形象编号 → Data/NPC/{image:02}.Lib
+    image: u16,
+    /// 格坐标 (服务器配置)
+    x: f64,
+    y: f64,
+}
+
+/// NPC 渲染: 站立 4 帧循环 (Crystal FrameSet.NPC Standing = 0..4 @ 450ms), 头顶名字
+#[allow(clippy::too_many_arguments)]
+fn npc_step(
+    mut commands: Commands,
+    time: Res<Time>,
+    net: Res<Net>,
+    mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
+    skin: Res<hud::Skin>,
+    mut seen_rev: Local<u32>,
+    q: Query<(Entity, &NpcSprite)>,
+) {
+    // 区域变更 / 配置热重载 → 全部重建
+    if *seen_rev != net.npc_rev {
+        *seen_rev = net.npc_rev;
+        for (e, _) in q.iter() {
+            commands.entity(e).despawn_recursive();
+        }
+        for n in &net.npcs {
+            commands
+                .spawn((
+                    NpcSprite {
+                        image: n.image,
+                        x: n.x,
+                        y: n.y,
+                    },
+                    Transform::default(),
+                    Visibility::default(),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Text2d::new(n.name.clone()),
+                        TextFont {
+                            font: skin.font.clone(),
+                            font_size: 13.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.98, 0.85, 0.47)),
+                        Transform::from_xyz(CELL_W / 2.0, 14.0, 0.01),
+                    ));
+                });
+        }
+        return; // 本帧只建实体, 下帧起取帧 (贴图晚一帧无碍)
+    }
+    let idx = ((time.elapsed_secs_f64() / 0.45) as i32) % 4;
+    for (e, npc) in q.iter() {
+        let Some(f) = world.frame(Layer::Npc(npc.image), 0, idx) else {
+            continue;
+        };
+        world.ensure_pages(&mut images);
+        let px = npc.x as f32 * CELL_W - CELL_W / 2.0 + f.off.x;
+        let py = npc.y as f32 * CELL_H - CELL_H / 2.0 + f.off.y;
+        commands.entity(e).insert((
+            Sprite {
+                image: world.pages[f.page].clone(),
+                rect: Some(f.rect),
+                anchor: Anchor::TopLeft,
+                ..default()
+            },
+            // 与远程实体同一套排序 (按格 y), 略低于同格玩家
+            Transform::from_xyz(px, -py, 10.0 + npc.y as f32 * 0.01 + 0.002),
+        ));
     }
 }
 
