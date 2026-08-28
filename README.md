@@ -71,6 +71,14 @@ MIRFORGE_RES=... tools/run-smokes.sh  # 五套协议级端到端冒烟 (需要�
 `MIRFORGE_DB`(SQLite 路径)、`MIRFORGE_LIBSET`(默认 WemadeMir2)。
 区域/刷怪/掉落/传送门由 `server/zones/*.json` 边车配置驱动。
 
+客户端还有三个开发钩子，配合起来可以无人值守地截图自查界面：
+
+| 变量 | 作用 |
+|---|---|
+| `MIRFORGE_AUTOLOGIN=用户名:密码[:职业]` | 自动 注册→登录→建角→选角 进图 |
+| `MIRFORGE_PANELS=bcl` | 进图后自动展开背包/角色/任务面板 |
+| `MIRFORGE_SHOT=路径[,延迟秒]` | 延迟后截图存盘并退出 |
+
 ## 许可
 
 MIT OR Apache-2.0，任选其一。贡献即表示同意以此双许可发布。

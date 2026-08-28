@@ -114,6 +114,8 @@ fn main() {
                 net_pump,
                 net_reconnect,
                 dev_autologin,
+                dev_screenshot,
+                panels::dev_open,
                 (screens::text_input, screens::login_update)
                     .chain()
                     .run_if(in_state(Screen::Login)),
@@ -453,16 +455,17 @@ pub struct Portrait(pub Option<(Handle<Image>, Vec2)>);
 #[derive(Resource, Default)]
 pub struct ItemIcons {
     lib: Option<CrystalLib>,
-    cache: HashMap<u16, Option<Handle<Image>>>,
+    cache: HashMap<u16, Option<(Handle<Image>, Vec2)>>,
 }
 
 impl ItemIcons {
+    /// 取图标句柄与其原始像素尺寸 (尺寸用于 1:1 呈现, 见 panels::crisp_icon)
     pub fn get(
         &mut self,
         image: u16,
         data_root: &Path,
         images: &mut Assets<Image>,
-    ) -> Option<Handle<Image>> {
+    ) -> Option<(Handle<Image>, Vec2)> {
         if image == 0 {
             return None;
         }
@@ -479,7 +482,8 @@ impl ItemIcons {
             .as_ref()
             .and_then(|l| l.image(image as usize).ok().flatten())
             .map(|img| {
-                images.add(Image::new(
+                let size = Vec2::new(img.width as f32, img.height as f32);
+                let h = images.add(Image::new(
                     Extent3d {
                         width: img.width as u32,
                         height: img.height as u32,
@@ -489,7 +493,8 @@ impl ItemIcons {
                     img.rgba,
                     TextureFormat::Rgba8UnormSrgb,
                     RenderAssetUsages::RENDER_WORLD,
-                ))
+                ));
+                (h, size)
             });
         self.cache.insert(image, h.clone());
         h
@@ -571,7 +576,7 @@ fn ground_render(
         if ents.0.contains_key(&g.id) {
             continue;
         }
-        let Some(h) = icons.get(g.image, &world.data_root, &mut images) else {
+        let Some((h, _)) = icons.get(g.image, &world.data_root, &mut images) else {
             continue;
         };
         let px = g.x as f32 * CELL_W - CELL_W / 2.0;
@@ -2101,6 +2106,37 @@ fn npc_step(
             // 与远程实体同一套排序 (按格 y), 略低于同格玩家
             Transform::from_xyz(px, -py, 10.0 + npc.y as f32 * 0.01 + 0.002),
         ));
+    }
+}
+
+/// 开发钩子: MIRFORGE_SHOT=路径[,延迟秒] — 延迟后截图存盘并退出 (视觉回归自查用)
+fn dev_screenshot(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut done: Local<bool>,
+    mut exit: EventWriter<AppExit>,
+    mut shot_at: Local<f64>,
+) {
+    let Ok(cfg) = std::env::var("MIRFORGE_SHOT") else {
+        return;
+    };
+    let (path, delay) = match cfg.split_once(',') {
+        Some((p, d)) => (p.to_string(), d.parse().unwrap_or(8.0)),
+        None => (cfg, 8.0),
+    };
+    let t = time.elapsed_secs_f64();
+    if !*done {
+        if t < delay {
+            return;
+        }
+        *done = true;
+        *shot_at = t;
+        commands
+            .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+            .observe(bevy::render::view::screenshot::save_to_disk(path));
+    } else if t > *shot_at + 1.5 {
+        // 留一帧余量让文件落盘
+        exit.send(AppExit::Success);
     }
 }
 

@@ -61,7 +61,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
         PanelKind::Bag,
         "背 包",
         (468.0, 220.0),
-        430.0,
+        390.0, // 8×34 格 + 7×5 间隙 + 左右 41.5 内边距
     );
     spawn_panel(
         &mut commands,
@@ -192,6 +192,30 @@ fn spawn_panel(
                 },
             ));
         });
+}
+
+/// 开发钩子: MIRFORGE_PANELS=bcl — 进图后自动展开对应面板 (配合 MIRFORGE_SHOT 做视觉自查)
+pub fn dev_open(mut q: Query<(&Panel, &mut Node)>, mut done: Local<bool>) {
+    // 面板在进图时才建, 所以要等查询非空才算生效
+    if *done || q.is_empty() {
+        return;
+    }
+    let Ok(spec) = std::env::var("MIRFORGE_PANELS") else {
+        *done = true;
+        return;
+    };
+    *done = true;
+    let spec = spec.to_lowercase();
+    for (p, mut node) in q.iter_mut() {
+        let key = match p.0 {
+            PanelKind::Bag => 'b',
+            PanelKind::Character => 'c',
+            PanelKind::Quest => 'l',
+        };
+        if spec.contains(key) {
+            node.display = Display::Flex;
+        }
+    }
 }
 
 /// B/C/L 开关面板 (聊天输入时跳过)
@@ -367,6 +391,7 @@ pub fn refresh(
     world: Res<crate::World>,
     mut icons: ResMut<crate::ItemIcons>,
     mut images: ResMut<Assets<Image>>,
+    ui_scale: Res<UiScale>,
     mut last_rev: Local<(u32, u32, u32)>,
     q_body: Query<(Entity, &PanelBody)>,
 ) {
@@ -374,13 +399,16 @@ pub fn refresh(
     if *last_rev == rev {
         return;
     }
+    // 面板在进图时才建 — 若数据先到, 不能吞掉这次版本号, 否则面板永远是空的
+    if q_body.is_empty() {
+        return;
+    }
     *last_rev = rev;
     let portrait = portrait.as_ref().and_then(|p| p.0.clone());
     // 本次重建涉及的物品图标预取
     let mut icon_of = |img: u16| icons.get(img, &world.data_root, &mut images);
-    let inv_icons: Vec<Option<Handle<Image>>> =
-        net.inventory.iter().map(|i| icon_of(i.image)).collect();
-    let equip_icons: std::collections::HashMap<String, Option<Handle<Image>>> = net
+    let inv_icons: Vec<Icon> = net.inventory.iter().map(|i| icon_of(i.image)).collect();
+    let equip_icons: std::collections::HashMap<String, Icon> = net
         .equipment
         .iter()
         .map(|(k, i)| (k.clone(), icon_of(i.image)))
@@ -389,13 +417,58 @@ pub fn refresh(
         let mut e = commands.entity(entity);
         e.despawn_descendants();
         match body.0 {
-            PanelKind::Bag => build_bag(&mut e, &net, &skin, &inv_icons),
-            PanelKind::Character => {
-                build_character(&mut e, &net, &skin, portrait.clone(), &equip_icons)
-            }
+            PanelKind::Bag => build_bag(&mut e, &net, &skin, &inv_icons, ui_scale.0),
+            PanelKind::Character => build_character(
+                &mut e,
+                &net,
+                &skin,
+                portrait.clone(),
+                &equip_icons,
+                ui_scale.0,
+            ),
             PanelKind::Quest => build_quest(&mut e, &net, &skin),
         }
     }
+}
+
+/// 背包格数 (与服务端 MAX_INVENTORY 一致)
+const BAG_SLOTS: usize = 32;
+/// 背包格边长 (逻辑 px)
+const BAG_CELL: f32 = 34.0;
+
+/// 图标句柄 + 原始像素尺寸
+type Icon = Option<(Handle<Image>, Vec2)>;
+
+/// 图标按整数倍率呈现, 保证纹素与屏幕像素对齐 (像素画放大/缩小非整数倍会发糊)
+///
+/// `cell` 为格子边长 (逻辑 px), `ui` 为 UiScale — 逻辑尺寸 × UiScale 才是实际
+/// 渲染像素, 所以倍率是按渲染像素算的, 再除回 UiScale 写进 Node。
+/// 候选倍率 1×/2×/3×… 与 1/2×/1/3×…; 允许 18% 溢出 (格子 overflow:clip 裁掉),
+/// 避免因差几个像素就被迫砍半。
+/// 允许超出格子的比例 — 差几个像素就砍半不划算, 溢出部分由格子 overflow:clip 裁掉
+const ICON_BLEED: f32 = 1.2;
+
+fn icon_scale(long: f32, cell: f32, ui: f32) -> f32 {
+    let budget = cell * ui.max(0.01) * ICON_BLEED; // 可占用的渲染像素
+    let long = long.max(1.0);
+    if long <= budget {
+        (budget / long).floor().max(1.0) // 放大: 取整数倍
+    } else {
+        1.0 / (long / budget).ceil() // 缩小: 取 1/整数
+    }
+}
+
+fn crisp_icon(h: Handle<Image>, natural: Vec2, avail: f32, ui: f32) -> impl Bundle {
+    let ui = ui.max(0.01);
+    let k = icon_scale(natural.max_element(), avail, ui);
+    (
+        Node {
+            width: Val::Px(natural.x * k / ui),
+            height: Val::Px(natural.y * k / ui),
+            ..default()
+        },
+        ImageNode::new(h),
+    )
 }
 
 fn text(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
@@ -410,33 +483,34 @@ fn text(font: &Handle<Font>, s: impl Into<String>, size: f32, color: Color) -> i
     )
 }
 
-/// 背包: 8×4 网格 44px 格, 物品格白边+名字, 点击穿戴; 底栏统计
+/// 背包: 8×4 网格 34px 格, 物品格白边, 左键穿戴 / 右键丢地上; 底栏统计
 fn build_bag(
     e: &mut bevy::ecs::system::EntityCommands,
     net: &Net,
     skin: &Skin,
-    icons: &[Option<Handle<Image>>],
+    icons: &[Icon],
+    ui: f32,
 ) {
     let items = net.inventory.clone();
     let font = skin.font.clone();
     let used = items.len();
     e.with_children(|body| {
-        // 格区: 8 列 40px 格 gap 6, 水平 padding 居中
+        // 格区: 8 列 34px 格 gap 5, 水平 padding 居中 (8×34 + 7×5 = 307)
         body.spawn(Node {
-            padding: UiRect::axes(Val::Px(33.0), Val::Px(16.0)),
+            padding: UiRect::axes(Val::Px(41.5), Val::Px(16.0)),
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
-            column_gap: Val::Px(6.0),
-            row_gap: Val::Px(6.0),
+            column_gap: Val::Px(5.0),
+            row_gap: Val::Px(5.0),
             ..default()
         })
         .with_children(|grid| {
-            for i in 0..32 {
+            for i in 0..BAG_SLOTS {
                 let item = items.get(i);
                 let mut slot = grid.spawn((
                     Node {
-                        width: Val::Px(40.0),
-                        height: Val::Px(40.0),
+                        width: Val::Px(BAG_CELL),
+                        height: Val::Px(BAG_CELL),
                         border: UiRect::all(Val::Px(1.0)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -456,15 +530,9 @@ fn build_bag(
                     let icon = icons.get(i).cloned().flatten();
                     let name: String = it.name.chars().take(2).collect();
                     slot.with_children(|s| match icon {
-                        Some(h) => {
-                            s.spawn((
-                                Node {
-                                    width: Val::Px(38.0),
-                                    height: Val::Px(38.0),
-                                    ..default()
-                                },
-                                ImageNode::new(h),
-                            ));
+                        // 原分辨率呈现: 不拉伸到格子大小, 只按整数倍率对齐
+                        Some((h, natural)) => {
+                            s.spawn(crisp_icon(h, natural, BAG_CELL, ui));
                         }
                         None => {
                             s.spawn(text(&font, name, 13.0, QUALITY_COMMON));
@@ -482,7 +550,7 @@ fn build_bag(
             .with_children(|row| {
                 row.spawn(text(
                     &font,
-                    format!("{} {}  (点击格子穿戴)", it.name, stats_line(it)),
+                    format!("{} {}  (左键穿戴 · 右键丢弃)", it.name, stats_line(it)),
                     12.0,
                     TEXT_DIM,
                 ));
@@ -502,7 +570,16 @@ fn build_bag(
             BorderColor(EDGE_DARK),
         ))
         .with_children(|bar| {
-            bar.spawn(text(&font, format!("32 格 · 已用 {used}"), 12.0, TEXT_DIM));
+            bar.spawn(text(
+                &font,
+                format!("{BAG_SLOTS} 格 · 已用 {used}"),
+                12.0,
+                if used >= BAG_SLOTS {
+                    QUALITY_COMMON
+                } else {
+                    TEXT_DIM
+                },
+            ));
             bar.spawn(text(&font, "金币 0", 12.0, EXP_GOLD));
         });
     });
@@ -514,10 +591,11 @@ fn equip_slot(
     parent: &mut ChildBuilder,
     font: &Handle<Font>,
     equipment: &std::collections::HashMap<String, protocol::ItemInfo>,
-    icons: &std::collections::HashMap<String, Option<Handle<Image>>>,
+    icons: &std::collections::HashMap<String, Icon>,
     slot_key: Option<&'static str>,
     label: &str,
     size: f32,
+    ui: f32,
 ) {
     let item = slot_key.and_then(|k| equipment.get(k));
     let icon = slot_key.and_then(|k| icons.get(k)).cloned().flatten();
@@ -528,6 +606,7 @@ fn equip_slot(
             border: UiRect::all(Val::Px(1.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
             ..default()
         },
         BackgroundColor(SLOT_BG),
@@ -538,16 +617,9 @@ fn equip_slot(
         n.insert((Button, UnequipSlot(key)));
     }
     match (item, icon) {
-        (Some(_), Some(h)) => {
+        (Some(_), Some((h, natural))) => {
             n.with_children(|s| {
-                s.spawn((
-                    Node {
-                        width: Val::Px(size - 12.0),
-                        height: Val::Px(size - 12.0),
-                        ..default()
-                    },
-                    ImageNode::new(h),
-                ));
+                s.spawn(crisp_icon(h, natural, size, ui));
             });
         }
         (Some(it), None) => {
@@ -570,7 +642,8 @@ fn build_character(
     net: &Net,
     skin: &Skin,
     portrait: Option<(Handle<Image>, Vec2)>,
-    icons: &std::collections::HashMap<String, Option<Handle<Image>>>,
+    icons: &std::collections::HashMap<String, Icon>,
+    ui: f32,
 ) {
     let font = skin.font.clone();
     let equipment = net.equipment.clone();
@@ -600,10 +673,37 @@ fn build_character(
                 ..default()
             })
             .with_children(|col| {
-                equip_slot(col, &font, &equipment, icons, Some("weapon"), "武器", 56.0);
-                equip_slot(col, &font, &equipment, icons, Some("armor"), "衣服", 56.0);
-                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0);
-                equip_slot(col, &font, &equipment, icons, Some("ring"), "戒指", 56.0);
+                equip_slot(
+                    col,
+                    &font,
+                    &equipment,
+                    icons,
+                    Some("weapon"),
+                    "武器",
+                    56.0,
+                    ui,
+                );
+                equip_slot(
+                    col,
+                    &font,
+                    &equipment,
+                    icons,
+                    Some("armor"),
+                    "衣服",
+                    56.0,
+                    ui,
+                );
+                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui);
+                equip_slot(
+                    col,
+                    &font,
+                    &equipment,
+                    icons,
+                    Some("ring"),
+                    "戒指",
+                    56.0,
+                    ui,
+                );
             });
             // 中央立绘 (150×240 剪影近似) + 名字/Lv
             row.spawn(Node {
@@ -673,7 +773,16 @@ fn build_character(
                 ..default()
             })
             .with_children(|col| {
-                equip_slot(col, &font, &equipment, icons, Some("helmet"), "头盔", 56.0);
+                equip_slot(
+                    col,
+                    &font,
+                    &equipment,
+                    icons,
+                    Some("helmet"),
+                    "头盔",
+                    56.0,
+                    ui,
+                );
                 equip_slot(
                     col,
                     &font,
@@ -682,9 +791,10 @@ fn build_character(
                     Some("necklace"),
                     "项链",
                     56.0,
+                    ui,
                 );
-                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0);
-                equip_slot(col, &font, &equipment, icons, None, "戒指", 56.0);
+                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui);
+                equip_slot(col, &font, &equipment, icons, None, "戒指", 56.0, ui);
             });
         });
         // 底排 5 槽 52px 居中
@@ -696,7 +806,7 @@ fn build_character(
         })
         .with_children(|row| {
             for label in ["腰带", "鞋子", "宝石", "生肖", "星座"] {
-                equip_slot(row, &font, &equipment, icons, None, label, 52.0);
+                equip_slot(row, &font, &equipment, icons, None, label, 52.0, ui);
             }
         });
         // 属性: 两列 grid, 顶分隔线
@@ -895,4 +1005,43 @@ fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::icon_scale;
+
+    /// 倍率必须是 n 或 1/n — 非整数比例会让像素画发糊
+    #[test]
+    fn scale_is_texel_aligned() {
+        for &(long, avail, ui) in &[
+            (32.0, 32.0, 1.0),
+            (32.0, 32.0, 0.833),
+            (32.0, 32.0, 2.0),
+            (96.0, 32.0, 1.0),
+            (17.0, 60.0, 1.5),
+            (1.0, 4.0, 0.5),
+        ] {
+            let k = icon_scale(long, avail, ui);
+            assert!(k > 0.0, "倍率必须为正: {k}");
+            let ok = k >= 1.0 && (k - k.round()).abs() < 1e-6
+                || k < 1.0 && ((1.0 / k) - (1.0 / k).round()).abs() < 1e-6;
+            assert!(
+                ok,
+                "倍率 {k} 既不是整数倍也不是 1/整数 (long={long} avail={avail} ui={ui})"
+            );
+        }
+    }
+
+    /// 900p 窗口 (UiScale 0.833) 下 32px 图标应保持 1:1 而不是被砍半
+    #[test]
+    fn native_icon_survives_sub_unit_ui_scale() {
+        assert_eq!(icon_scale(32.0, super::BAG_CELL, 0.833), 1.0);
+    }
+
+    /// 4K (UiScale 2) 下应整数放大而不是留白
+    #[test]
+    fn scales_up_on_hidpi() {
+        assert_eq!(icon_scale(32.0, super::BAG_CELL, 2.0), 2.0);
+    }
 }
