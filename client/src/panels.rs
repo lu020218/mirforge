@@ -481,6 +481,31 @@ fn tooltip_lines(i: &protocol::ItemInfo) -> Vec<(String, Color)> {
 
 /// Tips 最大宽度 (逻辑 px) — 实宽由内容决定, 这里只作贴边翻转的保守估计
 const TIP_W: f32 = 150.0;
+/// Tips 估高 (名称 + 部位 + 最多三条属性), 同样只用于贴边翻转
+const TIP_H: f32 = 78.0;
+
+/// 光标 → Tips 左上角 (逻辑 px): 默认右下, 贴到窗口右/下边就翻到另一侧
+fn tip_pos(cx: f32, cy: f32, ww: f32, wh: f32) -> (f32, f32) {
+    let left = if cx + 18.0 + TIP_W > ww {
+        cx - 12.0 - TIP_W
+    } else {
+        cx + 18.0
+    };
+    let top = if cy + 18.0 + TIP_H > wh {
+        cy - 12.0 - TIP_H
+    } else {
+        cy + 18.0
+    };
+    (left.max(0.0), top.max(0.0))
+}
+
+/// 光标逻辑坐标 + 窗口逻辑尺寸 (UI 布局用逻辑像素, cursor_position 给的是物理像素)
+fn cursor_logical(windows: &Query<&Window>, ui: f32) -> Option<(f32, f32, f32, f32)> {
+    let win = windows.get_single().ok()?;
+    let c = win.cursor_position()?;
+    let s = ui.max(0.01);
+    Some((c.x / s, c.y / s, win.width() / s, win.height() / s))
+}
 
 /// 悬停背包格/装备栏时浮出 Tips, 跟随光标; 手上提着物品时不显示
 #[allow(clippy::too_many_arguments)]
@@ -509,6 +534,12 @@ pub fn tooltip(
         None
     };
 
+    // 光标位置要在生成前拿到 — 否则新节点这一帧会先画在窗口左上角闪一下
+    let Some((cx, cy, ww, wh)) = cursor_logical(&windows, ui_scale.0) else {
+        return;
+    };
+    let (left, top) = tip_pos(cx, cy, ww, wh);
+
     // 目标变了才重建
     if shown.as_deref() != item.as_ref().map(|i| i.id.as_str()) {
         *shown = item.as_ref().map(|i| i.id.clone());
@@ -522,6 +553,8 @@ pub fn tooltip(
                     Tooltip,
                     Node {
                         position_type: PositionType::Absolute,
+                        left: Val::Px(left),
+                        top: Val::Px(top),
                         min_width: Val::Px(88.0),
                         max_width: Val::Px(TIP_W),
                         flex_direction: FlexDirection::Column,
@@ -548,29 +581,9 @@ pub fn tooltip(
         }
     }
 
-    // 跟随光标: 默认放右下, 贴到窗口右/下边就翻到另一侧
-    let (Ok(win), Some(c)) = (
-        windows.get_single(),
-        windows.get_single().ok().and_then(|w| w.cursor_position()),
-    ) else {
-        return;
-    };
-    let s = ui_scale.0.max(0.01);
-    let (cx, cy) = (c.x / s, c.y / s);
-    let (ww, wh) = (win.width() / s, win.height() / s);
-    let h = 78.0; // 估高: 名称 + 部位 + 最多三条属性
+    // 后续帧跟随光标
     for mut node in q_node.iter_mut() {
-        let left = if cx + 18.0 + TIP_W > ww {
-            cx - 12.0 - TIP_W
-        } else {
-            cx + 18.0
-        };
-        let top = if cy + 18.0 + h > wh {
-            (cy - 12.0 - h).max(0.0)
-        } else {
-            cy + 18.0
-        };
-        node.left = Val::Px(left.max(0.0));
+        node.left = Val::Px(left);
         node.top = Val::Px(top);
     }
 }
@@ -592,6 +605,11 @@ pub fn grab_icon(
     mut q: Query<&mut Node, With<GrabIcon>>,
     q_ent: Query<Entity, With<GrabIcon>>,
 ) {
+    // 光标位置要在生成前拿到 — 否则新节点这一帧会先画在窗口左上角闪一下
+    let Some((cx, cy, _, _)) = cursor_logical(&windows, ui_scale.0) else {
+        return;
+    };
+    let (left, top) = (cx - BAG_CELL / 2.0, cy - BAG_CELL / 2.0);
     if *seen_rev != grab.rev {
         *seen_rev = grab.rev;
         for e in &q_ent {
@@ -604,6 +622,8 @@ pub fn grab_icon(
                         GrabIcon,
                         Node {
                             position_type: PositionType::Absolute,
+                            left: Val::Px(left),
+                            top: Val::Px(top),
                             ..default()
                         },
                         GlobalZIndex(100),
@@ -614,17 +634,9 @@ pub fn grab_icon(
             }
         }
     }
-    let Ok(win) = windows.get_single() else {
-        return;
-    };
-    let Some(c) = win.cursor_position() else {
-        return;
-    };
-    let s = ui_scale.0.max(0.01);
     for mut node in q.iter_mut() {
-        // cursor_position 是物理像素, UI 布局用逻辑像素
-        node.left = Val::Px(c.x / s - BAG_CELL / 2.0);
-        node.top = Val::Px(c.y / s - BAG_CELL / 2.0);
+        node.left = Val::Px(left);
+        node.top = Val::Px(top);
     }
 }
 

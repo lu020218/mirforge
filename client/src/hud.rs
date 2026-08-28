@@ -620,7 +620,7 @@ pub fn setup(
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(20.0),
-                bottom: Val::Px(128.0),
+                bottom: Val::Px(18.0), // 与中央动作条同底, 一起贴齐窗口底部
                 width: Val::Px(400.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(8.0),
@@ -673,7 +673,7 @@ pub fn setup(
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(20.0),
-                bottom: Val::Px(128.0),
+                bottom: Val::Px(18.0), // 与中央动作条同底, 一起贴齐窗口底部
                 column_gap: Val::Px(8.0),
                 ..default()
             },
