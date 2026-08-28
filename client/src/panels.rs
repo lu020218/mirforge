@@ -38,10 +38,15 @@ pub struct CloseBtn(pub PanelKind);
 pub struct PanelBody(pub PanelKind);
 
 // ── 交互组件 ──
+/// 背包中的物品格 (格内物品 id)
 #[derive(Component)]
 pub struct EquipItem(String);
+/// 人物面板上的装备栏 (对应服务端 slot 键); 空栏也带, 用作放置目标
 #[derive(Component)]
-pub struct UnequipSlot(&'static str);
+pub struct EquipSlotTarget(&'static str);
+/// 挡住世界点击的 UI 区域 (面板本体 / HUD 各块)
+#[derive(Component)]
+pub struct UiBlock;
 #[derive(Component)]
 pub struct QuestAction {
     quest: String,
@@ -52,6 +57,44 @@ pub struct QuestAction {
 /// 拖拽状态 (光标相对面板左上角的偏移)
 #[derive(Resource, Default)]
 pub struct Drag(Option<(Entity, Vec2)>);
+
+/// 物品从哪里被提起 — 决定放下时要发什么消息
+#[derive(Clone, PartialEq)]
+pub enum GrabFrom {
+    Bag,
+    Equip(&'static str),
+}
+
+/// 提在光标上的物品 (经典传奇: 左键提起 → 移到目标 → 左键放下)
+///
+/// 提起纯粹是客户端状态, 服务端背包不动; 只有真正放到装备栏/地上时才发消息。
+#[derive(Resource, Default)]
+pub struct Grab {
+    pub item: Option<protocol::ItemInfo>,
+    pub from: Option<GrabFrom>,
+    /// 版本号 — 变化时重建面板 (源格子要显示为空)
+    pub rev: u32,
+    /// 本帧刚放下: 抑制这一次点击触发走路
+    pub released: bool,
+}
+
+impl Grab {
+    fn take(&mut self) {
+        self.item = None;
+        self.from = None;
+        self.rev = self.rev.wrapping_add(1);
+        self.released = true;
+    }
+}
+
+/// 光标是否停在 UI 上 (面板/HUD) — 世界点击与丢弃判定都看它
+#[derive(Resource, Default)]
+pub struct UiHover(pub bool);
+
+/// 每帧汇总: 光标是否落在任一 UiBlock 区域内
+pub fn ui_hover(mut hover: ResMut<UiHover>, q: Query<&RelativeCursorPosition, With<UiBlock>>) {
+    hover.0 = q.iter().any(|r| r.mouse_over());
+}
 
 /// 进入游戏时预建三面板 (默认隐藏), 位置为设计稿坐标
 pub fn setup(mut commands: Commands, skin: Res<Skin>) {
@@ -155,6 +198,8 @@ fn spawn_panel(
             BackgroundColor(PANEL_BG),
             BorderColor(EDGE_GOLD),
             GlobalZIndex(10),
+            UiBlock,
+            RelativeCursorPosition::default(),
         ))
         .with_children(|panel| {
             ornate_corners(panel);
@@ -304,53 +349,159 @@ pub fn drag(
     }
 }
 
-/// 背包格右键 = 丢弃到地上
-pub fn drop_clicks(
+/// 经典传奇物品操作: 左键提起 → 跟随光标 → 左键放到目标
+///
+/// 目标判定:
+/// - 对应的装备栏 → 穿戴 (槽位不符不接收)
+/// - 背包面板内 → 放回背包 (从装备栏提起的即为脱下)
+/// - 其他 UI 上 → 取消, 物品回原位
+/// - UI 之外的地面 → 丢弃
+///
+/// 右键随时取消。
+#[allow(clippy::too_many_arguments)]
+pub fn item_drag(
     net: Res<Net>,
     buttons: Res<ButtonInput<MouseButton>>,
-    q: Query<(&Interaction, &EquipItem)>,
+    hover: Res<UiHover>,
+    mut grab: ResMut<Grab>,
+    q_bag: Query<(&Interaction, &EquipItem)>,
+    q_slot: Query<(&Interaction, &EquipSlotTarget)>,
+    q_panel: Query<(&Panel, &RelativeCursorPosition)>,
 ) {
-    if !buttons.just_pressed(MouseButton::Right) {
+    grab.released = false;
+    // 右键取消: 提起本就没动服务端状态, 清掉即可
+    if buttons.just_pressed(MouseButton::Right) && grab.item.is_some() {
+        grab.take();
         return;
     }
-    for (it, item) in &q {
-        if matches!(it, Interaction::Hovered | Interaction::Pressed) {
-            net.send(ClientMessage::DropItem {
-                item_id: item.0.clone(),
-            });
-            return;
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let hovered = |it: &Interaction| matches!(it, Interaction::Hovered | Interaction::Pressed);
+
+    // ── 手上没东西: 提起 ──
+    if grab.item.is_none() {
+        if let Some((_, item)) = q_bag.iter().find(|(it, _)| hovered(it)) {
+            if let Some(info) = net.inventory.iter().find(|i| i.id == item.0) {
+                grab.item = Some(info.clone());
+                grab.from = Some(GrabFrom::Bag);
+                grab.rev = grab.rev.wrapping_add(1);
+            }
+        } else if let Some((_, slot)) = q_slot.iter().find(|(it, _)| hovered(it)) {
+            if let Some(info) = net.equipment.get(slot.0) {
+                grab.item = Some(info.clone());
+                grab.from = Some(GrabFrom::Equip(slot.0));
+                grab.rev = grab.rev.wrapping_add(1);
+            }
         }
+        return;
+    }
+
+    // ── 手上有东西: 放下 ──
+    let item = grab.item.clone().unwrap();
+    let from = grab.from.clone().unwrap_or(GrabFrom::Bag);
+    // 1) 落在装备栏上 — 槽位要对得上
+    if let Some((_, slot)) = q_slot.iter().find(|(it, _)| hovered(it)) {
+        if slot.0 == item.slot && from == GrabFrom::Bag {
+            net.send(ClientMessage::Equip {
+                item_id: item.id.clone(),
+                slot: item.slot.clone(),
+            });
+        }
+        grab.take();
+        return;
+    }
+    // 2) 落在背包面板内 — 从装备栏提起的即为脱下, 从背包提起的原样放回
+    let in_bag = q_panel
+        .iter()
+        .any(|(p, r)| p.0 == PanelKind::Bag && r.mouse_over());
+    if in_bag {
+        if let GrabFrom::Equip(slot) = from {
+            net.send(ClientMessage::Unequip {
+                slot: slot.to_string(),
+            });
+        }
+        grab.take();
+        return;
+    }
+    // 3) 落在其他 UI 上 — 取消
+    if hover.0 {
+        grab.take();
+        return;
+    }
+    // 4) 落在地面 — 丢弃 (装备上的先脱下再丢, 消息按序处理)
+    if let GrabFrom::Equip(slot) = from {
+        net.send(ClientMessage::Unequip {
+            slot: slot.to_string(),
+        });
+    }
+    net.send(ClientMessage::DropItem {
+        item_id: item.id.clone(),
+    });
+    grab.take();
+}
+
+/// 提在光标上的物品图标 (跟随光标, 压在所有 UI 之上)
+#[derive(Component)]
+pub struct GrabIcon;
+
+#[allow(clippy::too_many_arguments)]
+pub fn grab_icon(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    grab: Res<Grab>,
+    world: Res<crate::World>,
+    mut icons: ResMut<crate::ItemIcons>,
+    mut images: ResMut<Assets<Image>>,
+    ui_scale: Res<UiScale>,
+    mut seen_rev: Local<u32>,
+    mut q: Query<&mut Node, With<GrabIcon>>,
+    q_ent: Query<Entity, With<GrabIcon>>,
+) {
+    if *seen_rev != grab.rev {
+        *seen_rev = grab.rev;
+        for e in &q_ent {
+            commands.entity(e).despawn_recursive();
+        }
+        if let Some(item) = &grab.item {
+            if let Some((h, natural)) = icons.get(item.image, &world.data_root, &mut images) {
+                commands
+                    .spawn((
+                        GrabIcon,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            ..default()
+                        },
+                        GlobalZIndex(100),
+                    ))
+                    .with_children(|p| {
+                        p.spawn(crisp_icon(h, natural, BAG_CELL, ui_scale.0));
+                    });
+            }
+        }
+    }
+    let Ok(win) = windows.get_single() else {
+        return;
+    };
+    let Some(c) = win.cursor_position() else {
+        return;
+    };
+    let s = ui_scale.0.max(0.01);
+    for mut node in q.iter_mut() {
+        // cursor_position 是物理像素, UI 布局用逻辑像素
+        node.left = Val::Px(c.x / s - BAG_CELL / 2.0);
+        node.top = Val::Px(c.y / s - BAG_CELL / 2.0);
     }
 }
 
 /// 点击交互: 装备/卸下/任务操作
 #[allow(clippy::type_complexity)]
-pub fn clicks(
-    net: Res<Net>,
-    mut q: Query<
-        (
-            &Interaction,
-            Option<&EquipItem>,
-            Option<&UnequipSlot>,
-            Option<&QuestAction>,
-        ),
-        Changed<Interaction>,
-    >,
-) {
-    for (it, equip, unequip, quest) in q.iter_mut() {
+pub fn clicks(net: Res<Net>, mut q: Query<(&Interaction, &QuestAction), Changed<Interaction>>) {
+    for (it, qa) in q.iter_mut() {
         if *it != Interaction::Pressed {
             continue;
         }
-        if let Some(EquipItem(id)) = equip {
-            net.send(ClientMessage::Equip {
-                item_id: id.clone(),
-                slot: String::new(),
-            });
-        } else if let Some(UnequipSlot(slot)) = unequip {
-            net.send(ClientMessage::Unequip {
-                slot: slot.to_string(),
-            });
-        } else if let Some(qa) = quest {
+        {
             let msg = match qa.act {
                 "accept" => ClientMessage::AcceptQuest {
                     quest_id: qa.quest.clone(),
@@ -392,10 +543,12 @@ pub fn refresh(
     mut icons: ResMut<crate::ItemIcons>,
     mut images: ResMut<Assets<Image>>,
     ui_scale: Res<UiScale>,
-    mut last_rev: Local<(u32, u32, u32)>,
+    grab: Res<Grab>,
+    mut last_rev: Local<(u32, u32, u32, u32)>,
     q_body: Query<(Entity, &PanelBody)>,
 ) {
-    let rev = (net.inv_rev, net.quest_rev, net.stat_rev);
+    // 提起/放下也要重建 — 源格子在物品提在手上时应显示为空
+    let rev = (net.inv_rev, net.quest_rev, net.stat_rev, grab.rev);
     if *last_rev == rev {
         return;
     }
@@ -417,7 +570,7 @@ pub fn refresh(
         let mut e = commands.entity(entity);
         e.despawn_descendants();
         match body.0 {
-            PanelKind::Bag => build_bag(&mut e, &net, &skin, &inv_icons, ui_scale.0),
+            PanelKind::Bag => build_bag(&mut e, &net, &skin, &inv_icons, ui_scale.0, &grab),
             PanelKind::Character => build_character(
                 &mut e,
                 &net,
@@ -425,6 +578,7 @@ pub fn refresh(
                 portrait.clone(),
                 &equip_icons,
                 ui_scale.0,
+                &grab,
             ),
             PanelKind::Quest => build_quest(&mut e, &net, &skin),
         }
@@ -492,10 +646,16 @@ fn build_bag(
     skin: &Skin,
     icons: &[Icon],
     ui: f32,
+    grab: &Grab,
 ) {
     let items = net.inventory.clone();
     let font = skin.font.clone();
     let used = items.len();
+    // 提在光标上的那件, 原格子留空
+    let grabbed = match (&grab.item, &grab.from) {
+        (Some(it), Some(GrabFrom::Bag)) => Some(it.id.clone()),
+        _ => None,
+    };
     e.with_children(|body| {
         // 格区: 10 列 34px 格 gap 5 = 385, 面板内宽 428 (430 减 1px 边框×2)
         // 用 justify_content 居中而非固定内边距 — 后者差 2px 就会挤掉一列
@@ -510,7 +670,9 @@ fn build_bag(
         })
         .with_children(|grid| {
             for i in 0..BAG_SLOTS {
-                let item = items.get(i);
+                let item = items
+                    .get(i)
+                    .filter(|it| grabbed.as_deref() != Some(it.id.as_str()));
                 let mut slot = grid.spawn((
                     Node {
                         width: Val::Px(BAG_CELL),
@@ -554,7 +716,11 @@ fn build_bag(
             .with_children(|row| {
                 row.spawn(text(
                     &font,
-                    format!("{} {}  (左键穿戴 · 右键丢弃)", it.name, stats_line(it)),
+                    format!(
+                        "{} {}  (左键提起 → 放到装备栏穿戴 / 放到地面丢弃)",
+                        it.name,
+                        stats_line(it)
+                    ),
                     12.0,
                     TEXT_DIM,
                 ));
@@ -600,8 +766,13 @@ fn equip_slot(
     label: &str,
     size: f32,
     ui: f32,
+    grab: &Grab,
 ) {
-    let item = slot_key.and_then(|k| equipment.get(k));
+    // 从这一栏提起的物品已在光标上, 栏内显示为空
+    let grabbed_here = matches!(&grab.from, Some(GrabFrom::Equip(s)) if Some(*s) == slot_key);
+    let item = slot_key
+        .filter(|_| !grabbed_here)
+        .and_then(|k| equipment.get(k));
     let icon = slot_key.and_then(|k| icons.get(k)).cloned().flatten();
     let mut n = parent.spawn((
         Node {
@@ -617,8 +788,9 @@ fn equip_slot(
         BorderColor(if item.is_some() { EDGE_GOLD } else { EDGE_DARK }),
         BorderRadius::all(Val::Px(3.0)),
     ));
-    if let (Some(key), true) = (slot_key, item.is_some()) {
-        n.insert((Button, UnequipSlot(key)));
+    // 空栏也要能接收放下的物品, 所以只要有 slot 键就挂上目标组件
+    if let Some(key) = slot_key {
+        n.insert((Button, EquipSlotTarget(key)));
     }
     match (item, icon) {
         (Some(_), Some((h, natural))) => {
@@ -648,6 +820,7 @@ fn build_character(
     portrait: Option<(Handle<Image>, Vec2)>,
     icons: &std::collections::HashMap<String, Icon>,
     ui: f32,
+    grab: &Grab,
 ) {
     let font = skin.font.clone();
     let equipment = net.equipment.clone();
@@ -686,6 +859,7 @@ fn build_character(
                     "武器",
                     56.0,
                     ui,
+                    grab,
                 );
                 equip_slot(
                     col,
@@ -696,8 +870,9 @@ fn build_character(
                     "衣服",
                     56.0,
                     ui,
+                    grab,
                 );
-                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui);
+                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui, grab);
                 equip_slot(
                     col,
                     &font,
@@ -707,6 +882,7 @@ fn build_character(
                     "戒指",
                     56.0,
                     ui,
+                    grab,
                 );
             });
             // 中央立绘 (150×240 剪影近似) + 名字/Lv
@@ -786,6 +962,7 @@ fn build_character(
                     "头盔",
                     56.0,
                     ui,
+                    grab,
                 );
                 equip_slot(
                     col,
@@ -796,9 +973,10 @@ fn build_character(
                     "项链",
                     56.0,
                     ui,
+                    grab,
                 );
-                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui);
-                equip_slot(col, &font, &equipment, icons, None, "戒指", 56.0, ui);
+                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui, grab);
+                equip_slot(col, &font, &equipment, icons, None, "戒指", 56.0, ui, grab);
             });
         });
         // 底排 5 槽 52px 居中
@@ -810,7 +988,7 @@ fn build_character(
         })
         .with_children(|row| {
             for label in ["腰带", "鞋子", "宝石", "生肖", "星座"] {
-                equip_slot(row, &font, &equipment, icons, None, label, 52.0, ui);
+                equip_slot(row, &font, &equipment, icons, None, label, 52.0, ui, grab);
             }
         });
         // 属性: 两列 grid, 顶分隔线

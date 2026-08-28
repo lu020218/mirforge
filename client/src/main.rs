@@ -100,6 +100,8 @@ fn main() {
         .add_systems(OnEnter(Screen::CharSelect), screens::charselect_setup)
         .add_systems(OnExit(Screen::CharSelect), screens::charselect_teardown)
         .init_resource::<panels::Drag>()
+        .init_resource::<panels::Grab>()
+        .init_resource::<panels::UiHover>()
         .init_resource::<screens::CharSelectState>()
         .init_resource::<hud::ChatState>()
         .init_resource::<MiniMap>()
@@ -132,6 +134,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                panels::ui_hover,
                 player_move,
                 camera_follow,
                 camera_control,
@@ -155,7 +158,8 @@ fn main() {
                     panels::drag,
                     panels::close,
                     panels::clicks,
-                    panels::drop_clicks,
+                    panels::item_drag,
+                    panels::grab_icon,
                     panels::refresh,
                 )
                     .run_if(in_state(Screen::InGame)),
@@ -864,6 +868,8 @@ fn player_move(
     mut net: ResMut<Net>,
     remotes: Res<Remotes>,
     mut egui_ctx: EguiContexts,
+    ui_hover: Res<panels::UiHover>,
+    grab: Res<panels::Grab>,
     mut last_cursor: Local<Option<Vec2>>,
     mut last_atk: Local<f64>,
     mut q: Query<&mut Player>,
@@ -878,6 +884,12 @@ fn player_move(
     }
     // egui 面板占用指针时不当作行走输入
     if egui_ctx.ctx_mut().wants_pointer_input() {
+        return;
+    }
+    // 光标在背包/人物等 UI 上, 或手上正提着物品(含刚放下那一下): 不走路也不攻击
+    if ui_hover.0 || grab.item.is_some() || grab.released {
+        p.moving = false;
+        p.anim_t += time.delta_secs_f64();
         return;
     }
     let dt = time.delta_secs_f64();

@@ -6,6 +6,7 @@
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::ui::widget::NodeImageMode;
+use bevy::ui::RelativeCursorPosition;
 use bevy::window::Ime;
 
 use crate::panels::{Panel, PanelKind};
@@ -338,12 +339,16 @@ pub fn setup(
         ))
         .with_children(|root| {
             // 左翼: HP 行 + 技能格 1234
-            root.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(10.0),
-                align_items: AlignItems::FlexEnd,
-                ..default()
-            })
+            root.spawn((
+                crate::panels::UiBlock,
+                RelativeCursorPosition::default(),
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(10.0),
+                    align_items: AlignItems::FlexEnd,
+                    ..default()
+                },
+            ))
             .with_children(|wing| {
                 spawn_stat_bar(wing, &skin, "HP", skin.bar_hp.clone(), HpFill, HpText, true);
                 wing.spawn(Node {
@@ -359,12 +364,16 @@ pub fn setup(
                 });
             });
             // 中央: 92px 圆形头像 + 等级胶囊 (高出两翼 14px)
-            root.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                margin: UiRect::bottom(Val::Px(14.0)),
-                ..default()
-            })
+            root.spawn((
+                crate::panels::UiBlock,
+                RelativeCursorPosition::default(),
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(14.0)),
+                    ..default()
+                },
+            ))
             .with_children(|center| {
                 center
                     .spawn((
@@ -401,12 +410,16 @@ pub fn setup(
                     });
             });
             // 右翼: MP 行 + QWER 空格位
-            root.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(10.0),
-                align_items: AlignItems::FlexStart,
-                ..default()
-            })
+            root.spawn((
+                crate::panels::UiBlock,
+                RelativeCursorPosition::default(),
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(10.0),
+                    align_items: AlignItems::FlexStart,
+                    ..default()
+                },
+            ))
             .with_children(|wing| {
                 spawn_stat_bar(
                     wing,
@@ -433,6 +446,8 @@ pub fn setup(
     commands
         .spawn((
             HudRoot,
+            crate::panels::UiBlock,
+            RelativeCursorPosition::default(),
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(0.0),
@@ -459,6 +474,8 @@ pub fn setup(
     commands
         .spawn((
             HudRoot,
+            crate::panels::UiBlock,
+            RelativeCursorPosition::default(),
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(20.0),
@@ -554,6 +571,8 @@ pub fn setup(
     commands
         .spawn((
             HudRoot,
+            crate::panels::UiBlock,
+            RelativeCursorPosition::default(),
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(246.0),
@@ -596,6 +615,8 @@ pub fn setup(
     commands
         .spawn((
             HudRoot,
+            crate::panels::UiBlock,
+            RelativeCursorPosition::default(),
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(20.0),
@@ -647,6 +668,8 @@ pub fn setup(
     commands
         .spawn((
             HudRoot,
+            crate::panels::UiBlock,
+            RelativeCursorPosition::default(),
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(20.0),
@@ -705,6 +728,8 @@ pub fn setup(
     commands
         .spawn((
             HudRoot,
+            crate::panels::UiBlock,
+            RelativeCursorPosition::default(),
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(248.0),
