@@ -31,7 +31,7 @@ use mir_atlas::{AtlasCpu, PAGE_SIZE};
 use mir_formats::crystal_lib::CrystalLib;
 use mir_formats::map::MirMap;
 use protocol::{CharacterClass, CharacterSummary, ClientMessage, ServerMessage, PROTOCOL_VERSION};
-use sim::{dir8_from, WalkGrid, BODY_RADIUS};
+use sim::{dir8_from, WalkGrid, BODY_RADIUS, NPC_TALK_RANGE};
 
 const CELL_W: f32 = 48.0;
 const CELL_H: f32 = 32.0;
@@ -878,6 +878,8 @@ fn player_move(
     ui_hover: Res<panels::UiHover>,
     grab: Res<panels::Grab>,
     mut last_cursor: Local<Option<Vec2>>,
+    // 本次按下要搭话的 NPC 与是否已开口 (按住期间一直站定, 松手才清)
+    mut talk_to: Local<Option<(String, bool)>>,
     mut last_atk: Local<f64>,
     mut q: Query<&mut Player>,
 ) {
@@ -917,6 +919,9 @@ fn player_move(
         .map(|w| DVec2::new(w.x as f64 / CELL_W as f64, -(w.y as f64) / CELL_H as f64));
     let run = buttons.pressed(MouseButton::Right);
     let held = buttons.pressed(MouseButton::Left) || run;
+    if !buttons.pressed(MouseButton::Left) {
+        *talk_to = None; // 松手即放弃, 免得下次走进范围时冷不丁弹框
+    }
     // 左键按在怪身上 = 普攻 (光标 bbox 近似命中, 死亡中的怪忽略)
     if buttons.pressed(MouseButton::Left) && !run {
         if let Some(cc) = cursor_cell {
@@ -942,20 +947,14 @@ fn player_move(
                 }
                 return;
             }
-            // 点在 NPC 身上 → 对话 (够不着由服务端拒, 这里只管不要走路)
+            // 点在 NPC 身上 → 记下搭话对象; 够不着先走过去, 到了自动开口
             if buttons.just_pressed(MouseButton::Left) {
                 if let Some(n) = net
                     .npcs
                     .iter()
                     .find(|n| (n.x - cc.x).abs() < 0.8 && (n.y - cc.y).abs() < 1.1)
                 {
-                    let d = DVec2::new(n.x, n.y) - p.pos;
-                    p.dir = dir8_from(d.x, d.y);
-                    p.moving = false;
-                    net.send(ClientMessage::TalkNpc {
-                        npc_id: n.id.clone(),
-                    });
-                    return;
+                    *talk_to = Some((n.id.clone(), false));
                 }
             }
             // 点在地面物品上且够得着 → 拾取 (超距则照常走路靠近)
@@ -975,6 +974,27 @@ fn player_move(
                     }
                 }
             }
+        }
+    }
+    // 到了交互半径内就开口, 并在整个按住期间站定 —— 只在按下那一帧拦是不够的,
+    // 后续帧会漏到下面的走路逻辑, 表现就是"点一下 NPC 人还往前挪一段"
+    if let Some((id, sent)) = talk_to.clone() {
+        match net.npcs.iter().find(|n| n.id == id) {
+            Some(n) => {
+                let d = DVec2::new(n.x, n.y) - p.pos;
+                if d.length() <= NPC_TALK_RANGE {
+                    p.dir = dir8_from(d.x, d.y);
+                    p.moving = false;
+                    p.anim_t += dt;
+                    if !sent {
+                        net.send(ClientMessage::TalkNpc { npc_id: id.clone() });
+                        *talk_to = Some((id, true)); // 只开口一次
+                    }
+                    return;
+                }
+                // 够不着: 落到下面走路逻辑, 走进范围后自动开口
+            }
+            None => *talk_to = None, // 切区/热重载后 NPC 没了
         }
     }
     let mut v = DVec2::ZERO;

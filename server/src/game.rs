@@ -971,9 +971,6 @@ impl Game {
         .await;
     }
 
-    /// 可交互距离 (格) — 超出则拒绝对话
-    const NPC_TALK_RANGE: f64 = 3.0;
-
     /// 取某 NPC 的某一页; page=0 表示「第一页」(取页号最小的一页)
     fn npc_page(npc: &NpcDef, page: u32) -> Option<&NpcDialogPage> {
         if page == 0 {
@@ -1023,7 +1020,7 @@ impl Game {
             .iter()
             .find(|n| n.enabled && n.id == npc_id && n.map == p.zone)?;
         let dist = ((npc.x - p.x).powi(2) + (npc.y - p.y).powi(2)).sqrt();
-        (dist <= Self::NPC_TALK_RANGE).then(|| npc.clone())
+        (dist <= sim::NPC_TALK_RANGE).then(|| npc.clone())
     }
 
     /// 点击 NPC: 发第一页; 没配对话就用缺省招呼
