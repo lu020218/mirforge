@@ -139,6 +139,9 @@ pub struct EntityUpdate {
     /// 玩家外观 (武器 CWeapon 库号); 无武器/怪物 = None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<u16>,
+    /// 怪物图库号 (Data/Monster/{image:03}.Lib); 玩家 = None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,12 +400,14 @@ mod tests {
                 removed: None,
                 armour: None,
                 weapon: None,
+                image: None,
             }],
             timestamp: 12345,
         };
         let json = encode(&msg).unwrap();
-        // removed=None 不出现在线上
+        // removed/image=None 不出现在线上 (逐字段 skip_serializing_if)
         assert!(!json.contains("removed"));
+        assert!(!json.contains("image"));
         match decode_server(&json).unwrap() {
             ServerMessage::StateUpdate { entities, .. } => {
                 assert_eq!(entities.len(), 1);

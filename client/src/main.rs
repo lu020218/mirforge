@@ -1777,9 +1777,10 @@ fn net_pump(
                         }
                         let r = remotes.0.entry(e.id.clone()).or_default();
                         r.last_seen = now;
-                        // id 形如 mon_{image}_{template}_{n} → 怪物
-                        if r.image.is_none() && e.id.starts_with("mon_") {
-                            r.image = e.id.split('_').nth(1).and_then(|s| s.parse().ok());
+                        // 图库号由服务端下发 (曾从 id 里解析, 但 id 格式一变就
+                        // 静默退化成人物精灵, 见 EntityUpdate::image)
+                        if let Some(img) = e.image {
+                            r.image = Some(img);
                         }
                         if let Some(pos) = e.position {
                             let t = DVec2::new(pos.x, pos.y);

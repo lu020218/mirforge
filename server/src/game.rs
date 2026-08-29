@@ -496,6 +496,8 @@ const ATTACK_COOLDOWN: Duration = Duration::from_millis(1500);
 struct Monster {
     id: String,
     template: String,
+    /// 客户端图库号 (Data/Monster/{image:03}.Lib)
+    image: u16,
     zone: String,
     home: (f64, f64),
     /// 游荡活动半径 (来自刷新点)
@@ -573,6 +575,7 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
             out.push(Monster {
                 id: format!("mon_{}_{}_{}_{}", zone.id, sp.image, si, i),
                 template: sp.template.clone(),
+                image: sp.image,
                 zone: zone.id.clone(),
                 home: (x, y),
                 roam: sp.radius,
@@ -800,6 +803,7 @@ impl Game {
                     removed: Some(true),
                     armour: None,
                     weapon: None,
+                    image: None,
                 })
                 .collect();
             broadcast_to(
@@ -2373,6 +2377,7 @@ impl Game {
                     // 外观: 衣甲缺省 0 (基础模), 武器无则不带
                     armour: Some(p.equipment.get("armor").map(|i| i.shape).unwrap_or(0)),
                     weapon: p.equipment.get("weapon").map(|i| i.shape),
+                    image: None, // 玩家走 CArmour/CWeapon, 不用怪物图库
                 })
                 .collect();
             if entities.is_empty() {
@@ -2398,6 +2403,7 @@ impl Game {
                                 removed: Some(true),
                                 armour: None,
                                 weapon: None,
+                                image: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() {
@@ -2418,6 +2424,7 @@ impl Game {
                             removed: None,
                             armour: None,
                             weapon: None,
+                            image: Some(m.image),
                         })
                     }),
             );
