@@ -442,6 +442,139 @@ pub fn item_drag(
     grab.take();
 }
 
+// ─────────── NPC 对话框 ───────────
+
+/// 对话框根节点 (随对话版本重建)
+#[derive(Component)]
+pub struct DialogRoot;
+
+/// 对话选项按钮 (回传给服务端的下标)
+#[derive(Component)]
+pub struct DialogOption(u32);
+
+/// 对话框: 服务端下发一页就重建一次; 关闭由服务端的 NpcDialogEnd 驱动
+pub fn dialog(
+    mut commands: Commands,
+    net: Res<Net>,
+    skin: Res<Skin>,
+    mut seen_rev: Local<u32>,
+    q_old: Query<Entity, With<DialogRoot>>,
+) {
+    if *seen_rev == net.dialog_rev {
+        return;
+    }
+    *seen_rev = net.dialog_rev;
+    for e in &q_old {
+        commands.entity(e).despawn_recursive();
+    }
+    let Some(d) = &net.dialog else {
+        return;
+    };
+    let font = skin.font.clone();
+    commands
+        .spawn((
+            DialogRoot,
+            UiBlock,
+            RelativeCursorPosition::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Px(180.0),
+                margin: UiRect::left(Val::Px(-210.0)), // 宽 420 的一半, 居中
+                width: Val::Px(420.0),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderColor(EDGE_GOLD),
+            BorderRadius::all(Val::Px(4.0)),
+            GlobalZIndex(20),
+        ))
+        .with_children(|root| {
+            ornate_corners(root);
+            // 标题栏: NPC 名 + 关闭
+            root.spawn((
+                Node {
+                    height: Val::Px(44.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(16.0)),
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(TITLE_BG),
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn(text(&font, d.name.clone(), 15.0, GOLD_BRIGHT));
+                // 关闭 = 一个 idx 越界的选项, 服务端一律回 NpcDialogEnd
+                bar.spawn((Button, DialogOption(u32::MAX), Node::default()))
+                    .with_children(|x| {
+                        x.spawn(text(&font, "×", 18.0, TEXT_DIM));
+                    });
+            });
+            // 正文
+            root.spawn(Node {
+                padding: UiRect::axes(Val::Px(18.0), Val::Px(16.0)),
+                ..default()
+            })
+            .with_children(|body| {
+                body.spawn((
+                    text(&font, d.text.clone(), 14.0, TEXT_MAIN),
+                    TextLayout::new_with_justify(JustifyText::Left),
+                ));
+            });
+            // 选项
+            root.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::new(Val::Px(18.0), Val::Px(18.0), Val::Px(0.0), Val::Px(16.0)),
+                row_gap: Val::Px(6.0),
+                ..default()
+            })
+            .with_children(|list| {
+                for o in &d.options {
+                    list.spawn((
+                        Button,
+                        DialogOption(o.idx),
+                        Node {
+                            padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(SLOT_BG),
+                        BorderColor(EDGE_DARK),
+                        BorderRadius::all(Val::Px(3.0)),
+                    ))
+                    .with_children(|b| {
+                        b.spawn(text(&font, format!("· {}", o.label), 13.0, QUALITY_COMMON));
+                    });
+                }
+            });
+        });
+}
+
+/// 选项点击 → 回传服务端; 悬停变金边
+pub fn dialog_clicks(
+    net: Res<Net>,
+    mut q: Query<(&Interaction, &DialogOption, &mut BorderColor), Changed<Interaction>>,
+) {
+    for (it, opt, mut border) in q.iter_mut() {
+        match it {
+            Interaction::Pressed => {
+                let Some(d) = &net.dialog else { continue };
+                net.send(ClientMessage::NpcOption {
+                    npc_id: d.npc_id.clone(),
+                    page: d.page,
+                    idx: opt.0,
+                });
+            }
+            Interaction::Hovered => border.0 = EDGE_GOLD,
+            Interaction::None => border.0 = EDGE_DARK,
+        }
+    }
+}
+
 /// 悬停物品 Tips (原版传奇: 属性不常驻面板, 鼠标停到物品上才浮出)
 #[derive(Component)]
 pub struct Tooltip;

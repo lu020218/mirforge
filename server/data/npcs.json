@@ -1,3 +1,56 @@
 [
-  { "id": "bichon_guard", "name": "比奇守卫", "map": "0.map", "x": 332.5, "y": 152.5, "image": 0, "kind": "talk", "enabled": true }
+  {
+    "id": "bichon_guard",
+    "name": "比奇守卫",
+    "map": "0.map",
+    "x": 332.5,
+    "y": 152.5,
+    "image": 0,
+    "kind": "quest",
+    "enabled": true,
+    "dialogs": [
+      {
+        "page": 1,
+        "text": "勇士，比奇省近来不太平。城外的野鸡把田里的庄稼糟蹋得不成样子，\n乡亲们都不敢出城了。",
+        "options": [
+          {
+            "label": "这事交给我",
+            "action": "quest_accept",
+            "arg": "hunt_chicken"
+          },
+          {
+            "label": "我已经办妥了",
+            "action": "quest_complete",
+            "arg": "hunt_chicken"
+          },
+          {
+            "label": "再往北是什么地方？",
+            "action": "page",
+            "arg": "2"
+          },
+          {
+            "label": "告辞",
+            "action": "close",
+            "arg": ""
+          }
+        ]
+      },
+      {
+        "page": 2,
+        "text": "往北穿过城门便是盟重省，那边商队往来频繁，\n不过路上也有些不长眼的东西，你自己当心。",
+        "options": [
+          {
+            "label": "回去说说野鸡的事",
+            "action": "page",
+            "arg": "1"
+          },
+          {
+            "label": "多谢指点",
+            "action": "close",
+            "arg": ""
+          }
+        ]
+      }
+    ]
+  }
 ]

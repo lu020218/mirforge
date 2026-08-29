@@ -261,7 +261,7 @@ pub struct GameData {
     pub npcs: Vec<NpcDef>,
 }
 
-/// 场景 NPC 配置 (P1: 存在与展示; 对话/商店见 docs/NPC_DESIGN.md P2/P3)
+/// 场景 NPC 配置 (存在/展示/对话; 商店见 docs/NPC_DESIGN.md P3)
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct NpcDef {
     pub id: String,
@@ -272,11 +272,37 @@ pub struct NpcDef {
     pub y: f64,
     /// Data/NPC/{image:02}.Lib
     pub image: u16,
-    /// 交互类型 (P1 仅记录: talk/shop/quest/teleport)
+    /// 交互类型 (talk/shop/quest/teleport)
     #[serde(default = "default_npc_kind")]
     pub kind: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 对话页; 空 = 点击只弹一句缺省招呼
+    #[serde(default)]
+    pub dialogs: Vec<NpcDialogPage>,
+}
+
+/// 一页对话 = 一段文本 + 若干选项
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct NpcDialogPage {
+    pub page: u32,
+    pub text: String,
+    #[serde(default)]
+    pub options: Vec<NpcOptionDef>,
+}
+
+/// 选项动作: page(跳页, arg=页号) / quest_accept / quest_complete (arg=任务 id) / close
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct NpcOptionDef {
+    pub label: String,
+    #[serde(default = "default_option_action")]
+    pub action: String,
+    #[serde(default)]
+    pub arg: String,
+}
+
+fn default_option_action() -> String {
+    "close".into()
 }
 
 fn default_npc_kind() -> String {
@@ -383,6 +409,37 @@ impl GameData {
             }
             if n.name.trim().is_empty() {
                 errs.push(format!("NPC {} 名称为空", n.id));
+            }
+            // 对话页: 页号唯一, 跳页目标存在, 任务动作引用的任务存在
+            let pages: std::collections::HashSet<u32> = n.dialogs.iter().map(|d| d.page).collect();
+            if pages.len() != n.dialogs.len() {
+                errs.push(format!("NPC {} 对话页号重复", n.id));
+            }
+            for d in &n.dialogs {
+                for o in &d.options {
+                    match o.action.as_str() {
+                        "page" => match o.arg.parse::<u32>() {
+                            Ok(t) if pages.contains(&t) => {}
+                            _ => errs.push(format!(
+                                "NPC {} 第 {} 页选项「{}」跳转到不存在的页: {}",
+                                n.id, d.page, o.label, o.arg
+                            )),
+                        },
+                        "quest_accept" | "quest_complete" => {
+                            if !qids.contains(o.arg.as_str()) {
+                                errs.push(format!(
+                                    "NPC {} 第 {} 页选项「{}」引用的任务不存在: {}",
+                                    n.id, d.page, o.label, o.arg
+                                ));
+                            }
+                        }
+                        "close" => {}
+                        other => errs.push(format!(
+                            "NPC {} 第 {} 页选项「{}」动作未知: {other}",
+                            n.id, d.page, o.label
+                        )),
+                    }
+                }
             }
         }
         errs
@@ -904,6 +961,119 @@ impl Game {
         .await;
     }
 
+    /// 可交互距离 (格) — 超出则拒绝对话
+    const NPC_TALK_RANGE: f64 = 3.0;
+
+    /// 取某 NPC 的某一页; page=0 表示「第一页」(取页号最小的一页)
+    fn npc_page(npc: &NpcDef, page: u32) -> Option<&NpcDialogPage> {
+        if page == 0 {
+            npc.dialogs.iter().min_by_key(|d| d.page)
+        } else {
+            npc.dialogs.iter().find(|d| d.page == page)
+        }
+    }
+
+    /// 下发一页对话; 该页不存在则结束对话
+    async fn send_npc_page(&self, conn_id: &str, npc: &NpcDef, page: u32) {
+        let Some(d) = Self::npc_page(npc, page) else {
+            send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+            return;
+        };
+        send_to(
+            &self.sessions,
+            conn_id,
+            ServerMessage::NpcDialog {
+                npc_id: npc.id.clone(),
+                name: npc.name.clone(),
+                page: d.page,
+                text: d.text.clone(),
+                options: d
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| protocol::NpcDialogOption {
+                        idx: i as u32,
+                        label: o.label.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .await;
+    }
+
+    /// 取玩家同区且在交互距离内的 NPC (越权/隔图对话在此挡掉)
+    fn npc_in_reach(&self, conn_id: &str, npc_id: &str) -> Option<NpcDef> {
+        let p = self
+            .players
+            .values()
+            .find(|p| p.conn_id == conn_id && p.connected)?;
+        let d = data();
+        let npc = d
+            .npcs
+            .iter()
+            .find(|n| n.enabled && n.id == npc_id && n.map == p.zone)?;
+        let dist = ((npc.x - p.x).powi(2) + (npc.y - p.y).powi(2)).sqrt();
+        (dist <= Self::NPC_TALK_RANGE).then(|| npc.clone())
+    }
+
+    /// 点击 NPC: 发第一页; 没配对话就用缺省招呼
+    async fn handle_talk_npc(&mut self, conn_id: &str, npc_id: &str) {
+        let Some(npc) = self.npc_in_reach(conn_id, npc_id) else {
+            return;
+        };
+        if npc.dialogs.is_empty() {
+            send_to(
+                &self.sessions,
+                conn_id,
+                ServerMessage::NpcDialog {
+                    npc_id: npc.id.clone(),
+                    name: npc.name.clone(),
+                    page: 1,
+                    text: format!("{}：勇士，愿玛法大陆保佑你。", npc.name),
+                    options: vec![protocol::NpcDialogOption {
+                        idx: 0,
+                        label: "告辞".into(),
+                    }],
+                },
+            )
+            .await;
+            return;
+        }
+        self.send_npc_page(conn_id, &npc, 0).await;
+    }
+
+    /// 选项动作分发
+    async fn handle_npc_option(&mut self, conn_id: &str, npc_id: &str, page: u32, idx: u32) {
+        let Some(npc) = self.npc_in_reach(conn_id, npc_id) else {
+            // 走远了 / NPC 被禁用 — 明确收场, 免得客户端挂着个死对话框
+            send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+            return;
+        };
+        // 没配对话时的缺省招呼只有一个「告辞」
+        let Some(opt) = Self::npc_page(&npc, page)
+            .and_then(|d| d.options.get(idx as usize))
+            .cloned()
+        else {
+            send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+            return;
+        };
+        match opt.action.as_str() {
+            "page" => {
+                let next = opt.arg.parse::<u32>().unwrap_or(0);
+                self.send_npc_page(conn_id, &npc, next).await;
+            }
+            "quest_accept" => {
+                self.handle_accept_quest(conn_id, &opt.arg).await;
+                send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+            }
+            "quest_complete" => {
+                self.handle_complete_quest(conn_id, &opt.arg).await;
+                send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+            }
+            _ => send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await,
+        }
+    }
+
     /// 全员立即存档
     async fn save_all(&self) {
         for (id, p) in &self.players {
@@ -1303,6 +1473,12 @@ impl Game {
             }
             ClientMessage::Unequip { slot } => {
                 self.handle_unequip(&conn_id, &slot).await;
+            }
+            ClientMessage::TalkNpc { npc_id } => {
+                self.handle_talk_npc(&conn_id, &npc_id).await;
+            }
+            ClientMessage::NpcOption { npc_id, page, idx } => {
+                self.handle_npc_option(&conn_id, &npc_id, page, idx).await;
             }
             ClientMessage::DropItem { item_id } => {
                 self.handle_drop_item(&conn_id, &item_id).await;

@@ -84,6 +84,12 @@ pub enum ClientMessage {
         content: String,
         target_name: Option<String>,
     },
+    /// 点击 NPC 开始对话
+    #[serde(rename = "talkNpc")]
+    TalkNpc { npc_id: String },
+    /// 选择对话选项
+    #[serde(rename = "npcOption")]
+    NpcOption { npc_id: String, page: u32, idx: u32 },
     #[serde(rename = "equip")]
     Equip { item_id: String, slot: String },
     #[serde(rename = "unequip")]
@@ -233,6 +239,19 @@ pub enum ServerMessage {
         targets: Vec<String>,
     },
     /// 本区 NPC 全量快照 (进区/切区/配置热重载时下发)
+    /// 对话页 (点击 NPC 或选了跳页选项后下发)
+    #[serde(rename = "npcDialog")]
+    NpcDialog {
+        npc_id: String,
+        /// NPC 名字 (对话框标题)
+        name: String,
+        page: u32,
+        text: String,
+        options: Vec<NpcDialogOption>,
+    },
+    /// 对话结束 (选了「关闭」或走完动作)
+    #[serde(rename = "npcDialogEnd")]
+    NpcDialogEnd,
     #[serde(rename = "npcList")]
     NpcList { npcs: Vec<NpcInfo> },
     #[serde(rename = "inventoryState")]
@@ -240,6 +259,13 @@ pub enum ServerMessage {
         inventory: Vec<ItemInfo>,
         equipment: std::collections::HashMap<String, ItemInfo>,
     },
+}
+
+/// 对话页上的一个可选项 (idx 用于回传, 客户端不关心动作)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcDialogOption {
+    pub idx: u32,
+    pub label: String,
 }
 
 /// 场景 NPC（静态，站立 4 帧循环；`image` = Data/NPC/{image:02}.Lib）

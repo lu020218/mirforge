@@ -161,6 +161,8 @@ fn main() {
                     panels::item_drag,
                     panels::grab_icon,
                     panels::tooltip,
+                    panels::dialog,
+                    panels::dialog_clicks,
                     panels::refresh,
                 )
                     .run_if(in_state(Screen::InGame)),
@@ -210,6 +212,10 @@ struct Net {
     npcs: Vec<protocol::NpcInfo>,
     /// NPC 列表版本 (变化时重建精灵)
     npc_rev: u32,
+    /// 当前对话页 (None = 没在对话)
+    dialog: Option<NpcDialog>,
+    /// 对话版本 (变化时重建对话框)
+    dialog_rev: u32,
     /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
     chatlog: Vec<(String, String)>,
     /// 地面掉落物 (服务器快照驱动)
@@ -936,6 +942,22 @@ fn player_move(
                 }
                 return;
             }
+            // 点在 NPC 身上 → 对话 (够不着由服务端拒, 这里只管不要走路)
+            if buttons.just_pressed(MouseButton::Left) {
+                if let Some(n) = net
+                    .npcs
+                    .iter()
+                    .find(|n| (n.x - cc.x).abs() < 0.8 && (n.y - cc.y).abs() < 1.1)
+                {
+                    let d = DVec2::new(n.x, n.y) - p.pos;
+                    p.dir = dir8_from(d.x, d.y);
+                    p.moving = false;
+                    net.send(ClientMessage::TalkNpc {
+                        npc_id: n.id.clone(),
+                    });
+                    return;
+                }
+            }
             // 点在地面物品上且够得着 → 拾取 (超距则照常走路靠近)
             if buttons.just_pressed(MouseButton::Left) {
                 let pick = net
@@ -1549,6 +1571,26 @@ fn net_pump(
                     net.status = format!("角色 {name} 已创建");
                 }
                 ServerMessage::LoginSuccess { player_id, .. } => net.my_id = Some(player_id),
+                ServerMessage::NpcDialog {
+                    npc_id,
+                    name,
+                    page,
+                    text,
+                    options,
+                } => {
+                    net.dialog = Some(NpcDialog {
+                        npc_id,
+                        name,
+                        page,
+                        text,
+                        options,
+                    });
+                    net.dialog_rev += 1;
+                }
+                ServerMessage::NpcDialogEnd => {
+                    net.dialog = None;
+                    net.dialog_rev += 1;
+                }
                 ServerMessage::NpcList { npcs } => {
                     net.npcs = npcs;
                     net.npc_rev += 1;
@@ -2046,6 +2088,16 @@ fn remote_step(
     for id in gone {
         remotes.0.remove(&id);
     }
+}
+
+/// 当前显示的 NPC 对话页
+#[derive(Clone)]
+pub struct NpcDialog {
+    pub npc_id: String,
+    pub name: String,
+    pub page: u32,
+    pub text: String,
+    pub options: Vec<protocol::NpcDialogOption>,
 }
 
 /// 场景 NPC 精灵 (随区域/热重载重建)

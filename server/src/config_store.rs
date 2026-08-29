@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use sqlx::{Row, SqlitePool};
 
 use crate::game::{
-    DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, PortalSidecar, QuestDef, SkillDef,
-    SkillKind, SkillsCfg, ZoneSidecar,
+    DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, NpcDialogPage, NpcOptionDef,
+    PortalSidecar, QuestDef, SkillDef, SkillKind, SkillsCfg, ZoneSidecar,
 };
 
 /// 建表（幂等）
@@ -96,6 +96,21 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             kind TEXT NOT NULL DEFAULT 'talk',
             enabled INTEGER NOT NULL DEFAULT 1,
             ord INTEGER NOT NULL DEFAULT 0
+        )",
+        "CREATE TABLE IF NOT EXISTS cfg_npc_dialogs (
+            npc_id TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            PRIMARY KEY (npc_id, page)
+        )",
+        "CREATE TABLE IF NOT EXISTS cfg_npc_options (
+            npc_id TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            idx INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            action TEXT NOT NULL DEFAULT 'close',
+            arg TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (npc_id, page, idx)
         )",
         "CREATE TABLE IF NOT EXISTS cfg_drops (
             spawn_id INTEGER NOT NULL,
@@ -206,7 +221,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         }
     }
 
-    let npcs = sqlx::query(
+    let mut npcs: Vec<NpcDef> = sqlx::query(
         "SELECT id, name, map, x, y, image, kind, enabled FROM cfg_npcs ORDER BY ord, id",
     )
     .fetch_all(pool)
@@ -221,8 +236,48 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         image: r.get::<i64, _>("image") as u16,
         kind: r.get("kind"),
         enabled: r.get::<i64, _>("enabled") != 0,
+        dialogs: Vec::new(),
     })
     .collect();
+    // 对话页与选项分表存, 读出来再按 npc_id/page 挂回去
+    let mut pages: HashMap<String, Vec<NpcDialogPage>> = HashMap::new();
+    for r in sqlx::query("SELECT npc_id, page, text FROM cfg_npc_dialogs ORDER BY npc_id, page")
+        .fetch_all(pool)
+        .await?
+    {
+        pages
+            .entry(r.get("npc_id"))
+            .or_default()
+            .push(NpcDialogPage {
+                page: r.get::<i64, _>("page") as u32,
+                text: r.get("text"),
+                options: Vec::new(),
+            });
+    }
+    for r in sqlx::query(
+        "SELECT npc_id, page, label, action, arg FROM cfg_npc_options ORDER BY npc_id, page, idx",
+    )
+    .fetch_all(pool)
+    .await?
+    {
+        let npc_id: String = r.get("npc_id");
+        let page = r.get::<i64, _>("page") as u32;
+        if let Some(d) = pages
+            .get_mut(&npc_id)
+            .and_then(|v| v.iter_mut().find(|d| d.page == page))
+        {
+            d.options.push(NpcOptionDef {
+                label: r.get("label"),
+                action: r.get("action"),
+                arg: r.get("arg"),
+            });
+        }
+    }
+    for n in npcs.iter_mut() {
+        if let Some(d) = pages.remove(&n.id) {
+            n.dialogs = d;
+        }
+    }
 
     Ok(GameData {
         items,
@@ -234,9 +289,11 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
 
 pub async fn save_npcs(pool: &SqlitePool, npcs: &[NpcDef]) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM cfg_npcs")
-        .execute(&mut *tx)
-        .await?;
+    for t in ["cfg_npcs", "cfg_npc_dialogs", "cfg_npc_options"] {
+        sqlx::query(&format!("DELETE FROM {t}"))
+            .execute(&mut *tx)
+            .await?;
+    }
     for (i, n) in npcs.iter().enumerate() {
         sqlx::query(
             "INSERT INTO cfg_npcs (id, name, map, x, y, image, kind, enabled, ord)
@@ -253,6 +310,28 @@ pub async fn save_npcs(pool: &SqlitePool, npcs: &[NpcDef]) -> Result<(), sqlx::E
         .bind(i as i64)
         .execute(&mut *tx)
         .await?;
+        for d in &n.dialogs {
+            sqlx::query("INSERT INTO cfg_npc_dialogs (npc_id, page, text) VALUES (?, ?, ?)")
+                .bind(&n.id)
+                .bind(d.page as i64)
+                .bind(&d.text)
+                .execute(&mut *tx)
+                .await?;
+            for (oi, o) in d.options.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO cfg_npc_options (npc_id, page, idx, label, action, arg)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&n.id)
+                .bind(d.page as i64)
+                .bind(oi as i64)
+                .bind(&o.label)
+                .bind(&o.action)
+                .bind(&o.arg)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
     }
     tx.commit().await
 }

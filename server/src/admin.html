@@ -91,6 +91,14 @@
   #picker.on, #npc-picker.on { display: flex; align-items: center; justify-content: center; }
   #picker .box, #mmpicker .box, #npc-picker .box { background: var(--panel); border: 1px solid var(--gold-edge);
                  border-radius: 5px; padding: 16px; max-height: 86vh; overflow: auto; }
+  tr.npc-dlg > td { background: rgba(201,165,92,.05); padding: 0; }
+  .dlg-box { padding: 14px 18px; border-left: 2px solid var(--gold); }
+  .dlg-page { border: 1px solid var(--gold-edge); border-radius: 4px;
+              padding: 10px 12px; margin-bottom: 10px; background: rgba(0,0,0,.18); }
+  .dlg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .dlg-page textarea { width: 100%; min-height: 56px; margin-bottom: 8px; }
+  .dlg-opts { width: auto; margin-bottom: 6px; }
+  .dlg-opts th { font-weight: normal; }
   #picker img, #mmpicker img, #npc-picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
 </style>
 </head>
@@ -576,7 +584,9 @@ function npcRow(n) {
         `<option value="${k}"${k === (n.kind ?? 'talk') ? ' selected' : ''}>${v}</option>`).join('')}</select></td>
     <td><input type="checkbox" data-c="enabled"${(n.enabled ?? true) ? ' checked' : ''}></td>
     <td><button class="ghost" onclick="npcPickOnMap(this)">取点</button>
-        <button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
+        <button class="ghost" onclick="toggleNpcDialogs(this)">对话</button>
+        <button class="ghost" onclick="const t=this.closest('tr'),n=t.nextElementSibling;if(n&&n.classList.contains('npc-dlg'))n.remove();t.remove()">删</button></td>`;
+  tr._dialogs = (n.dialogs || []).map(d => ({ page: d.page, text: d.text, options: (d.options || []).slice() }));
   tr.querySelector('input[data-c="image"]').addEventListener('change', e => {
     tr.querySelector('img.icon').src = '/api/frame/npc/' + (Number(e.target.value) || 0);
   });
@@ -592,15 +602,103 @@ function addNpcRow() {
     { id: 'new_npc', name: '新 NPC', map: Object.keys(zoneData)[0] || '0.map', x: 0, y: 0, image: 0, kind: 'talk', enabled: true }));
 }
 function collectNpcs() {
-  return [...document.querySelectorAll('#npc-table tbody tr')].map(tr => {
+  return [...document.querySelectorAll('#npc-table > tbody > tr:not(.npc-dlg)')].map(tr => {
     const g = c => tr.querySelector(`[data-c="${c}"]`);
     return {
       id: g('id').value.trim(), name: g('name').value.trim(), map: g('map').value,
       x: Number(g('x').value) || 0, y: Number(g('y').value) || 0,
       image: Number(g('image').value) || 0, kind: g('kind').value, enabled: g('enabled').checked,
+      dialogs: tr._dialogs || [],
     };
   });
 }
+// ── NPC 对话编辑 (行内手风琴, 与地图设置同一交互语言) ──
+const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', close: '结束对话' };
+const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', close: '' };
+
+/// 对话数据挂在行元素上 (tr._dialogs), 这样切页/收起编辑器都不会丢
+function npcDialogsOf(tr) { return tr._dialogs || (tr._dialogs = []); }
+
+function dlgOptionRow(o) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="wide" data-o="label" value="${(o.label || '').replace(/"/g, '&quot;')}"></td>
+    <td><select data-o="action">${Object.entries(DLG_ACTIONS).map(([k, v]) =>
+        `<option value="${k}"${k === (o.action || 'close') ? ' selected' : ''}>${v}</option>`).join('')}</select></td>
+    <td><input data-o="arg" style="width:120px" value="${(o.arg || '').replace(/"/g, '&quot;')}"></td>
+    <td><button class="ghost" onclick="const t=this.closest('tr'),h=t.closest('.dlg-box');t.remove();syncNpcDialogs(h)">删</button></td>`;
+  const sel = tr.querySelector('[data-o="action"]');
+  const arg = tr.querySelector('[data-o="arg"]');
+  const hint = () => { arg.placeholder = DLG_ARG_HINT[sel.value] || ''; arg.disabled = sel.value === 'close'; };
+  hint();
+  sel.addEventListener('change', hint);
+  return tr;
+}
+
+function dlgPageBlock(d) {
+  const box = document.createElement('div');
+  box.className = 'dlg-page';
+  box.innerHTML = `
+    <div class="dlg-head">
+      <label>页号 <input data-p="page" style="width:56px" value="${d.page ?? 1}"></label>
+      <button class="ghost" onclick="const b=this.closest('.dlg-page'),h=b.closest('.dlg-box');b.remove();syncNpcDialogs(h)">删除本页</button>
+    </div>
+    <textarea data-p="text" rows="3" placeholder="这一页 NPC 说的话">${d.text || ''}</textarea>
+    <table class="dlg-opts">
+      <thead><tr><th>选项文字</th><th>动作</th><th>参数</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button class="ghost" onclick="const b=this.closest('.dlg-page');b.querySelector('tbody').appendChild(dlgOptionRow({}));syncNpcDialogs(b.closest('.dlg-box'))">+ 选项</button>`;
+  const tb = box.querySelector('tbody');
+  (d.options || []).forEach(o => tb.appendChild(dlgOptionRow(o)));
+  return box;
+}
+
+/// 编辑器 DOM → tr._dialogs (每次改动都回写, 保存时直接取)
+function syncNpcDialogs(boxEl) {
+  const tr = boxEl._owner;
+  if (!tr) return;
+  tr._dialogs = [...boxEl.querySelectorAll('.dlg-page')].map(b => ({
+    page: Number(b.querySelector('[data-p="page"]').value) || 1,
+    text: b.querySelector('[data-p="text"]').value,
+    options: [...b.querySelectorAll('.dlg-opts tbody tr')].map(r => ({
+      label: r.querySelector('[data-o="label"]').value.trim(),
+      action: r.querySelector('[data-o="action"]').value,
+      arg: r.querySelector('[data-o="arg"]').value.trim(),
+    })),
+  }));
+}
+
+function toggleNpcDialogs(btn) {
+  const tr = btn.closest('tr');
+  const open = tr.nextElementSibling;
+  if (open && open.classList.contains('npc-dlg')) { open.remove(); return; }
+  document.querySelectorAll('#npc-table > tbody > tr.npc-dlg').forEach(r => r.remove());
+  const row = document.createElement('tr');
+  row.className = 'npc-dlg';
+  const td = document.createElement('td');
+  td.colSpan = 9;
+  const box = document.createElement('div');
+  box.className = 'dlg-box';
+  box._owner = tr;
+  box.addEventListener('input', () => syncNpcDialogs(box));
+  box.addEventListener('change', () => syncNpcDialogs(box));
+  const pages = document.createElement('div');
+  npcDialogsOf(tr).forEach(d => pages.appendChild(dlgPageBlock(d)));
+  const add = document.createElement('button');
+  add.className = 'ghost';
+  add.textContent = '+ 新增对话页';
+  add.onclick = () => {
+    const next = Math.max(0, ...[...pages.querySelectorAll('[data-p="page"]')].map(i => Number(i.value) || 0)) + 1;
+    pages.appendChild(dlgPageBlock({ page: next, text: '', options: [] }));
+    syncNpcDialogs(box);
+  };
+  box.append(pages, add);
+  td.appendChild(box);
+  row.appendChild(td);
+  tr.after(row);
+}
+
 // NPC 形象库弹层: 每格一个库 (与物品图标不同, 那里是同库连续帧)
 let npcPickStart = 0, npcPickTarget = null;
 const NPC_PICK_COUNT = 64, NPC_PICK_COLS = 8, NPC_PICK_CW = 96, NPC_PICK_CH = 120;
@@ -1086,7 +1184,7 @@ function drawMarkers() {
     add(parseFloat(t[2].value) || 0, parseFloat(t[3].value) || 0, '#e04040', '刷新点 ' + t[0].value);
   });
   // 本图 NPC (来自 NPC 表, 未保存的改动也一并显示)
-  document.querySelectorAll('#npc-table tbody tr').forEach(tr => {
+  document.querySelectorAll('#npc-table > tbody > tr:not(.npc-dlg)').forEach(tr => {
     const g = c => tr.querySelector(`[data-c="${c}"]`);
     if (g('map').value !== zoneEditing || !g('enabled').checked) return;
     add(parseFloat(g('x').value) || 0, parseFloat(g('y').value) || 0, '#9a7de0', 'NPC ' + g('name').value);
