@@ -118,6 +118,7 @@ fn main() {
                 net_reconnect,
                 dev_autologin,
                 dev_screenshot,
+                dev_talk,
                 panels::dev_open,
                 (screens::text_input, screens::login_update)
                     .chain()
@@ -164,6 +165,8 @@ fn main() {
                     panels::tooltip,
                     panels::dialog,
                     panels::dialog_clicks,
+                    panels::shop,
+                    panels::shop_clicks,
                     panels::refresh,
                 )
                     .run_if(in_state(Screen::InGame)),
@@ -217,6 +220,12 @@ struct Net {
     dialog: Option<NpcDialog>,
     /// 对话版本 (变化时重建对话框)
     dialog_rev: u32,
+    /// 金币
+    gold: u64,
+    /// 当前打开的商店 (None = 没开)
+    shop: Option<NpcShop>,
+    /// 商店版本 (变化时重建商店窗)
+    shop_rev: u32,
     /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
     chatlog: Vec<(String, String)>,
     /// 地面掉落物 (服务器快照驱动)
@@ -1620,6 +1629,27 @@ fn net_pump(
                     });
                     net.dialog_rev += 1;
                 }
+                ServerMessage::NpcShop {
+                    npc_id,
+                    name,
+                    items,
+                    sell_rate,
+                } => {
+                    net.shop = Some(NpcShop {
+                        npc_id,
+                        name,
+                        items,
+                        sell_rate,
+                    });
+                    net.shop_rev += 1;
+                }
+                ServerMessage::GoldChanged { gold } => {
+                    net.gold = gold;
+                    net.inv_rev += 1; // 背包底栏显示金币
+                    if net.shop.is_some() {
+                        net.shop_rev += 1; // 商店窗底栏也显示金币
+                    }
+                }
                 ServerMessage::NpcDialogEnd => {
                     net.dialog = None;
                     net.dialog_rev += 1;
@@ -2130,6 +2160,16 @@ fn remote_step(
 #[derive(Resource, Default)]
 pub struct NpcHits(HashMap<String, Rect>);
 
+/// 当前打开的 NPC 商店
+#[derive(Clone)]
+pub struct NpcShop {
+    pub npc_id: String,
+    pub name: String,
+    pub items: Vec<protocol::ShopItemInfo>,
+    /// 回收价比例 (卖价 = 物品基准价 × 它)
+    pub sell_rate: f64,
+}
+
 /// 当前显示的 NPC 对话页
 #[derive(Clone)]
 pub struct NpcDialog {
@@ -2222,6 +2262,38 @@ fn npc_step(
             npc.id.clone(),
             Rect::new(px, -py - size.y, px + size.x, -py),
         );
+    }
+}
+
+/// 开发钩子: MIRFORGE_TALK=npc_id[:选项下标] — 进图后自动搭话并选一项
+///
+/// UI 自查用: 对话框/商店窗都靠点 NPC 才出得来, 用鼠标脚本瞄精灵很不稳。
+fn dev_talk(net: ResMut<Net>, time: Res<Time>, mut stage: Local<u8>, mut seen_dialog: Local<u32>) {
+    let Ok(cfg) = std::env::var("MIRFORGE_TALK") else {
+        return;
+    };
+    let (npc, opt) = match cfg.split_once(':') {
+        Some((n, i)) => (n.to_string(), i.parse::<u32>().ok()),
+        None => (cfg, None),
+    };
+    // 等进图站稳再开口
+    if *stage == 0 && time.elapsed_secs_f64() > 6.0 && !net.npcs.is_empty() {
+        *stage = 1;
+        net.send(ClientMessage::TalkNpc { npc_id: npc });
+        return;
+    }
+    if *stage == 1 {
+        if let (Some(idx), Some(d)) = (opt, net.dialog.as_ref()) {
+            if *seen_dialog != net.dialog_rev {
+                *seen_dialog = net.dialog_rev;
+                *stage = 2;
+                net.send(ClientMessage::NpcOption {
+                    npc_id: d.npc_id.clone(),
+                    page: d.page,
+                    idx,
+                });
+            }
+        }
     }
 }
 

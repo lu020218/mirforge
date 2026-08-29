@@ -57,5 +57,65 @@
         ]
       }
     ]
+  },
+  {
+    "id": "bichon_merchant",
+    "name": "比奇杂货商",
+    "map": "0.map",
+    "x": 328.5,
+    "y": 153.5,
+    "image": 1,
+    "kind": "shop",
+    "enabled": true,
+    "dialogs": [
+      {
+        "page": 1,
+        "text": "客官，刀枪衣甲一应俱全，看看有没有中意的？\n用不上的东西也可以出手给我，价钱好商量。",
+        "options": [
+          {
+            "label": "我看看货",
+            "action": "shop",
+            "arg": ""
+          },
+          {
+            "label": "随便逛逛",
+            "action": "close",
+            "arg": ""
+          }
+        ]
+      }
+    ],
+    "shop": [
+      {
+        "item": "wooden_sword",
+        "price": 0,
+        "stock": -1
+      },
+      {
+        "item": "iron_sword",
+        "price": 0,
+        "stock": 3
+      },
+      {
+        "item": "cloth_armor",
+        "price": 0,
+        "stock": -1
+      },
+      {
+        "item": "leather_armor",
+        "price": 0,
+        "stock": 2
+      },
+      {
+        "item": "leather_helmet",
+        "price": 0,
+        "stock": -1
+      },
+      {
+        "item": "copper_ring",
+        "price": 0,
+        "stock": -1
+      }
+    ]
   }
 ]

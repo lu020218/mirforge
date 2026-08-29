@@ -25,6 +25,7 @@ pub struct CharacterRow {
     pub gender: String,
     pub level: u32,
     pub exp: u64,
+    pub gold: u64,
     pub zone: String,
     pub inventory: Vec<protocol::ItemInfo>,
     pub equipment: std::collections::HashMap<String, protocol::ItemInfo>,
@@ -110,6 +111,9 @@ impl Db {
                 .execute(&pool)
                 .await;
         let _ = sqlx::query("ALTER TABLE characters ADD COLUMN quests TEXT NOT NULL DEFAULT '{}'")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE characters ADD COLUMN gold INTEGER NOT NULL DEFAULT 0")
             .execute(&pool)
             .await;
         let _ = sqlx::query("ALTER TABLE characters ADD COLUMN zone TEXT NOT NULL DEFAULT '0.map'")
@@ -213,7 +217,7 @@ impl Db {
         character_id: &str,
     ) -> Result<Option<CharacterRow>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, name, class, gender, level, exp, zone, x, y, inventory, equipment, quests FROM characters WHERE id = ? AND account_id = ?",
+            "SELECT id, name, class, gender, level, exp, gold, zone, x, y, inventory, equipment, quests FROM characters WHERE id = ? AND account_id = ?",
         )
         .bind(character_id)
         .bind(account_id)
@@ -226,6 +230,7 @@ impl Db {
             gender: r.get("gender"),
             level: r.get::<i64, _>("level") as u32,
             exp: r.get::<i64, _>("exp") as u64,
+            gold: r.get::<i64, _>("gold").max(0) as u64,
             zone: r.get("zone"),
             inventory: serde_json::from_str(&r.get::<String, _>("inventory")).unwrap_or_default(),
             equipment: serde_json::from_str(&r.get::<String, _>("equipment")).unwrap_or_default(),
@@ -289,6 +294,15 @@ impl Db {
         sqlx::query("UPDATE characters SET level = ?, exp = ? WHERE id = ?")
             .bind(level as i64)
             .bind(exp as i64)
+            .bind(character_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn save_gold(&self, character_id: &str, gold: u64) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE characters SET gold = ? WHERE id = ?")
+            .bind(gold as i64)
             .bind(character_id)
             .execute(&self.pool)
             .await?;

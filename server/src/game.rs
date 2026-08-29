@@ -280,7 +280,30 @@ pub struct NpcDef {
     /// 对话页; 空 = 点击只弹一句缺省招呼
     #[serde(default)]
     pub dialogs: Vec<NpcDialogPage>,
+    /// 售货清单 (kind=shop 时有效)
+    #[serde(default)]
+    pub shop: Vec<ShopEntry>,
 }
+
+/// 商店一行: 卖什么 / 多少钱 / 还有几件
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShopEntry {
+    /// 物品模板 id
+    pub item: String,
+    /// 售价; 0 = 用物品基准价
+    #[serde(default)]
+    pub price: u32,
+    /// 库存; -1 = 无限
+    #[serde(default = "unlimited_stock")]
+    pub stock: i32,
+}
+
+fn unlimited_stock() -> i32 {
+    -1
+}
+
+/// 回收价占售价的比例 (经典传奇卖给 NPC 都要打折)
+pub const SELL_RATE: f64 = 0.5;
 
 /// 一页对话 = 一段文本 + 若干选项
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -410,6 +433,25 @@ impl GameData {
             if n.name.trim().is_empty() {
                 errs.push(format!("NPC {} 名称为空", n.id));
             }
+            // 商店: 引用的物品模板要存在, 且不能重复上架
+            let mut sseen = std::collections::HashSet::new();
+            for e in &n.shop {
+                if !self.items.iter().any(|i| i.template == e.item) {
+                    errs.push(format!("NPC {} 售货清单引用的物品不存在: {}", n.id, e.item));
+                }
+                if !sseen.insert(&e.item) {
+                    errs.push(format!("NPC {} 售货清单重复上架: {}", n.id, e.item));
+                }
+                if e.stock < -1 {
+                    errs.push(format!(
+                        "NPC {} 售货 {} 的库存只能是 -1(无限) 或 ≥0, 收到 {}",
+                        n.id, e.item, e.stock
+                    ));
+                }
+            }
+            if n.kind != "shop" && !n.shop.is_empty() {
+                errs.push(format!("NPC {} 配了售货清单, 但类型不是「商店」", n.id));
+            }
             // 对话页: 页号唯一, 跳页目标存在, 任务动作引用的任务存在
             let pages: std::collections::HashSet<u32> = n.dialogs.iter().map(|d| d.page).collect();
             if pages.len() != n.dialogs.len() {
@@ -431,6 +473,16 @@ impl GameData {
                                     "NPC {} 第 {} 页选项「{}」引用的任务不存在: {}",
                                     n.id, d.page, o.label, o.arg
                                 ));
+                            }
+                        }
+                        "shop" => {
+                            if n.kind != "shop" {
+                                errs.push(format!(
+                                    "NPC {} 第 {} 页有「商店」选项, 但类型不是「商店」",
+                                    n.id, d.page
+                                ));
+                            } else if n.shop.is_empty() {
+                                errs.push(format!("NPC {} 有「商店」选项但售货清单是空的", n.id));
                             }
                         }
                         // teleport 的目标地图/落点要走格数据, 见 check_npc_placement
@@ -470,6 +522,9 @@ pub struct ItemDef {
     pub image: u16,
     /// 外观库号 (weapon → CWeapon, armor → CArmour)
     pub shape: u16,
+    /// 基准价 (金币)。商店未单独定价时按它卖; 回收价 = 基准价 × SELL_RATE
+    #[serde(default)]
+    pub price: u32,
 }
 
 fn item_def(template: &str) -> Option<ItemDef> {
@@ -696,6 +751,7 @@ struct PlayerState {
     max_mp: i32,
     level: u32,
     exp: u64,
+    gold: u64,
     last_attack: Instant,
     /// 技能 id → 冷却结束时刻
     cooldowns: HashMap<String, Instant>,
@@ -1074,6 +1130,159 @@ impl Game {
         self.send_enter_zone_only(conn_id, &char_id, tx, ty).await;
     }
 
+    /// 商店某件货的实际售价 (商店未单独定价则用物品基准价)
+    fn shop_price(e: &ShopEntry) -> u32 {
+        if e.price > 0 {
+            e.price
+        } else {
+            item_def(&e.item).map(|d| d.price).unwrap_or(0)
+        }
+    }
+
+    /// 打开商店: 把货架下发给客户端
+    async fn send_npc_shop(&self, conn_id: &str, npc: &NpcDef) {
+        let items: Vec<protocol::ShopItemInfo> = npc
+            .shop
+            .iter()
+            .filter(|e| e.stock != 0) // 卖光的不上架
+            .filter_map(|e| {
+                let d = item_def(&e.item)?;
+                Some(protocol::ShopItemInfo {
+                    template: d.template,
+                    name: d.name,
+                    image: d.image,
+                    price: Self::shop_price(e),
+                    stock: e.stock,
+                    attack: d.attack,
+                    defense: d.defense,
+                    hp: d.hp,
+                    slot: d.slot,
+                })
+            })
+            .collect();
+        send_to(
+            &self.sessions,
+            conn_id,
+            ServerMessage::NpcShop {
+                npc_id: npc.id.clone(),
+                name: npc.name.clone(),
+                items,
+                sell_rate: SELL_RATE,
+            },
+        )
+        .await;
+    }
+
+    async fn notify(&self, conn_id: &str, msg: &str) {
+        send_to(
+            &self.sessions,
+            conn_id,
+            ServerMessage::Notification {
+                message: msg.into(),
+                notification_type: "system".into(),
+            },
+        )
+        .await;
+    }
+
+    async fn send_gold(&self, conn_id: &str, gold: u64) {
+        send_to(&self.sessions, conn_id, ServerMessage::GoldChanged { gold }).await;
+    }
+
+    /// 买入一件: 距离/货架/库存/金币/背包位 逐项校验
+    async fn handle_buy_item(&mut self, conn_id: &str, npc_id: &str, template: &str) {
+        let Some(npc) = self.npc_in_reach(conn_id, npc_id) else {
+            return;
+        };
+        let Some(entry) = npc.shop.iter().find(|e| e.item == template) else {
+            return; // 不卖这个 —— 伪造的请求, 静默丢弃
+        };
+        if entry.stock == 0 {
+            self.notify(conn_id, "这件货已经卖完了").await;
+            return;
+        }
+        let price = Self::shop_price(entry);
+        let Some(item) = make_item(template) else {
+            return;
+        };
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        // 先判定再动状态: notify 要借 &self, 不能在持有 players 可变借用时调
+        enum Deny {
+            BagFull,
+            NoGold,
+        }
+        let deny = {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            if p.inventory.len() >= MAX_INVENTORY {
+                Some(Deny::BagFull)
+            } else if p.gold < price as u64 {
+                Some(Deny::NoGold)
+            } else {
+                p.gold -= price as u64;
+                p.inventory.push(item);
+                None
+            }
+        };
+        match deny {
+            Some(Deny::BagFull) => return self.notify(conn_id, "背包已满").await,
+            Some(Deny::NoGold) => return self.notify(conn_id, "金币不足").await,
+            None => {}
+        }
+        // 有限库存要扣, 并把新货架推回去
+        if entry.stock > 0 {
+            let mut d = (*data()).clone();
+            if let Some(e) = d
+                .npcs
+                .iter_mut()
+                .find(|n| n.id == npc_id)
+                .and_then(|n| n.shop.iter_mut().find(|e| e.item == template))
+            {
+                e.stock -= 1;
+            }
+            set_data(d);
+        }
+        let gold = self.players.get(&char_id).map(|p| p.gold).unwrap_or(0);
+        let _ = self.db.save_gold(&char_id, gold).await;
+        self.send_gold(conn_id, gold).await;
+        self.send_inventory(&char_id).await;
+        if let Some(npc) = self.npc_in_reach(conn_id, npc_id) {
+            self.send_npc_shop(conn_id, &npc).await; // 库存变了, 刷新货架
+        }
+    }
+
+    /// 卖出一件: 按售价 × SELL_RATE 回收
+    async fn handle_sell_item(&mut self, conn_id: &str, npc_id: &str, item_id: &str) {
+        if self.npc_in_reach(conn_id, npc_id).is_none() {
+            return;
+        }
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let sold = {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            let Some(idx) = p.inventory.iter().position(|i| i.id == item_id) else {
+                return;
+            };
+            let item = p.inventory.remove(idx);
+            let base = item_def(&item.template).map(|d| d.price).unwrap_or(0);
+            let paid = ((base as f64) * SELL_RATE).floor() as u64;
+            p.gold = p.gold.saturating_add(paid);
+            (item.name, paid, p.gold)
+        };
+        let (name, paid, gold) = sold;
+        let _ = self.db.save_gold(&char_id, gold).await;
+        self.send_gold(conn_id, gold).await;
+        self.send_inventory(&char_id).await;
+        self.notify(conn_id, &format!("卖出 {name}, 得 {paid} 金币"))
+            .await;
+    }
+
     /// 选项动作分发
     async fn handle_npc_option(&mut self, conn_id: &str, npc_id: &str, page: u32, idx: u32) {
         let Some(npc) = self.npc_in_reach(conn_id, npc_id) else {
@@ -1105,6 +1314,10 @@ impl Game {
             "teleport" => {
                 send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
                 self.teleport_by_npc(conn_id, &opt.arg).await;
+            }
+            "shop" => {
+                send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+                self.send_npc_shop(conn_id, &npc).await;
             }
             _ => send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await,
         }
@@ -1566,6 +1779,12 @@ impl Game {
             ClientMessage::NpcOption { npc_id, page, idx } => {
                 self.handle_npc_option(&conn_id, &npc_id, page, idx).await;
             }
+            ClientMessage::BuyItem { npc_id, template } => {
+                self.handle_buy_item(&conn_id, &npc_id, &template).await;
+            }
+            ClientMessage::SellItem { npc_id, item_id } => {
+                self.handle_sell_item(&conn_id, &npc_id, &item_id).await;
+            }
             ClientMessage::DropItem { item_id } => {
                 self.handle_drop_item(&conn_id, &item_id).await;
             }
@@ -1672,7 +1891,7 @@ impl Game {
         };
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
-        let (level, exp) = (c.level, c.exp);
+        let (level, exp, gold) = (c.level, c.exp, c.gold);
         let (c_inventory, c_equipment, c_quests) =
             (c.inventory.clone(), c.equipment.clone(), c.quests.clone());
         self.players.insert(
@@ -1695,6 +1914,7 @@ impl Game {
                 max_mp: max_mp_for(level),
                 level,
                 exp,
+                gold,
                 last_attack: Instant::now() - PLAYER_ATTACK_CD,
                 cooldowns: HashMap::new(),
                 inventory: c_inventory,
@@ -1818,6 +2038,8 @@ impl Game {
         )
         .await;
         self.send_npc_list(conn_id, &zone_of_npc).await;
+        let gold = self.players.get(character_id).map(|p| p.gold).unwrap_or(0);
+        self.send_gold(conn_id, gold).await;
     }
 
     /// 移动校验：步长按时间窗限幅 → sim 同源判定（客户端预测调同一函数）。
@@ -2944,6 +3166,7 @@ mod tests {
                 gender: "male".into(),
                 level,
                 exp: 0,
+                gold: 0,
                 zone: zone.into(),
                 inventory: Vec::new(),
                 equipment: HashMap::new(),
@@ -2954,6 +3177,7 @@ mod tests {
             zone: zone.into(),
             x,
             y,
+            gold: 0,
             moving: false,
             running: false,
             last_move: Instant::now(),

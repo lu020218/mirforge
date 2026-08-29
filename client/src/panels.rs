@@ -368,6 +368,7 @@ pub fn item_drag(
     q_bag: Query<(&Interaction, &EquipItem)>,
     q_slot: Query<(&Interaction, &EquipSlotTarget)>,
     q_panel: Query<(&Panel, &RelativeCursorPosition)>,
+    q_shop: Query<&RelativeCursorPosition, With<ShopRoot>>,
 ) {
     grab.released = false;
     // 右键取消: 提起本就没动服务端状态, 清掉即可
@@ -412,7 +413,23 @@ pub fn item_drag(
         grab.take();
         return;
     }
-    // 2) 落在背包面板内 — 从装备栏提起的即为脱下, 从背包提起的原样放回
+    // 2) 落在商店窗上 — 卖出 (装备栏提起的先脱下再卖)
+    if q_shop.iter().any(|r| r.mouse_over()) {
+        if let Some(sh) = &net.shop {
+            if let GrabFrom::Equip(slot) = from {
+                net.send(ClientMessage::Unequip {
+                    slot: slot.to_string(),
+                });
+            }
+            net.send(ClientMessage::SellItem {
+                npc_id: sh.npc_id.clone(),
+                item_id: item.id.clone(),
+            });
+        }
+        grab.take();
+        return;
+    }
+    // 3) 落在背包面板内 — 从装备栏提起的即为脱下, 从背包提起的原样放回
     let in_bag = q_panel
         .iter()
         .any(|(p, r)| p.0 == PanelKind::Bag && r.mouse_over());
@@ -425,12 +442,12 @@ pub fn item_drag(
         grab.take();
         return;
     }
-    // 3) 落在其他 UI 上 — 取消
+    // 4) 落在其他 UI 上 — 取消
     if hover.0 {
         grab.take();
         return;
     }
-    // 4) 落在地面 — 丢弃 (装备上的先脱下再丢, 消息按序处理)
+    // 5) 落在地面 — 丢弃 (装备上的先脱下再丢, 消息按序处理)
     if let GrabFrom::Equip(slot) = from {
         net.send(ClientMessage::Unequip {
             slot: slot.to_string(),
@@ -571,6 +588,238 @@ pub fn dialog_clicks(
             }
             Interaction::Hovered => border.0 = EDGE_GOLD,
             Interaction::None => border.0 = EDGE_DARK,
+        }
+    }
+}
+
+// ─────────── NPC 商店 ───────────
+
+/// 商店窗根节点 (随商店版本重建)
+#[derive(Component)]
+pub struct ShopRoot;
+
+/// 货架上的一行 (点击买入)
+#[derive(Component)]
+pub struct ShopBuy(String);
+
+/// 关闭商店
+#[derive(Component)]
+pub struct ShopClose;
+
+/// 商店窗: 货架逐行 图标/名称/属性/价格, 点行买入; 背包物品提到窗上松手即卖出
+#[allow(clippy::too_many_arguments)]
+pub fn shop(
+    mut commands: Commands,
+    net: Res<Net>,
+    skin: Res<Skin>,
+    world: Res<crate::World>,
+    mut icons: ResMut<crate::ItemIcons>,
+    mut images: ResMut<Assets<Image>>,
+    ui_scale: Res<UiScale>,
+    mut seen_rev: Local<u32>,
+    q_old: Query<Entity, With<ShopRoot>>,
+) {
+    if *seen_rev == net.shop_rev {
+        return;
+    }
+    *seen_rev = net.shop_rev;
+    for e in &q_old {
+        commands.entity(e).despawn_recursive();
+    }
+    let Some(sh) = &net.shop else {
+        return;
+    };
+    let font = skin.font.clone();
+    let rows: Vec<(protocol::ShopItemInfo, Icon)> = sh
+        .items
+        .iter()
+        .map(|it| {
+            (
+                it.clone(),
+                icons.get(it.image, &world.data_root, &mut images),
+            )
+        })
+        .collect();
+    let gold = net.gold;
+    let title = sh.name.clone();
+    commands
+        .spawn((
+            ShopRoot,
+            UiBlock,
+            RelativeCursorPosition::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Px(150.0),
+                margin: UiRect::left(Val::Px(-235.0)),
+                width: Val::Px(470.0),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderColor(EDGE_GOLD),
+            BorderRadius::all(Val::Px(4.0)),
+            GlobalZIndex(20),
+        ))
+        .with_children(|root| {
+            ornate_corners(root);
+            root.spawn((
+                Node {
+                    height: Val::Px(44.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(16.0)),
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(TITLE_BG),
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn(text(&font, title, 15.0, GOLD_BRIGHT));
+                bar.spawn((Button, ShopClose, Node::default()))
+                    .with_children(|x| {
+                        x.spawn(text(&font, "×", 18.0, TEXT_DIM));
+                    });
+            });
+            root.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(12.0)),
+                row_gap: Val::Px(5.0),
+                ..default()
+            })
+            .with_children(|list| {
+                for (it, icon) in rows {
+                    let mut st = Vec::new();
+                    if it.attack > 0 {
+                        st.push(format!("攻+{}", it.attack));
+                    }
+                    if it.defense > 0 {
+                        st.push(format!("防+{}", it.defense));
+                    }
+                    if it.hp > 0 {
+                        st.push(format!("血+{}", it.hp));
+                    }
+                    let stock = if it.stock < 0 {
+                        String::new()
+                    } else {
+                        format!("  余{}", it.stock)
+                    };
+                    list.spawn((
+                        Button,
+                        ShopBuy(it.template.clone()),
+                        Node {
+                            height: Val::Px(BAG_CELL + 6.0),
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(10.0),
+                            padding: UiRect::horizontal(Val::Px(8.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(SLOT_BG),
+                        BorderColor(EDGE_DARK),
+                        BorderRadius::all(Val::Px(3.0)),
+                    ))
+                    .with_children(|row| {
+                        row.spawn((
+                            Node {
+                                width: Val::Px(BAG_CELL),
+                                height: Val::Px(BAG_CELL),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BackgroundColor(SLOT_BG),
+                        ))
+                        .with_children(|s| {
+                            if let Some((h, natural)) = icon {
+                                s.spawn(crisp_icon(h, natural, BAG_CELL, ui_scale.0));
+                            }
+                        });
+                        row.spawn((
+                            Node {
+                                width: Val::Px(120.0),
+                                ..default()
+                            },
+                            Text::new(it.name.clone()),
+                            TextFont {
+                                font: font.clone(),
+                                font_size: 13.0,
+                                ..default()
+                            },
+                            TextColor(QUALITY_COMMON),
+                        ));
+                        row.spawn((
+                            Node {
+                                width: Val::Px(130.0),
+                                ..default()
+                            },
+                            Text::new(st.join(" ")),
+                            TextFont {
+                                font: font.clone(),
+                                font_size: 12.0,
+                                ..default()
+                            },
+                            TextColor(TEXT_DIM),
+                        ));
+                        row.spawn(text(
+                            &font,
+                            format!("{} 金{stock}", it.price),
+                            13.0,
+                            EXP_GOLD,
+                        ));
+                    });
+                }
+            });
+            root.spawn((
+                Node {
+                    height: Val::Px(40.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(16.0)),
+                    border: UiRect::top(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn(text(
+                    &font,
+                    "点一行买入 · 从背包提起物品放到本窗即卖出",
+                    12.0,
+                    TEXT_DIM,
+                ));
+                bar.spawn(text(&font, format!("金币 {gold}"), 12.0, EXP_GOLD));
+            });
+        });
+}
+
+/// 货架点击买入 / 关闭 (关闭只是本地收起, 服务端不存会话)
+pub fn shop_clicks(
+    mut commands: Commands,
+    net: Res<Net>,
+    mut q_buy: Query<(&Interaction, &ShopBuy, &mut BorderColor), Changed<Interaction>>,
+    q_close: Query<&Interaction, (Changed<Interaction>, With<ShopClose>)>,
+    q_root: Query<Entity, With<ShopRoot>>,
+) {
+    for (it, buy, mut border) in q_buy.iter_mut() {
+        match it {
+            Interaction::Pressed => {
+                let Some(sh) = &net.shop else { continue };
+                net.send(ClientMessage::BuyItem {
+                    npc_id: sh.npc_id.clone(),
+                    template: buy.0.clone(),
+                });
+            }
+            Interaction::Hovered => border.0 = EDGE_GOLD,
+            Interaction::None => border.0 = EDGE_DARK,
+        }
+    }
+    if q_close.iter().any(|i| *i == Interaction::Pressed) {
+        for e in &q_root {
+            commands.entity(e).despawn_recursive();
         }
     }
 }
@@ -1010,7 +1259,7 @@ fn build_bag(
                     TEXT_DIM
                 },
             ));
-            bar.spawn(text(&font, "金币 0", 12.0, EXP_GOLD));
+            bar.spawn(text(&font, format!("金币 {}", net.gold), 12.0, EXP_GOLD));
         });
     });
 }

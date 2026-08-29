@@ -90,6 +90,12 @@ pub enum ClientMessage {
     /// 选择对话选项
     #[serde(rename = "npcOption")]
     NpcOption { npc_id: String, page: u32, idx: u32 },
+    /// 向 NPC 买入 (数量固定 1 件, 与原版一致)
+    #[serde(rename = "buyItem")]
+    BuyItem { npc_id: String, template: String },
+    /// 卖给 NPC
+    #[serde(rename = "sellItem")]
+    SellItem { npc_id: String, item_id: String },
     #[serde(rename = "equip")]
     Equip { item_id: String, slot: String },
     #[serde(rename = "unequip")]
@@ -252,6 +258,18 @@ pub enum ServerMessage {
     /// 对话结束 (选了「关闭」或走完动作)
     #[serde(rename = "npcDialogEnd")]
     NpcDialogEnd,
+    /// 打开商店 (对话里选了「商店」动作)
+    #[serde(rename = "npcShop")]
+    NpcShop {
+        npc_id: String,
+        name: String,
+        items: Vec<ShopItemInfo>,
+        /// 回收价比例, 客户端据此显示"卖价"
+        sell_rate: f64,
+    },
+    /// 金币变动
+    #[serde(rename = "goldChanged")]
+    GoldChanged { gold: u64 },
     #[serde(rename = "npcList")]
     NpcList { npcs: Vec<NpcInfo> },
     #[serde(rename = "inventoryState")]
@@ -259,6 +277,22 @@ pub enum ServerMessage {
         inventory: Vec<ItemInfo>,
         equipment: std::collections::HashMap<String, ItemInfo>,
     },
+}
+
+/// 商店里的一件货
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShopItemInfo {
+    pub template: String,
+    pub name: String,
+    pub image: u16,
+    pub price: u32,
+    /// -1 = 无限
+    pub stock: i32,
+    /// 属性摘要 (攻/防/血), 供 Tips 显示
+    pub attack: i32,
+    pub defense: i32,
+    pub hp: i32,
+    pub slot: String,
 }
 
 /// 对话页上的一个可选项 (idx 用于回传, 客户端不关心动作)

@@ -7,7 +7,8 @@
     "name": "木剑",
     "shape": 0,
     "slot": "weapon",
-    "template": "wooden_sword"
+    "template": "wooden_sword",
+    "price": 60
   },
   {
     "attack": 6,
@@ -17,7 +18,8 @@
     "name": "铁剑",
     "shape": 5,
     "slot": "weapon",
-    "template": "iron_sword"
+    "template": "iron_sword",
+    "price": 320
   },
   {
     "attack": 0,
@@ -27,7 +29,8 @@
     "name": "布衣",
     "shape": 1,
     "slot": "armor",
-    "template": "cloth_armor"
+    "template": "cloth_armor",
+    "price": 80
   },
   {
     "attack": 0,
@@ -37,7 +40,8 @@
     "name": "皮甲",
     "shape": 2,
     "slot": "armor",
-    "template": "leather_armor"
+    "template": "leather_armor",
+    "price": 400
   },
   {
     "attack": 0,
@@ -47,7 +51,8 @@
     "name": "皮盔",
     "shape": 0,
     "slot": "helmet",
-    "template": "leather_helmet"
+    "template": "leather_helmet",
+    "price": 150
   },
   {
     "attack": 2,
@@ -57,7 +62,8 @@
     "name": "琥珀项链",
     "shape": 0,
     "slot": "necklace",
-    "template": "amber_necklace"
+    "template": "amber_necklace",
+    "price": 260
   },
   {
     "attack": 1,
@@ -67,6 +73,7 @@
     "name": "铜戒指",
     "shape": 0,
     "slot": "ring",
-    "template": "copper_ring"
+    "template": "copper_ring",
+    "price": 140
   }
 ]

@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::game::{
     DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, NpcDialogPage, NpcOptionDef,
-    PortalSidecar, QuestDef, SkillDef, SkillKind, SkillsCfg, ZoneSidecar,
+    PortalSidecar, QuestDef, ShopEntry, SkillDef, SkillKind, SkillsCfg, ZoneSidecar,
 };
 
 /// 建表（幂等）
@@ -97,6 +97,14 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             ord INTEGER NOT NULL DEFAULT 0
         )",
+        "CREATE TABLE IF NOT EXISTS cfg_npc_shop (
+            npc_id TEXT NOT NULL,
+            item TEXT NOT NULL,
+            price INTEGER NOT NULL DEFAULT 0,
+            stock INTEGER NOT NULL DEFAULT -1,
+            ord INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (npc_id, item)
+        )",
         "CREATE TABLE IF NOT EXISTS cfg_npc_dialogs (
             npc_id TEXT NOT NULL,
             page INTEGER NOT NULL,
@@ -121,6 +129,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(ddl).execute(pool).await?;
     }
     // 旧库升级 (列已存在则忽略)
+    let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN price INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN minimap INTEGER")
         .execute(pool)
         .await;
@@ -140,7 +151,7 @@ pub async fn is_empty(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 
 pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> {
     let items = sqlx::query(
-        "SELECT template, name, slot, attack, defense, hp, image, shape
+        "SELECT template, name, slot, attack, defense, hp, image, shape, price
          FROM cfg_items ORDER BY ord, template",
     )
     .fetch_all(pool)
@@ -155,6 +166,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         hp: r.get::<i64, _>("hp") as i32,
         image: r.get::<i64, _>("image") as u16,
         shape: r.get::<i64, _>("shape") as u16,
+        price: r.get::<i64, _>("price").max(0) as u32,
     })
     .collect();
 
@@ -237,8 +249,20 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         kind: r.get("kind"),
         enabled: r.get::<i64, _>("enabled") != 0,
         dialogs: Vec::new(),
+        shop: Vec::new(),
     })
     .collect();
+    let mut shops: HashMap<String, Vec<ShopEntry>> = HashMap::new();
+    for r in sqlx::query("SELECT npc_id, item, price, stock FROM cfg_npc_shop ORDER BY npc_id, ord")
+        .fetch_all(pool)
+        .await?
+    {
+        shops.entry(r.get("npc_id")).or_default().push(ShopEntry {
+            item: r.get("item"),
+            price: r.get::<i64, _>("price").max(0) as u32,
+            stock: r.get::<i64, _>("stock") as i32,
+        });
+    }
     // 对话页与选项分表存, 读出来再按 npc_id/page 挂回去
     let mut pages: HashMap<String, Vec<NpcDialogPage>> = HashMap::new();
     for r in sqlx::query("SELECT npc_id, page, text FROM cfg_npc_dialogs ORDER BY npc_id, page")
@@ -277,6 +301,9 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         if let Some(d) = pages.remove(&n.id) {
             n.dialogs = d;
         }
+        if let Some(sh) = shops.remove(&n.id) {
+            n.shop = sh;
+        }
     }
 
     Ok(GameData {
@@ -289,7 +316,12 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
 
 pub async fn save_npcs(pool: &SqlitePool, npcs: &[NpcDef]) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    for t in ["cfg_npcs", "cfg_npc_dialogs", "cfg_npc_options"] {
+    for t in [
+        "cfg_npcs",
+        "cfg_npc_dialogs",
+        "cfg_npc_options",
+        "cfg_npc_shop",
+    ] {
         sqlx::query(&format!("DELETE FROM {t}"))
             .execute(&mut *tx)
             .await?;
@@ -310,6 +342,18 @@ pub async fn save_npcs(pool: &SqlitePool, npcs: &[NpcDef]) -> Result<(), sqlx::E
         .bind(i as i64)
         .execute(&mut *tx)
         .await?;
+        for (si, e) in n.shop.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO cfg_npc_shop (npc_id, item, price, stock, ord) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&n.id)
+            .bind(&e.item)
+            .bind(e.price as i64)
+            .bind(e.stock as i64)
+            .bind(si as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
         for d in &n.dialogs {
             sqlx::query("INSERT INTO cfg_npc_dialogs (npc_id, page, text) VALUES (?, ?, ?)")
                 .bind(&n.id)
@@ -419,8 +463,8 @@ pub async fn save_items(pool: &SqlitePool, items: &[ItemDef]) -> Result<(), sqlx
         .await?;
     for (i, d) in items.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO cfg_items (template, name, slot, attack, defense, hp, image, shape, ord)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cfg_items (template, name, slot, attack, defense, hp, image, shape, price, ord)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&d.template)
         .bind(&d.name)
@@ -430,6 +474,7 @@ pub async fn save_items(pool: &SqlitePool, items: &[ItemDef]) -> Result<(), sqlx
         .bind(d.hp as i64)
         .bind(d.image as i64)
         .bind(d.shape as i64)
+        .bind(d.price as i64)
         .bind(i as i64)
         .execute(&mut *tx)
         .await?;

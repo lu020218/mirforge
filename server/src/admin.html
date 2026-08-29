@@ -102,6 +102,8 @@
   .dlg-loc { border: 1px solid var(--gold-edge); border-radius: 4px;
              padding: 10px 12px; margin-bottom: 10px; background: rgba(0,0,0,.18); }
   .dlg-loc .mv-slot { min-height: 40px; }
+  .shop-tbl { width: auto; margin-bottom: 6px; }
+  .shop-tbl th { font-weight: normal; }
   #picker img, #mmpicker img, #npc-picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
 </style>
 </head>
@@ -156,7 +158,7 @@
       <div id="err-items" class="err-msg"></div>
       <div class="card-box">
         <table id="item-table">
-          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
+          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th title="商店基准价; 回收价 = 基准价 × 50%">价格</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -463,8 +465,8 @@ async function saveAll() {
 }
 
 // ── 物品 ──
-const ITEM_COLS = ['template','name','slot','attack','defense','hp','image','shape'];
-const NUM_COLS = new Set(['attack','defense','hp','image','shape']);
+const ITEM_COLS = ['template','name','slot','attack','defense','hp','price','image','shape'];
+const NUM_COLS = new Set(['attack','defense','hp','price','image','shape']);
 function itemRow(it) {
   const tr = document.createElement('tr');
   tr.innerHTML = ITEM_COLS.map(c => {
@@ -479,7 +481,7 @@ function itemRow(it) {
 }
 function addItemRow() {
   document.querySelector('#item-table tbody').appendChild(itemRow(
-    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, defense: 0, hp: 0, image: 0, shape: 0 }));
+    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, defense: 0, hp: 0, price: 0, image: 0, shape: 0 }));
 }
 function collectItems() {
   return [...document.querySelectorAll('#item-table tbody tr')].map(tr => {
@@ -599,6 +601,7 @@ function npcRow(n) {
         <button class="ghost" onclick="toggleNpcDialogs(this)">对话</button>
         <button class="ghost" onclick="const t=this.closest('tr'),n=t.nextElementSibling;if(n&&n.classList.contains('npc-dlg'))n.remove();t.remove()">删</button></td>`;
   tr._dialogs = (n.dialogs || []).map(d => ({ page: d.page, text: d.text, options: (d.options || []).slice() }));
+  tr._shop = (n.shop || []).map(e => ({ item: e.item, price: e.price, stock: e.stock }));
   tr.querySelector('input[data-c="image"]').addEventListener('change', e => {
     tr.querySelector('img.icon').src = '/api/frame/npc/' + (Number(e.target.value) || 0);
   });
@@ -610,8 +613,12 @@ function npcRow(n) {
 function refreshNpcSummary(tr) {
   const el = tr.querySelector('.npc-sum');
   if (!el) return;
-  const n = (tr._dialogs || []).length;
-  el.textContent = n ? `对话 ${n} 页` : '—';
+  const parts = [];
+  const d = (tr._dialogs || []).length;
+  const sh = (tr._shop || []).length;
+  if (d) parts.push(`对话 ${d} 页`);
+  if (sh) parts.push(`商店 ${sh} 件`);
+  el.textContent = parts.join(' · ') || '—';
 }
 
 function bindNpcMarkers(tr) {
@@ -653,12 +660,76 @@ function collectNpcs() {
       x: Number(g('x').value) || 0, y: Number(g('y').value) || 0,
       image: Number(g('image').value) || 0, kind: g('kind').value, enabled: g('enabled').checked,
       dialogs: tr._dialogs || [],
+      shop: tr._shop || [],
     };
   });
 }
+// ── NPC 售货清单编辑 (类型为「商店」时才生效) ──
+/// 售货数据同样挂在行元素上 (tr._shop), 与对话一致
+function npcShopOf(tr) { return tr._shop || (tr._shop = []); }
+
+/// 物品下拉: 取自当前物品表, 顺带把基准价显示出来便于定价
+function itemOptions(sel) {
+  const rows = [...document.querySelectorAll('#item-table tbody tr')].map(tr => ({
+    t: tr.querySelector('[data-c="template"]').value,
+    n: tr.querySelector('[data-c="name"]').value,
+    p: tr.querySelector('[data-c="price"]').value,
+  })).filter(r => r.t);
+  if (!rows.length && sel) rows.push({ t: sel, n: sel, p: '' });
+  return rows.map(r =>
+    `<option value="${r.t}"${r.t === sel ? ' selected' : ''}>${r.n} [${r.t}] 基准价 ${r.p || 0}</option>`).join('');
+}
+
+function shopRowEl(e) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><select data-s="item">${itemOptions(e.item)}</select></td>
+    <td><input data-s="price" style="width:90px" value="${e.price ?? 0}" placeholder="0=用基准价"></td>
+    <td><input data-s="stock" style="width:90px" value="${e.stock ?? -1}" placeholder="-1=无限"></td>
+    <td><button class="ghost" onclick="const t=this.closest('tr'),h=t.closest('.dlg-box');t.remove();syncNpcShop(h)">删</button></td>`;
+  return tr;
+}
+
+/// 编辑器 DOM → tr._shop
+function syncNpcShop(boxEl) {
+  const tr = boxEl._owner;
+  if (!tr) return;
+  tr._shop = [...boxEl.querySelectorAll('.shop-tbl tbody tr')].map(r => ({
+    item: r.querySelector('[data-s="item"]').value,
+    price: Number(r.querySelector('[data-s="price"]').value) || 0,
+    stock: r.querySelector('[data-s="stock"]').value.trim() === '' ? -1
+         : Number(r.querySelector('[data-s="stock"]').value),
+  }));
+  queueMicrotask(() => refreshNpcSummary(tr));
+}
+
+/// 商店段: 只有类型=商店时可编辑, 否则给一句说明 (服务端也会校验)
+function shopSection(tr) {
+  const box = document.createElement('div');
+  box.className = 'dlg-loc';
+  const isShop = tr.querySelector('[data-c="kind"]').value === 'shop';
+  box.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">售货清单</b>
+    <span class="hint">${isShop ? '价格填 0 则用物品基准价 · 库存 -1 为无限 · 回收价 = 基准价 × 50%'
+                               : '当前类型不是「商店」，改成商店后才能配货'}</span></div>`;
+  if (!isShop) return box;
+  const tbl = document.createElement('table');
+  tbl.className = 'shop-tbl';
+  tbl.innerHTML = '<thead><tr><th>物品</th><th>售价</th><th>库存</th><th></th></tr></thead><tbody></tbody>';
+  npcShopOf(tr).forEach(e => tbl.querySelector('tbody').appendChild(shopRowEl(e)));
+  const add = document.createElement('button');
+  add.className = 'ghost';
+  add.textContent = '+ 上架物品';
+  add.onclick = () => {
+    tbl.querySelector('tbody').appendChild(shopRowEl({ price: 0, stock: -1 }));
+    syncNpcShop(box.closest('.dlg-box'));
+  };
+  box.append(tbl, add);
+  return box;
+}
+
 // ── NPC 对话编辑 (行内手风琴, 与地图设置同一交互语言) ──
-const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', teleport: '传送', close: '结束对话' };
-const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', teleport: '地图:x:y', close: '' };
+const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', shop: '打开商店', teleport: '传送', close: '结束对话' };
+const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', shop: '', teleport: '地图:x:y', close: '' };
 
 /// 对话数据挂在行元素上 (tr._dialogs), 这样切页/收起编辑器都不会丢
 function npcDialogsOf(tr) { return tr._dialogs || (tr._dialogs = []); }
@@ -673,7 +744,7 @@ function dlgOptionRow(o) {
     <td><button class="ghost" onclick="const t=this.closest('tr'),h=t.closest('.dlg-box');t.remove();syncNpcDialogs(h)">删</button></td>`;
   const sel = tr.querySelector('[data-o="action"]');
   const arg = tr.querySelector('[data-o="arg"]');
-  const hint = () => { arg.placeholder = DLG_ARG_HINT[sel.value] || ''; arg.disabled = sel.value === 'close'; };
+  const hint = () => { arg.placeholder = DLG_ARG_HINT[sel.value] || ''; arg.disabled = !DLG_ARG_HINT[sel.value]; };
   hint();
   sel.addEventListener('change', hint);
   return tr;
@@ -734,8 +805,10 @@ function toggleNpcDialogs(btn) {
     <span class="hint">视口内左键取坐标 · 右键拖动 · 滚轮缩放</span></div>
     <div class="mv-slot"></div>`;
   box.appendChild(loc);
-  box.addEventListener('input', () => syncNpcDialogs(box));
-  box.addEventListener('change', () => syncNpcDialogs(box));
+  box.appendChild(shopSection(tr));
+  const sync = () => { syncNpcDialogs(box); syncNpcShop(box); };
+  box.addEventListener('input', sync);
+  box.addEventListener('change', sync);
   const pages = document.createElement('div');
   npcDialogsOf(tr).forEach(d => pages.appendChild(dlgPageBlock(d)));
   const add = document.createElement('button');
