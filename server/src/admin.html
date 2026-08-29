@@ -99,6 +99,9 @@
   .dlg-page textarea { width: 100%; min-height: 56px; margin-bottom: 8px; }
   .dlg-opts { width: auto; margin-bottom: 6px; }
   .dlg-opts th { font-weight: normal; }
+  .dlg-loc { border: 1px solid var(--gold-edge); border-radius: 4px;
+             padding: 10px 12px; margin-bottom: 10px; background: rgba(0,0,0,.18); }
+  .dlg-loc .mv-slot { min-height: 40px; }
   #picker img, #mmpicker img, #npc-picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
 </style>
 </head>
@@ -185,13 +188,14 @@
         <button onclick="saveCfg('npcs')">保存 NPC</button>
         <button class="ghost" onclick="loadCfg('npcs')">重新载入</button>
         <button class="ghost" onclick="addNpcRow()">+ 新增 NPC</button>
+        <select id="npc-map-filter" style="width:170px" onchange="applyNpcFilter()"></select>
         <span class="hint">形象点击可从图库选择 · 「取点」跳到地图上左键取坐标 · 保存后在线玩家立即生效</span>
         <span id="msg-npcs" class="ok-msg"></span>
       </div>
       <div id="err-npcs" class="err-msg"></div>
       <div class="card-box">
         <table id="npc-table">
-          <thead><tr><th>id</th><th>名称</th><th>地图</th><th>x</th><th>y</th><th>形象</th><th>类型</th><th>启用</th><th></th></tr></thead>
+          <thead><tr><th>id</th><th>名称</th><th>地图</th><th>x</th><th>y</th><th>形象</th><th>类型</th><th>摘要</th><th>启用</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -241,38 +245,8 @@
             <button onclick="saveZone()">保存区域</button>
             <button class="ghost" onclick="closeZone()">关闭</button>
           </div>
-          <div class="toolbar">
-            <button class="ghost" onclick="startPick('spawn')">取点: 出生点</button>
-            <button class="ghost" onclick="startPick('portal')">取点: 新传送门</button>
-            <button class="ghost" onclick="startPick('mob')">取点: 新刷新点</button>
-            <span class="hint">左键取坐标 · 右键拖动 · 滚轮缩放</span>
-            <button class="ghost" onclick="zoomBy(1/1.25)">−</button>
-            <span id="zoom-label" style="color:var(--gold-br);font-size:12px;min-width:44px;text-align:center">100%</span>
-            <button class="ghost" onclick="zoomBy(1.25)">+</button>
-            <button class="ghost" onclick="setZoom(1, true)">1:1</button>
-            <button class="ghost" onclick="fitZoom()">适应</button>
-            <span id="pick-hint" class="ok-msg"></span>
-          </div>
-          <div id="mapview" oncontextmenu="return false"
-               style="position:relative;width:100%;height:620px;overflow:hidden;
-                      border:1px solid var(--line);border-radius:3px;background:#0e1017">
-            <div id="mapworld" style="position:absolute;left:0;top:0;transform-origin:0 0">
-              <img id="mapbg" style="position:absolute;left:0;top:0;opacity:.85">
-            </div>
-            <!-- 左上: 视口坐标 -->
-            <div id="map-pos" style="position:absolute;left:8px;top:8px;padding:3px 8px;
-                 background:rgba(13,15,24,.78);border:1px solid var(--line);border-radius:3px;
-                 color:var(--sub);font-size:12px;pointer-events:none"></div>
-            <!-- 右下: 小地图 (点击跳转) -->
-            <div id="mm-overlay" style="position:absolute;right:10px;bottom:10px;
-                 background:rgba(13,15,24,.82);border:1px solid var(--gold-edge);
-                 border-radius:4px;padding:5px">
-              <img id="ze-mm-img" onclick="jumpFromMini(event)" title="点击跳转"
-                   style="display:block;max-width:260px;max-height:200px;cursor:crosshair">
-              <div id="mm-cap" style="color:var(--dim);font-size:11px;text-align:center;
-                   margin-top:2px"></div>
-            </div>
-          </div>
+          <!-- 瓦片视口: 独立成块以便在「地图设置」与「NPC 设置」之间搬移复用 -->
+          <div id="ze-mapslot"></div>
           <img id="ze-thumb" style="display:none">
           <h4 style="color:var(--gold);font-size:13px;margin:14px 0 0">传送门</h4>
           <table id="portal-table">
@@ -340,6 +314,43 @@
       <span class="hint">点击小地图选择</span>
     </div>
     <img id="mm-grid" width="640" onclick="pickMinimap(event)">
+  </div>
+</div>
+<div id="mv-holder" style="display:none">
+  <div id="mapview-box">
+          <div class="toolbar">
+            <button class="ghost" onclick="startPick('spawn')">取点: 出生点</button>
+            <button class="ghost" onclick="startPick('portal')">取点: 新传送门</button>
+            <button class="ghost" onclick="startPick('mob')">取点: 新刷新点</button>
+            <button class="ghost" onclick="startPick('newnpc')">取点: 新 NPC</button>
+            <span class="hint">左键取坐标 · 右键拖动 · 滚轮缩放</span>
+            <button class="ghost" onclick="zoomBy(1/1.25)">−</button>
+            <span id="zoom-label" style="color:var(--gold-br);font-size:12px;min-width:44px;text-align:center">100%</span>
+            <button class="ghost" onclick="zoomBy(1.25)">+</button>
+            <button class="ghost" onclick="setZoom(1, true)">1:1</button>
+            <button class="ghost" onclick="fitZoom()">适应</button>
+            <span id="pick-hint" class="ok-msg"></span>
+          </div>
+          <div id="mapview" oncontextmenu="return false"
+               style="position:relative;width:100%;height:620px;overflow:hidden;
+                      border:1px solid var(--line);border-radius:3px;background:#0e1017">
+            <div id="mapworld" style="position:absolute;left:0;top:0;transform-origin:0 0">
+              <img id="mapbg" style="position:absolute;left:0;top:0;opacity:.85">
+            </div>
+            <!-- 左上: 视口坐标 -->
+            <div id="map-pos" style="position:absolute;left:8px;top:8px;padding:3px 8px;
+                 background:rgba(13,15,24,.78);border:1px solid var(--line);border-radius:3px;
+                 color:var(--sub);font-size:12px;pointer-events:none"></div>
+            <!-- 右下: 小地图 (点击跳转) -->
+            <div id="mm-overlay" style="position:absolute;right:10px;bottom:10px;
+                 background:rgba(13,15,24,.82);border:1px solid var(--gold-edge);
+                 border-radius:4px;padding:5px">
+              <img id="ze-mm-img" onclick="jumpFromMini(event)" title="点击跳转"
+                   style="display:block;max-width:260px;max-height:200px;cursor:crosshair">
+              <div id="mm-cap" style="color:var(--dim);font-size:11px;text-align:center;
+                   margin-top:2px"></div>
+            </div>
+          </div>
   </div>
 </div>
 <div id="npc-picker" onclick="closeNpcPicker(event)">
@@ -582,6 +593,7 @@ function npcRow(n) {
         <img class="icon" title="点击从形象库选择" src="/api/frame/npc/${n.image ?? 0}" onclick="openNpcPicker(this)"></td>
     <td><select data-c="kind">${Object.entries(NPC_KINDS).map(([k, v]) =>
         `<option value="${k}"${k === (n.kind ?? 'talk') ? ' selected' : ''}>${v}</option>`).join('')}</select></td>
+    <td class="npc-sum hint"></td>
     <td><input type="checkbox" data-c="enabled"${(n.enabled ?? true) ? ' checked' : ''}></td>
     <td><button class="ghost" onclick="npcPickOnMap(this)">取点</button>
         <button class="ghost" onclick="toggleNpcDialogs(this)">对话</button>
@@ -591,13 +603,45 @@ function npcRow(n) {
     tr.querySelector('img.icon').src = '/api/frame/npc/' + (Number(e.target.value) || 0);
   });
   bindNpcMarkers(tr);
+  refreshNpcSummary(tr);
   return tr;
 }
+/// 摘要列: 对话页数 (商店件数待 P3)
+function refreshNpcSummary(tr) {
+  const el = tr.querySelector('.npc-sum');
+  if (!el) return;
+  const n = (tr._dialogs || []).length;
+  el.textContent = n ? `对话 ${n} 页` : '—';
+}
+
 function bindNpcMarkers(tr) {
   tr.querySelectorAll('[data-c="x"],[data-c="y"],[data-c="map"],[data-c="enabled"]').forEach(
-    el => el.addEventListener('change', () => { if (zoneEditing) drawMarkers(); }));
+    el => el.addEventListener('change', () => { if (mapViewMap) drawMarkers(); }));
 }
+/// 地图筛选: 下拉选项随区域表刷新, 选中后只显示该图的 NPC
+function refreshNpcFilter() {
+  const sel = document.getElementById('npc-map-filter');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部地图</option>' + Object.keys(zoneData)
+    .map(m => `<option value="${m}">${zoneData[m].name} [${m}]</option>`).join('');
+  sel.value = cur;
+  applyNpcFilter();
+}
+function applyNpcFilter() {
+  const want = (document.getElementById('npc-map-filter') || {}).value || '';
+  document.querySelectorAll('#npc-table > tbody > tr:not(.npc-dlg)').forEach(tr => {
+    const hit = !want || tr.querySelector('[data-c="map"]').value === want;
+    tr.style.display = hit ? '' : 'none';
+    const dlg = tr.nextElementSibling;
+    if (dlg && dlg.classList.contains('npc-dlg')) dlg.style.display = hit ? '' : 'none';
+  });
+}
+
 function addNpcRow() {
+  const sel = document.getElementById('npc-map-filter');
+  if (sel) sel.value = ''; // 新增后回到「全部地图」, 否则新行可能被筛掉看不见
+  applyNpcFilter();
   document.querySelector('#npc-table tbody').appendChild(npcRow(
     { id: 'new_npc', name: '新 NPC', map: Object.keys(zoneData)[0] || '0.map', x: 0, y: 0, image: 0, kind: 'talk', enabled: true }));
 }
@@ -613,8 +657,8 @@ function collectNpcs() {
   });
 }
 // ── NPC 对话编辑 (行内手风琴, 与地图设置同一交互语言) ──
-const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', close: '结束对话' };
-const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', close: '' };
+const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', teleport: '传送', close: '结束对话' };
+const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', teleport: '地图:x:y', close: '' };
 
 /// 对话数据挂在行元素上 (tr._dialogs), 这样切页/收起编辑器都不会丢
 function npcDialogsOf(tr) { return tr._dialogs || (tr._dialogs = []); }
@@ -658,6 +702,7 @@ function dlgPageBlock(d) {
 function syncNpcDialogs(boxEl) {
   const tr = boxEl._owner;
   if (!tr) return;
+  queueMicrotask(() => refreshNpcSummary(tr));
   tr._dialogs = [...boxEl.querySelectorAll('.dlg-page')].map(b => ({
     page: Number(b.querySelector('[data-p="page"]').value) || 1,
     text: b.querySelector('[data-p="text"]').value,
@@ -672,15 +717,23 @@ function syncNpcDialogs(boxEl) {
 function toggleNpcDialogs(btn) {
   const tr = btn.closest('tr');
   const open = tr.nextElementSibling;
-  if (open && open.classList.contains('npc-dlg')) { open.remove(); return; }
+  if (open && open.classList.contains('npc-dlg')) { parkMapView(); open.remove(); return; }
+  parkMapView(); // 换一行编辑前先收回, 免得随旧行一起销毁
   document.querySelectorAll('#npc-table > tbody > tr.npc-dlg').forEach(r => r.remove());
   const row = document.createElement('tr');
   row.className = 'npc-dlg';
   const td = document.createElement('td');
-  td.colSpan = 9;
+  td.colSpan = 10;
   const box = document.createElement('div');
   box.className = 'dlg-box';
   box._owner = tr;
+  // 定位段: 把唯一的瓦片视口搬到这里, 就地看位置/取点 (不必跳到地图页)
+  const loc = document.createElement('div');
+  loc.className = 'dlg-loc';
+  loc.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">定位</b>
+    <span class="hint">视口内左键取坐标 · 右键拖动 · 滚轮缩放</span></div>
+    <div class="mv-slot"></div>`;
+  box.appendChild(loc);
   box.addEventListener('input', () => syncNpcDialogs(box));
   box.addEventListener('change', () => syncNpcDialogs(box));
   const pages = document.createElement('div');
@@ -697,6 +750,21 @@ function toggleNpcDialogs(btn) {
   td.appendChild(box);
   row.appendChild(td);
   tr.after(row);
+  // 视口要在入 DOM 之后再挂 (尺寸要靠 offsetWidth 算)
+  const map = tr.querySelector('[data-c="map"]').value;
+  if (zoneData[map]) {
+    mountMapView(loc.querySelector('.mv-slot'), 'npc');
+    npcPickRow = tr;
+    initMapView(map).then(() => {
+      // centerOn 收的是格坐标 (内部再乘 CW/CH), 别传像素
+      centerOn(Number(tr.querySelector('[data-c="x"]').value) || 0,
+               Number(tr.querySelector('[data-c="y"]').value) || 0);
+      startPick('npc');
+    });
+  } else {
+    loc.querySelector('.mv-slot').innerHTML =
+      `<span class="hint">${map || '(未选地图)'} 尚未接入为区域, 无法定位</span>`;
+  }
 }
 
 // NPC 形象库弹层: 每格一个库 (与物品图标不同, 那里是同库连续帧)
@@ -764,6 +832,7 @@ async function loadCfg(kind) {
     nb.innerHTML = '';
     (d.npcs || []).forEach(n => nb.appendChild(npcRow(n)));
     npcLoaded = true;
+    refreshNpcFilter();
   }
   if (want('quests')) document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
   showErr('');
@@ -796,6 +865,7 @@ async function loadZones() {
   zoneAvail = d.available;
   renderZoneList();
   renderAvail();
+  refreshNpcFilter();
   if (zoneEditing && zoneData[zoneEditing]) showZone(zoneEditing);
 }
 function renderAvail() {
@@ -877,12 +947,14 @@ function showZone(map) {
   syncMinimapPreview();
   endPick();
   mountZoneEditor(map);
+  mountMapView(document.getElementById('ze-mapslot'), 'zone');
   initMapView(map);
 }
 /// 把编辑面板挂到该地图所在行的下方 (手风琴式行内展开)
 function mountZoneEditor(map) {
   const tbody = document.querySelector('#zone-table tbody');
-  // 先把面板寄存回 holder, 再删旧明细行 — 否则连面板一起被销毁
+  // 先把面板与视口寄存回各自 holder, 再删旧明细行 — 否则连它们一起被销毁
+  parkMapView();
   document.getElementById('ze-holder').appendChild(document.getElementById('zone-edit'));
   tbody.querySelectorAll('tr.detail').forEach(tr => tr.remove());
   tbody.querySelectorAll('tr.editing').forEach(tr => tr.classList.remove('editing'));
@@ -1027,9 +1099,27 @@ const TILE_W = TILE_CELLS * CW, TILE_H = TILE_CELLS * CH;
 let pickMode = null, mapDims = null, viewX = 0, viewY = 0, zoom = 1, loadedTiles = new Set();
 const ZOOM_MIN = 0.02, ZOOM_MAX = 3, TILE_ZOOM_MIN = 0.35, MAX_TILES_PER_VIEW = 48;
 
+/// 视口当前挂在哪 ('zone' | 'npc') —— drawMarkers 据此决定画哪些标记
+let mapViewHost = 'zone';
+/// 视口当前显示的地图 (NPC 标记按它过滤)
+let mapViewMap = null;
+
+/// 把瓦片视口搬到指定容器 (只有一份实例, 谁用谁挂)
+function mountMapView(slot, host) {
+  const box = document.getElementById('mapview-box');
+  if (!box || !slot) return;
+  mapViewHost = host;
+  slot.appendChild(box);
+}
+/// 收回 holder, 免得随宿主 DOM 一起被销毁
+function parkMapView() {
+  const box = document.getElementById('mapview-box');
+  if (box) document.getElementById('mv-holder').appendChild(box);
+}
+
 function startPick(mode) {
   pickMode = mode;
-  const label = { spawn: '出生点', portal: '新传送门', mob: '新刷新点', npc: 'NPC 坐标' }[mode];
+  const label = { spawn: '出生点', portal: '新传送门', mob: '新刷新点', npc: 'NPC 坐标', newnpc: '新 NPC' }[mode];
   document.getElementById('pick-hint').textContent = `左键点图设置${label} (Esc 取消)`;
   document.getElementById('mapview').style.cursor = 'crosshair';
 }
@@ -1045,6 +1135,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') endPick(); }
 
 /// 初始化某地图的视口 (取尺寸 → 定位到出生点)
 async function initMapView(map) {
+  mapViewMap = map;
   const r = await fetch(`/api/mapthumb/${encodeURIComponent(map)}?_=${Date.now()}`, { headers: hdr });
   if (!r.ok) return;
   mapDims = { w: Number(r.headers.get('x-map-width')), h: Number(r.headers.get('x-map-height')) };
@@ -1172,21 +1263,25 @@ function drawMarkers() {
       box-shadow:0 0 0 ${2 / zoom}px rgba(0,0,0,.6);pointer-events:none`;
     world.appendChild(d);
   };
-  const sx = parseFloat(document.getElementById('ze-sx').value);
-  const sy = parseFloat(document.getElementById('ze-sy').value);
-  if (Number.isFinite(sx) && Number.isFinite(sy)) add(sx, sy, '#ffd876', '出生点');
-  document.querySelectorAll('#portal-table tbody tr').forEach(tr => {
-    const i = tr.querySelectorAll('input');
-    add(parseFloat(i[0].value) || 0, parseFloat(i[1].value) || 0, '#5adcdc', '传送门 → ' + tr.querySelector('select').value);
-  });
-  document.querySelectorAll('#spawn-table tbody tr').forEach(tr => {
-    const t = [...tr.querySelectorAll('input')].filter(i => i.type !== 'checkbox');
-    add(parseFloat(t[2].value) || 0, parseFloat(t[3].value) || 0, '#e04040', '刷新点 ' + t[0].value);
-  });
+  if (mapViewHost === 'zone') {
+    const sx = parseFloat(document.getElementById('ze-sx').value);
+    const sy = parseFloat(document.getElementById('ze-sy').value);
+    if (Number.isFinite(sx) && Number.isFinite(sy)) add(sx, sy, '#ffd876', '出生点');
+  }
+  if (mapViewHost === 'zone') {
+    document.querySelectorAll('#portal-table tbody tr').forEach(tr => {
+      const i = tr.querySelectorAll('input');
+      add(parseFloat(i[0].value) || 0, parseFloat(i[1].value) || 0, '#5adcdc', '传送门 → ' + tr.querySelector('select').value);
+    });
+    document.querySelectorAll('#spawn-table tbody tr').forEach(tr => {
+      const t = [...tr.querySelectorAll('input')].filter(i => i.type !== 'checkbox');
+      add(parseFloat(t[2].value) || 0, parseFloat(t[3].value) || 0, '#e04040', '刷新点 ' + t[0].value);
+    });
+  }
   // 本图 NPC (来自 NPC 表, 未保存的改动也一并显示)
   document.querySelectorAll('#npc-table > tbody > tr:not(.npc-dlg)').forEach(tr => {
     const g = c => tr.querySelector(`[data-c="${c}"]`);
-    if (g('map').value !== zoneEditing || !g('enabled').checked) return;
+    if (g('map').value !== mapViewMap || !g('enabled').checked) return;
     add(parseFloat(g('x').value) || 0, parseFloat(g('y').value) || 0, '#9a7de0', 'NPC ' + g('name').value);
   });
 }
@@ -1232,16 +1327,42 @@ function drawMarkers() {
   }, { passive: false });
 })();
 function applyPick(gx, gy) {
+  if (pickMode === 'newnpc') {
+    const map = zoneEditing;
+    endPick();
+    // NPC 页可能还没载入过, 先确保数据在再插行
+    const ready = npcLoaded ? Promise.resolve() : loadCfg('npcs');
+    ready.then(() => {
+      skipReload = 'npcs';
+      go('npcs');
+      const sel = document.getElementById('npc-map-filter');
+      if (sel) { sel.value = ''; applyNpcFilter(); }
+      const tb = document.querySelector('#npc-table tbody');
+      const tr = npcRow({ id: 'new_npc', name: '新 NPC', map, x: gx, y: gy,
+                          image: 0, kind: 'talk', enabled: true, dialogs: [] });
+      tb.appendChild(tr);
+      tr.classList.add('editing');
+      tr.scrollIntoView({ block: 'center' });
+      flash(`已在 ${map} (${gx}, ${gy}) 新建 NPC — 填好 id/名称后记得保存`);
+    });
+    return;
+  }
   if (pickMode === 'npc') {
     const tr = npcPickRow;
-    npcPickRow = null;
+    const inPlace = mapViewHost === 'npc'; // 手风琴里就地取点: 不跳页, 可反复微调
     endPick();
-    go('npcs');
+    if (!inPlace) go('npcs');
     if (tr) {
       tr.querySelector('[data-c="x"]').value = gx;
       tr.querySelector('[data-c="y"]').value = gy;
-      tr.classList.remove('editing');
-      tr.scrollIntoView({ block: 'center' });
+      if (inPlace) {
+        npcPickRow = tr;
+        startPick('npc');
+        drawMarkers();
+      } else {
+        tr.classList.remove('editing');
+        tr.scrollIntoView({ block: 'center' });
+      }
     }
     flash(`已取 (${gx}, ${gy}) — 记得保存 NPC`);
     return;

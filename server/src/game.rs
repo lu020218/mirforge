@@ -433,7 +433,8 @@ impl GameData {
                                 ));
                             }
                         }
-                        "close" => {}
+                        // teleport 的目标地图/落点要走格数据, 见 check_npc_placement
+                        "close" | "teleport" => {}
                         other => errs.push(format!(
                             "NPC {} 第 {} 页选项「{}」动作未知: {other}",
                             n.id, d.page, o.label
@@ -591,6 +592,15 @@ impl Monster {
 }
 
 /// 从 (x,y) 就近找可站立点（螺旋外扩, 最远 60 格）
+/// 解析传送参数 "地图:x:y" (地图名自身含 `.` 但不含 `:`)
+fn parse_teleport(arg: &str) -> Option<(String, f64, f64)> {
+    let mut it = arg.split(':');
+    let map = it.next()?.trim();
+    let x: f64 = it.next()?.trim().parse().ok()?;
+    let y: f64 = it.next()?.trim().parse().ok()?;
+    (!map.is_empty() && it.next().is_none()).then(|| (map.to_string(), x, y))
+}
+
 pub fn nearest_walkable(walk: &WalkGrid, x: f64, y: f64) -> (f64, f64) {
     if walk.is_walkable_circle(x, y, BODY_RADIUS) {
         return (x, y);
@@ -1042,6 +1052,31 @@ impl Game {
         self.send_npc_page(conn_id, &npc, 0).await;
     }
 
+    /// NPC 传送: arg = "地图:x:y"; 落点不可站立时吸附到最近可走格
+    async fn teleport_by_npc(&mut self, conn_id: &str, arg: &str) {
+        let Some((map, x, y)) = parse_teleport(arg) else {
+            return;
+        };
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let Some(target) = self.zones.get(&map) else {
+            return;
+        };
+        let (tx, ty) = nearest_walkable(&target.walk, x, y);
+        {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            info!("NPC 传送: {} {} → {map} ({tx:.1},{ty:.1})", char_id, p.zone);
+            p.zone = map;
+            p.x = tx;
+            p.y = ty;
+            p.moving = false;
+        }
+        self.send_enter_zone_only(conn_id, &char_id, tx, ty).await;
+    }
+
     /// 选项动作分发
     async fn handle_npc_option(&mut self, conn_id: &str, npc_id: &str, page: u32, idx: u32) {
         let Some(npc) = self.npc_in_reach(conn_id, npc_id) else {
@@ -1070,8 +1105,59 @@ impl Game {
                 self.handle_complete_quest(conn_id, &opt.arg).await;
                 send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
             }
+            "teleport" => {
+                send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+                self.teleport_by_npc(conn_id, &opt.arg).await;
+            }
             _ => send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await,
         }
+    }
+
+    /// NPC 落位校验: 地图已接入 / 坐标可走 / 传送目标合法
+    ///
+    /// 与 `GameData::validate` 分开, 因为走格与区域表只在游戏循环里有。
+    fn check_npc_placement(&self, npcs: &[NpcDef]) -> Vec<String> {
+        let mut errs = Vec::new();
+        for n in npcs {
+            let Some(z) = self.zones.get(&n.map) else {
+                errs.push(format!("NPC {} 的地图未接入为区域: {}", n.id, n.map));
+                continue;
+            };
+            if !z.walk.is_walkable_circle(n.x, n.y, BODY_RADIUS) {
+                errs.push(format!(
+                    "NPC {} 的坐标不可站立 ({:.1},{:.1})",
+                    n.id, n.x, n.y
+                ));
+            }
+            for d in &n.dialogs {
+                for o in &d.options {
+                    if o.action != "teleport" {
+                        continue;
+                    }
+                    match parse_teleport(&o.arg) {
+                        Some((map, x, y)) => match self.zones.get(&map) {
+                            None => errs.push(format!(
+                                "NPC {} 第 {} 页选项「{}」传送到未接入的地图: {map}",
+                                n.id, d.page, o.label
+                            )),
+                            Some(t) => {
+                                if !t.walk.is_walkable_circle(x, y, BODY_RADIUS) {
+                                    errs.push(format!(
+                                        "NPC {} 第 {} 页选项「{}」传送落点不可站立: {map} ({x:.1},{y:.1})",
+                                        n.id, d.page, o.label
+                                    ));
+                                }
+                            }
+                        },
+                        None => errs.push(format!(
+                            "NPC {} 第 {} 页选项「{}」传送参数应为 地图:x:y, 收到: {}",
+                            n.id, d.page, o.label, o.arg
+                        )),
+                    }
+                }
+            }
+        }
+        errs
     }
 
     /// 全员立即存档
@@ -1182,6 +1268,9 @@ impl Game {
             AdminCmd::SaveAll(done) => {
                 self.save_all().await;
                 let _ = done.send(());
+            }
+            AdminCmd::CheckNpcs { npcs, done } => {
+                let _ = done.send(self.check_npc_placement(&npcs));
             }
             AdminCmd::ZonesInfo(reply) => {
                 let zones: Vec<crate::admin::ZoneRow> = self
@@ -2931,6 +3020,23 @@ mod tests {
             if let Some(pr) = q.prereq.as_deref() {
                 assert!(quest_def(pr).is_some(), "任务 {} 前置 {pr} 不存在", q.id);
             }
+        }
+    }
+
+    #[test]
+    fn parse_teleport_accepts_map_x_y() {
+        assert_eq!(
+            super::parse_teleport("2.map:300:300.5"),
+            Some(("2.map".into(), 300.0, 300.5))
+        );
+        // 地图名带 . 不影响; 空白容忍
+        assert_eq!(
+            super::parse_teleport(" 0.map : 12 : 34 "),
+            Some(("0.map".into(), 12.0, 34.0))
+        );
+        // 段数不对 / 非数字 / 空地图名一律拒
+        for bad in ["2.map:300", "2.map:300:300:1", "2.map:a:b", ":1:2", ""] {
+            assert!(super::parse_teleport(bad).is_none(), "应拒绝: {bad}");
         }
     }
 

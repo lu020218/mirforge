@@ -45,6 +45,11 @@
             "arg": "1"
           },
           {
+            "label": "送我去盟重省",
+            "action": "teleport",
+            "arg": "2.map:300:300"
+          },
+          {
             "label": "多谢指点",
             "action": "close",
             "arg": ""

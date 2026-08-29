@@ -10,11 +10,13 @@
 - 帧规则（`FrameSet.DefaultNPC`）：站立 = 起始帧 0、**4 帧循环、450ms/帧、无方向偏移**
   （NPC 朝向固定，由素材本身决定）。比怪物/角色简单得多，无需帧表推导。
 - 因此客户端渲染 NPC ≈ 渲染一个 4 帧循环的静态精灵 + 头顶名字。
+- **朝向字段已去除**：初稿在数据模型与 `npcList` 里带了 `dir`，但既然帧表无方向偏移、
+  朝向由素材决定，这个字段永远用不上。留着只会让人以为配了有用，故明确删掉。
 
 ## 二、数据模型（SQLite 配置表，与现有配置同库同风格）
 
 ```
-cfg_npcs         id PK, name, map, x, y, image, dir, kind, enabled, ord
+cfg_npcs         id PK, name, map, x, y, image, kind, enabled, ord
                  kind: talk | shop | quest | teleport
 cfg_npc_dialogs  npc_id, page, text                     -- 对话页
 cfg_npc_options  npc_id, page, idx, label, action, arg  -- 每页的选项
@@ -34,7 +36,7 @@ NPC id 唯一 · 所在地图已接入 · 坐标可走 · 商店引用的物品�
 
 | 方向 | 消息 | 载荷 |
 |---|---|---|
-| S→C | `npcList` | 进区/切区下发本区 NPC：id/name/x/y/image/dir |
+| S→C | `npcList` | 进区/切区下发本区 NPC：id/name/x/y/image |
 | C→S | `talkNpc` | npc_id（点击 NPC） |
 | S→C | `npcDialog` | npc_id / page / text / options[{idx,label}] |
 | C→S | `npcOption` | npc_id / page / idx |
@@ -52,7 +54,7 @@ NPC id 唯一 · 所在地图已接入 · 坐标可走 · 商店引用的物品�
 顶部工具条：新增 NPC、按地图筛选、保存、重新载入。
 
 **行内手风琴编辑**（与地图设置同一交互语言）：
-1. **基础**：名称、所在地图（下拉，仅已接入区域）、坐标 X/Y、朝向、类型、启用开关；
+1. **基础**：名称、所在地图（下拉，仅已接入区域）、坐标 X/Y、类型、启用开关；
 2. **形象**：`image` 输入框 + 实时预览 + **分页图库选择器**（复用物品/小地图那套：
    服务端 `/api/npcs?start&count` 出网格 PNG，`/api/frame/npc/{n}` 出单帧）；
 3. **定位**：内嵌地图视口（复用现有瓦片视口组件），显示该地图已有 NPC 标记（紫色），
@@ -99,7 +101,18 @@ NPC id 唯一 · 所在地图已接入 · 坐标可走 · 商店引用的物品�
 | 客户端 | 左键点 NPC 发 `talkNpc`（不触发走路）；鎏金风对话框，标题=NPC 名，选项按钮悬停变金边 |
 | 示例数据 | `server/data/npcs.json` 内置比奇守卫两页对话，含接取/交付「新手试炼·猎鸡」 |
 
-未做（属 P3）：商店、金币、传送动作。
+补齐项（第二轮）：
+
+| 项 | 落点 |
+|---|---|
+| `teleport` 动作 | 选项 arg = `地图:x:y`，落点不可走时吸附到最近可走格，复用传送门那套切区下发 |
+| 落位校验 | 新增 `AdminCmd::CheckNpcs` —— 走格与区域表只在游戏循环里，故与 `GameData::validate` 分开：地图已接入 / 坐标可站立 / 传送目标地图已接入 / 传送落点可站立 |
+| 管理台「摘要」列 | 显示对话页数（商店件数待 P3） |
+| 管理台按地图筛选 | 工具条下拉，随区域表刷新 |
+| 手风琴「定位」段 | 把唯一的瓦片视口搬进手风琴就地取点（`mountMapView` / `parkMapView`，与 `#zone-edit` 同一套寄存思路），可反复微调不跳页 |
+| 地图页 →「取点: 新 NPC」 | 点图后跳 NPC 页并插入预填地图+坐标的新行 |
+
+未做（属 P3）：商店、金币。
 
 ## 六、工作量与风险
 

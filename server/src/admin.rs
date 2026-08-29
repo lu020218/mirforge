@@ -28,6 +28,11 @@ pub enum AdminCmd {
     SaveAll(oneshot::Sender<()>),
     /// 区域列表 + 可接入地图
     ZonesInfo(oneshot::Sender<ZonesInfo>),
+    /// NPC 落位校验 (地图已接入 / 坐标可走 / 传送目标合法) —— 走格数据在游戏循环里
+    CheckNpcs {
+        npcs: Vec<crate::game::NpcDef>,
+        done: oneshot::Sender<Vec<String>>,
+    },
     /// 边车更新 (校验/写回/热重载该区怪物)
     PutZone {
         map: String,
@@ -266,7 +271,21 @@ async fn api_config_put(
     if let Err(e) = parsed {
         return Ok(fail(e));
     }
-    let errors = next.validate();
+    let mut errors = next.validate();
+    if req.kind == "npcs" && errors.is_empty() {
+        // 地图/走格只有游戏循环有, 单独问一次
+        let (tx, rx) = oneshot::channel();
+        if st
+            .tx
+            .send(AdminCmd::CheckNpcs {
+                npcs: next.npcs.clone(),
+                done: tx,
+            })
+            .is_ok()
+        {
+            errors.extend(rx.await.unwrap_or_default());
+        }
+    }
     if !errors.is_empty() {
         return Ok(Json(PutConfigResp { ok: false, errors }));
     }
