@@ -137,7 +137,7 @@
       <div class="head"><h2>物品设置</h2><span class="desc">装备与道具模板</span></div>
       <div class="toolbar">
         <button onclick="saveCfg('items')">保存物品</button>
-        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <button class="ghost" onclick="loadCfg('items')">重新载入</button>
         <button class="ghost" onclick="addItemRow()">+ 新增物品</button>
         <span class="hint">图标点击可从图库选择 · 保存后在线玩家立即生效</span>
         <span id="msg-items" class="ok-msg"></span>
@@ -156,7 +156,7 @@
       <div class="head"><h2>技能设置</h2><span class="desc">三职业技能表</span></div>
       <div class="toolbar">
         <button onclick="saveCfg('skills')">保存技能</button>
-        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <button class="ghost" onclick="loadCfg('skills')">重新载入</button>
         <button class="ghost" onclick="addSkillRow()">+ 新增技能</button>
         <span class="hint">参数随类型联动: 单体=倍率 / 范围=半径+倍率 / 治疗=无参</span>
         <span id="msg-skills" class="ok-msg"></span>
@@ -175,7 +175,7 @@
       <div class="head"><h2>NPC 设置</h2><span class="desc">城镇与野外的固定 NPC</span></div>
       <div class="toolbar">
         <button onclick="saveCfg('npcs')">保存 NPC</button>
-        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <button class="ghost" onclick="loadCfg('npcs')">重新载入</button>
         <button class="ghost" onclick="addNpcRow()">+ 新增 NPC</button>
         <span class="hint">形象点击可从图库选择 · 「取点」跳到地图上左键取坐标 · 保存后在线玩家立即生效</span>
         <span id="msg-npcs" class="ok-msg"></span>
@@ -194,7 +194,7 @@
       <div class="head"><h2>任务设置</h2><span class="desc">任务链与目标</span></div>
       <div class="toolbar">
         <button onclick="saveCfg('quests')">保存任务</button>
-        <button class="ghost" onclick="loadCfg()">重新载入</button>
+        <button class="ghost" onclick="loadCfg('quests')">重新载入</button>
         <span class="hint">objectives: [[怪物模板, 数量]] · prereq 为前置任务 id 或 null</span>
         <span id="msg-quests" class="ok-msg"></span>
       </div>
@@ -364,6 +364,10 @@ const hdr = token ? { 'x-admin-token': token } : {};
 // ── 页面路由 ──
 const PAGES = ['dashboard', 'items', 'skills', 'npcs', 'quests', 'maps', 'server'];
 let curPage = 'dashboard';
+/// NPC 表是否已载入 (只首次进页自动载, 见 go)
+let npcLoaded = false;
+/// 一次性: 跳到该页时不触发它的自动载入 (数据已由调用方取好)
+let skipReload = null;
 function go(p, silent) {
   if (!PAGES.includes(p)) p = 'dashboard';
   curPage = p;
@@ -372,10 +376,17 @@ function go(p, silent) {
     document.getElementById('page-' + k).classList.toggle('on', k === p);
   }
   if (!silent) location.hash = '#' + p;
-  if (p === 'items' || p === 'skills' || p === 'quests') loadCfg();
-  // NPC 页依赖区域列表 (地图下拉), 首次进入先取区域再取配置
-  if (p === 'npcs') { if (Object.keys(zoneData).length) loadCfg(); else loadZones().then(loadCfg); }
-  if (p === 'maps') loadZones();
+  const skip = skipReload === p;
+  skipReload = null;
+  if (p === 'items' || p === 'skills' || p === 'quests') loadCfg(p);
+  // NPC 页涉及跨页取点, 只在首次进入时载入 —— 每次进页都重载会冲掉未保存的行
+  // (含刚取到的坐标和还没保存的新增 NPC); 要放弃编辑请点「重新载入」。
+  // 地图下拉依赖区域列表, 所以先取 zones 再取配置。
+  if (p === 'npcs' && !npcLoaded && !skip) {
+    if (Object.keys(zoneData).length) loadCfg('npcs');
+    else loadZones().then(() => loadCfg('npcs'));
+  }
+  if (p === 'maps' && !skip) loadZones();
 }
 /// 当前页的提示/错误位（各页独立，互不干扰）
 function msgEl() { return document.getElementById('msg-' + (curPage === 'dashboard' ? 'server' : curPage)); }
@@ -622,30 +633,41 @@ let npcPickRow = null;
 async function npcPickOnMap(btn) {
   const tr = btn.closest('tr');
   const map = tr.querySelector('[data-c="map"]').value;
-  npcPickRow = tr;
+  await loadZones();                       // 先备好区域数据, 免得跳页后再拉一次把编辑器重挂掉
+  if (!zoneData[map]) { showErr((map || '(未选地图)') + ' 尚未接入为区域, 无法取点'); return; }
+  skipReload = 'maps';
   go('maps');
-  await loadZones();
-  if (!zoneData[map]) { showErr(map + ' 尚未接入为区域, 无法取点'); npcPickRow = null; return; }
-  showZone(map);
+  showZone(map);                           // 注意: showZone 内部会 endPick(), 会清掉目标行
   startPick('npc');
+  npcPickRow = tr;                         // 所以目标行必须在这之后才设
+  tr.classList.add('editing');             // 标出取点目标行, 回来时一眼能找到
 }
 
 // ── 配置读写 ──
-async function loadCfg() {
+/// 载入配置并重建表格。传 kind 只重建那一页 —— 整表重建会冲掉别页未保存的编辑
+async function loadCfg(kind) {
   const r = await fetch('/api/config', { headers: hdr });
   if (!r.ok) return;
   const d = await r.json();
-  const tb = document.querySelector('#item-table tbody');
-  tb.innerHTML = '';
-  d.items.forEach(it => tb.appendChild(itemRow(it)));
-  const sb = document.querySelector('#skill-table tbody');
-  sb.innerHTML = '';
-  for (const cls of Object.keys(CLASSES))
-    (d.skills[cls] || []).forEach(sk => sb.appendChild(skillRow(cls, sk)));
-  const nb = document.querySelector('#npc-table tbody');
-  nb.innerHTML = '';
-  (d.npcs || []).forEach(n => nb.appendChild(npcRow(n)));
-  document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
+  const want = k => !kind || kind === k;
+  if (want('items')) {
+    const tb = document.querySelector('#item-table tbody');
+    tb.innerHTML = '';
+    d.items.forEach(it => tb.appendChild(itemRow(it)));
+  }
+  if (want('skills')) {
+    const sb = document.querySelector('#skill-table tbody');
+    sb.innerHTML = '';
+    for (const cls of Object.keys(CLASSES))
+      (d.skills[cls] || []).forEach(sk => sb.appendChild(skillRow(cls, sk)));
+  }
+  if (want('npcs')) {
+    const nb = document.querySelector('#npc-table tbody');
+    nb.innerHTML = '';
+    (d.npcs || []).forEach(n => nb.appendChild(npcRow(n)));
+    npcLoaded = true;
+  }
+  if (want('quests')) document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
   showErr('');
 }
 async function saveCfg(kind) {
@@ -915,6 +937,7 @@ function startPick(mode) {
 }
 function endPick() {
   pickMode = null;
+  if (npcPickRow) { npcPickRow.classList.remove('editing'); npcPickRow = null; }
   const h = document.getElementById('pick-hint');
   if (h) h.textContent = '';
   const v = document.getElementById('mapview');
@@ -1112,13 +1135,16 @@ function drawMarkers() {
 })();
 function applyPick(gx, gy) {
   if (pickMode === 'npc') {
-    if (npcPickRow) {
-      npcPickRow.querySelector('[data-c="x"]').value = gx;
-      npcPickRow.querySelector('[data-c="y"]').value = gy;
-      npcPickRow = null;
-    }
+    const tr = npcPickRow;
+    npcPickRow = null;
     endPick();
     go('npcs');
+    if (tr) {
+      tr.querySelector('[data-c="x"]').value = gx;
+      tr.querySelector('[data-c="y"]').value = gy;
+      tr.classList.remove('editing');
+      tr.scrollIntoView({ block: 'center' });
+    }
     flash(`已取 (${gx}, ${gy}) — 记得保存 NPC`);
     return;
   }
