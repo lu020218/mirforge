@@ -1,0 +1,31 @@
+[
+  {
+    "id": "zuma_lord",
+    "name": "祖玛教主",
+    "map": "2.map",
+    "x": 306.5,
+    "y": 296.5,
+    "image": 90,
+    "hp": 2000,
+    "damage": 35,
+    "exp": 1200,
+    "respawn_secs": 1800,
+    "roam": 2.0,
+    "announce": true,
+    "enabled": true,
+    "drops": [
+      {
+        "item": "iron_sword",
+        "chance": 0.5
+      },
+      {
+        "item": "leather_armor",
+        "chance": 0.35
+      },
+      {
+        "item": "amber_necklace",
+        "chance": 0.2
+      }
+    ]
+  }
+]

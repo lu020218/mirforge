@@ -119,6 +119,7 @@
       <a id="nav-npcs" onclick="go('npcs')"><span class="ico">☗</span>NPC 设置</a>
       <a id="nav-quests" onclick="go('quests')"><span class="ico">✧</span>任务设置</a>
       <a id="nav-maps" onclick="go('maps')"><span class="ico">▦</span>地图设置</a>
+      <a id="nav-bosses" onclick="go('bosses')"><span class="ico">☠</span>BOSS 设置</a>
       <div class="sec">运维</div>
       <a id="nav-server" onclick="go('server')"><span class="ico">⚙</span>服务器设置</a>
     </div>
@@ -266,6 +267,28 @@
       </div>
     </section>
 
+    <!-- ═══ BOSS ═══ -->
+    <section id="page-bosses" class="page">
+      <div class="head"><h2>BOSS 设置</h2><span class="desc">定点刷新 · 长重生 · 击杀公告</span></div>
+      <div class="toolbar">
+        <button onclick="saveCfg('bosses')">保存 BOSS</button>
+        <button class="ghost" onclick="loadCfg('bosses')">重新载入</button>
+        <button class="ghost" onclick="addBossRow()">+ 新增 BOSS</button>
+        <select id="boss-map-filter" style="width:170px" onchange="applyBossFilter()"></select>
+        <span class="hint">与地图里的怪物刷新点不同: 这里是某个点上唯一的一只, 打掉要等重生</span>
+        <span id="msg-bosses" class="ok-msg"></span>
+      </div>
+      <div id="err-bosses" class="err-msg"></div>
+      <div class="card-box">
+        <table id="boss-table">
+          <thead><tr><th>id</th><th>名称</th><th>地图</th><th>x</th><th>y</th><th>形象</th>
+            <th>HP</th><th>伤害</th><th>经验</th><th title="秒">重生</th><th title="游荡半径, 0=钉在原地">半径</th>
+            <th title="击杀后全服公告">公告</th><th>掉落</th><th>启用</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- ═══ 服务器 ═══ -->
     <section id="page-server" class="page">
       <div class="head"><h2>服务器设置</h2><span class="desc">运维操作与访问</span></div>
@@ -383,10 +406,12 @@ const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
 
 // ── 页面路由 ──
-const PAGES = ['dashboard', 'items', 'skills', 'npcs', 'quests', 'maps', 'server'];
+const PAGES = ['dashboard', 'items', 'skills', 'npcs', 'quests', 'maps', 'bosses', 'server'];
 let curPage = 'dashboard';
 /// NPC 表是否已载入 (只首次进页自动载, 见 go)
 let npcLoaded = false;
+/// BOSS 表是否已载入 (同 npcLoaded)
+let bossLoaded = false;
 /// 一次性: 跳到该页时不触发它的自动载入 (数据已由调用方取好)
 let skipReload = null;
 function go(p, silent) {
@@ -408,10 +433,15 @@ function go(p, silent) {
     else loadZones().then(() => loadCfg('npcs'));
   }
   if (p === 'maps' && !skip) loadZones();
+  // BOSS 页与 NPC 页同理: 有跨页取点, 只首次进入时载入
+  if (p === 'bosses' && !bossLoaded && !skip) {
+    if (Object.keys(zoneData).length) loadCfg('bosses');
+    else loadZones().then(() => loadCfg('bosses'));
+  }
 }
 /// 当前页的提示/错误位（各页独立，互不干扰）
 function msgEl() { return document.getElementById('msg-' + (curPage === 'dashboard' ? 'server' : curPage)); }
-function errEl() { return document.getElementById('err-' + (['items','skills','quests','npcs','maps'].includes(curPage) ? curPage : 'maps')); }
+function errEl() { return document.getElementById('err-' + (['items','skills','quests','npcs','maps','bosses'].includes(curPage) ? curPage : 'maps')); }
 function flash(t) { const m = msgEl(); if (!m) return;
   m.textContent = t; setTimeout(() => { if (m.textContent === t) m.textContent = ''; }, 2500); }
 function showErr(t) { const e = errEl(); if (e) e.textContent = t || ''; }
@@ -843,15 +873,21 @@ function toggleNpcDialogs(btn) {
 // NPC 形象库弹层: 每格一个库 (与物品图标不同, 那里是同库连续帧)
 let npcPickStart = 0, npcPickTarget = null;
 const NPC_PICK_COUNT = 64, NPC_PICK_COLS = 8, NPC_PICK_CW = 96, NPC_PICK_CH = 120;
+/// 当前形象弹层取的是哪类库 ('npc' | 'monster')
+let spriteKind = 'npc';
+function openMonPicker(imgEl) { spriteKind = 'monster'; openNpcPicker(imgEl); }
 function openNpcPicker(imgEl) {
+  if (imgEl.title.indexOf('怪物') < 0) spriteKind = 'npc';
   npcPickTarget = imgEl.closest('td').querySelector('input');
   npcPickStart = Math.floor((Number(npcPickTarget.value) || 0) / NPC_PICK_COUNT) * NPC_PICK_COUNT;
   refreshNpcPicker();
   document.getElementById('npc-picker').classList.add('on');
 }
 function refreshNpcPicker() {
-  document.getElementById('npc-picker-img').src = `/api/npcs/grid?start=${npcPickStart}&count=${NPC_PICK_COUNT}`;
-  document.getElementById('npc-picker-range').textContent = `形象 ${npcPickStart} - ${npcPickStart + NPC_PICK_COUNT - 1}`;
+  document.getElementById('npc-picker-img').src =
+    `/api/spritegrid/${spriteKind}?start=${npcPickStart}&count=${NPC_PICK_COUNT}`;
+  document.getElementById('npc-picker-range').textContent =
+    `${spriteKind === 'monster' ? '怪物' : 'NPC'}形象 ${npcPickStart} - ${npcPickStart + NPC_PICK_COUNT - 1}`;
 }
 function npcPickerPage(d) { npcPickStart = Math.max(0, npcPickStart + d * NPC_PICK_COUNT); refreshNpcPicker(); }
 function pickNpcImage(ev) {
@@ -869,6 +905,8 @@ function closeNpcPicker(ev) { if (ev.target.id === 'npc-picker') ev.target.class
 
 /// 「取点」: 跳到地图页打开该 NPC 所在图并进入取点模式, 取完自动跳回
 let npcPickRow = null;
+/// 待取点的 BOSS 行
+let bossPickRow = null;
 async function npcPickOnMap(btn) {
   const tr = btn.closest('tr');
   const map = tr.querySelector('[data-c="map"]').value;
@@ -880,6 +918,174 @@ async function npcPickOnMap(btn) {
   startPick('npc');
   npcPickRow = tr;                         // 所以目标行必须在这之后才设
   tr.classList.add('editing');             // 标出取点目标行, 回来时一眼能找到
+}
+
+// ── BOSS 设置 ──
+const BOSS_NUM = new Set(['x', 'y', 'image', 'hp', 'damage', 'exp', 'respawn_secs', 'roam']);
+
+function bossRow(b) {
+  const tr = document.createElement('tr');
+  const opt = Object.keys(zoneData).map(m =>
+    `<option value="${m}"${m === b.map ? ' selected' : ''}>${zoneData[m].name} [${m}]</option>`).join('')
+    || `<option value="${b.map ?? ''}">${b.map ?? '(未载入区域)'}</option>`;
+  tr.innerHTML = `
+    <td><input class="wide" data-b="id" value="${b.id ?? ''}"></td>
+    <td><input class="wide" data-b="name" value="${b.name ?? ''}"></td>
+    <td><select data-b="map">${opt}</select></td>
+    <td><input style="width:64px" data-b="x" value="${b.x ?? 0}"></td>
+    <td><input style="width:64px" data-b="y" value="${b.y ?? 0}"></td>
+    <td><input style="width:56px" data-b="image" value="${b.image ?? 0}">
+        <img class="icon" title="点击从怪物图库选择" src="/api/frame/monster/${b.image ?? 0}" onclick="openMonPicker(this)"></td>
+    <td><input style="width:70px" data-b="hp" value="${b.hp ?? 1000}"></td>
+    <td><input style="width:60px" data-b="damage" value="${b.damage ?? 20}"></td>
+    <td><input style="width:70px" data-b="exp" value="${b.exp ?? 500}"></td>
+    <td><input style="width:70px" data-b="respawn_secs" value="${b.respawn_secs ?? 1800}"></td>
+    <td><input style="width:52px" data-b="roam" value="${b.roam ?? 0}"></td>
+    <td><input type="checkbox" data-b="announce"${(b.announce ?? true) ? ' checked' : ''}></td>
+    <td class="boss-sum hint"></td>
+    <td><input type="checkbox" data-b="enabled"${(b.enabled ?? true) ? ' checked' : ''}></td>
+    <td><button class="ghost" onclick="bossPickOnMap(this)">取点</button>
+        <button class="ghost" onclick="toggleBossDrops(this)">掉落</button>
+        <button class="ghost" onclick="const t=this.closest('tr'),n=t.nextElementSibling;if(n&&n.classList.contains('boss-dlg'))n.remove();t.remove()">删</button></td>`;
+  tr._drops = (b.drops || []).map(d => ({ item: d.item, chance: d.chance }));
+  tr.querySelector('input[data-b="image"]').addEventListener('change', e => {
+    tr.querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0);
+  });
+  tr.querySelectorAll('[data-b="x"],[data-b="y"],[data-b="map"],[data-b="enabled"]').forEach(
+    el => el.addEventListener('change', () => { if (mapViewMap) drawMarkers(); }));
+  refreshBossSummary(tr);
+  return tr;
+}
+
+function refreshBossSummary(tr) {
+  const el = tr.querySelector('.boss-sum');
+  if (!el) return;
+  const n = (tr._drops || []).length;
+  el.textContent = n ? `${n} 项` : '—';
+}
+
+function addBossRow() {
+  const sel = document.getElementById('boss-map-filter');
+  if (sel) { sel.value = ''; applyBossFilter(); }
+  document.querySelector('#boss-table tbody').appendChild(bossRow(
+    { id: 'new_boss', name: '新 BOSS', map: Object.keys(zoneData)[0] || '0.map',
+      x: 0, y: 0, image: 0, hp: 1000, damage: 20, exp: 500, respawn_secs: 1800,
+      roam: 0, announce: true, enabled: true, drops: [] }));
+}
+
+function collectBosses() {
+  return [...document.querySelectorAll('#boss-table > tbody > tr:not(.boss-dlg)')].map(tr => {
+    const g = c => tr.querySelector(`[data-b="${c}"]`);
+    const o = { id: g('id').value.trim(), name: g('name').value.trim(), map: g('map').value,
+                announce: g('announce').checked, enabled: g('enabled').checked,
+                drops: tr._drops || [] };
+    BOSS_NUM.forEach(c => { o[c] = Number(g(c).value) || 0; });
+    return o;
+  });
+}
+
+function refreshBossFilter() {
+  const sel = document.getElementById('boss-map-filter');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部地图</option>' + Object.keys(zoneData)
+    .map(m => `<option value="${m}">${zoneData[m].name} [${m}]</option>`).join('');
+  sel.value = cur;
+  applyBossFilter();
+}
+function applyBossFilter() {
+  const want = (document.getElementById('boss-map-filter') || {}).value || '';
+  document.querySelectorAll('#boss-table > tbody > tr:not(.boss-dlg)').forEach(tr => {
+    const hit = !want || tr.querySelector('[data-b="map"]').value === want;
+    tr.style.display = hit ? '' : 'none';
+    const d = tr.nextElementSibling;
+    if (d && d.classList.contains('boss-dlg')) d.style.display = hit ? '' : 'none';
+  });
+}
+
+// ── 掉落表 (行内展开) ──
+function dropRowEl(d) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><select data-d="item">${itemOptions(d.item)}</select></td>
+    <td><input data-d="chance" style="width:90px" value="${d.chance ?? 0.1}" placeholder="0~1"></td>
+    <td><button class="ghost" onclick="const t=this.closest('tr'),h=t.closest('.dlg-box');t.remove();syncBossDrops(h)">删</button></td>`;
+  return tr;
+}
+function syncBossDrops(boxEl) {
+  const tr = boxEl._owner;
+  if (!tr) return;
+  tr._drops = [...boxEl.querySelectorAll('.drop-tbl tbody tr')].map(r => ({
+    item: r.querySelector('[data-d="item"]').value,
+    chance: Number(r.querySelector('[data-d="chance"]').value) || 0,
+  }));
+  queueMicrotask(() => refreshBossSummary(tr));
+}
+function toggleBossDrops(btn) {
+  const tr = btn.closest('tr');
+  const open = tr.nextElementSibling;
+  if (open && open.classList.contains('boss-dlg')) { parkMapView(); open.remove(); return; }
+  parkMapView();
+  document.querySelectorAll('#boss-table > tbody > tr.boss-dlg').forEach(r => r.remove());
+  const row = document.createElement('tr');
+  row.className = 'boss-dlg npc-dlg';
+  const td = document.createElement('td');
+  td.colSpan = 15;
+  const box = document.createElement('div');
+  box.className = 'dlg-box';
+  box._owner = tr;
+  box.addEventListener('input', () => syncBossDrops(box));
+  box.addEventListener('change', () => syncBossDrops(box));
+  // 定位段: 复用那份唯一的瓦片视口
+  const loc = document.createElement('div');
+  loc.className = 'dlg-loc';
+  loc.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">定位</b>
+    <span class="hint">视口内左键取坐标 · 右键拖动 · 滚轮缩放</span></div><div class="mv-slot"></div>`;
+  // 掉落段
+  const dp = document.createElement('div');
+  dp.className = 'dlg-loc';
+  dp.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">掉落</b>
+    <span class="hint">概率 0~1, 每项独立判定</span></div>`;
+  const tbl = document.createElement('table');
+  tbl.className = 'drop-tbl shop-tbl';
+  tbl.innerHTML = '<thead><tr><th>物品</th><th>概率</th><th></th></tr></thead><tbody></tbody>';
+  (tr._drops || []).forEach(d => tbl.querySelector('tbody').appendChild(dropRowEl(d)));
+  const add = document.createElement('button');
+  add.className = 'ghost';
+  add.textContent = '+ 掉落';
+  add.onclick = () => { tbl.querySelector('tbody').appendChild(dropRowEl({})); syncBossDrops(box); };
+  dp.append(tbl, add);
+  box.append(loc, dp);
+  td.appendChild(box);
+  row.appendChild(td);
+  tr.after(row);
+  const map = tr.querySelector('[data-b="map"]').value;
+  if (zoneData[map]) {
+    mountMapView(loc.querySelector('.mv-slot'), 'boss');
+    bossPickRow = tr;
+    initMapView(map).then(() => {
+      centerOn(Number(tr.querySelector('[data-b="x"]').value) || 0,
+               Number(tr.querySelector('[data-b="y"]').value) || 0);
+      startPick('boss');
+    });
+  } else {
+    loc.querySelector('.mv-slot').innerHTML =
+      `<span class="hint">${map || '(未选地图)'} 尚未接入为区域, 无法定位</span>`;
+  }
+}
+
+/// 「取点」: 跳到地图页取坐标 (与 NPC 同一套)
+async function bossPickOnMap(btn) {
+  const tr = btn.closest('tr');
+  const map = tr.querySelector('[data-b="map"]').value;
+  await loadZones();
+  if (!zoneData[map]) { showErr((map || '(未选地图)') + ' 尚未接入为区域, 无法取点'); return; }
+  skipReload = 'maps';
+  go('maps');
+  showZone(map);
+  startPick('boss');
+  bossPickRow = tr;
+  tr.classList.add('editing');
 }
 
 // ── 配置读写 ──
@@ -907,6 +1113,13 @@ async function loadCfg(kind) {
     npcLoaded = true;
     refreshNpcFilter();
   }
+  if (want('bosses')) {
+    const bb = document.querySelector('#boss-table tbody');
+    bb.innerHTML = '';
+    (d.bosses || []).forEach(b => bb.appendChild(bossRow(b)));
+    bossLoaded = true;
+    refreshBossFilter();
+  }
   if (want('quests')) document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
   showErr('');
 }
@@ -916,6 +1129,7 @@ async function saveCfg(kind) {
     value = kind === 'items' ? collectItems()
           : kind === 'skills' ? collectSkills()
           : kind === 'npcs' ? collectNpcs()
+          : kind === 'bosses' ? collectBosses()
           : JSON.parse(document.getElementById(kind + '-json').value);
   } catch (e) {
     showErr('JSON 语法错误: ' + e.message); return;
@@ -939,6 +1153,7 @@ async function loadZones() {
   renderZoneList();
   renderAvail();
   refreshNpcFilter();
+  refreshBossFilter();
   if (zoneEditing && zoneData[zoneEditing]) showZone(zoneEditing);
 }
 function renderAvail() {
@@ -1192,13 +1407,14 @@ function parkMapView() {
 
 function startPick(mode) {
   pickMode = mode;
-  const label = { spawn: '出生点', portal: '新传送门', mob: '新刷新点', npc: 'NPC 坐标', newnpc: '新 NPC' }[mode];
+  const label = { spawn: '出生点', portal: '新传送门', mob: '新刷新点', npc: 'NPC 坐标', newnpc: '新 NPC', boss: 'BOSS 坐标' }[mode];
   document.getElementById('pick-hint').textContent = `左键点图设置${label} (Esc 取消)`;
   document.getElementById('mapview').style.cursor = 'crosshair';
 }
 function endPick() {
   pickMode = null;
   if (npcPickRow) { npcPickRow.classList.remove('editing'); npcPickRow = null; }
+  if (bossPickRow) { bossPickRow.classList.remove('editing'); bossPickRow = null; }
   const h = document.getElementById('pick-hint');
   if (h) h.textContent = '';
   const v = document.getElementById('mapview');
@@ -1351,6 +1567,12 @@ function drawMarkers() {
       add(parseFloat(t[2].value) || 0, parseFloat(t[3].value) || 0, '#e04040', '刷新点 ' + t[0].value);
     });
   }
+  // 本图 BOSS (橙色, 与刷新点的红色区分)
+  document.querySelectorAll('#boss-table > tbody > tr:not(.boss-dlg)').forEach(tr => {
+    const g = c => tr.querySelector(`[data-b="${c}"]`);
+    if (g('map').value !== mapViewMap || !g('enabled').checked) return;
+    add(parseFloat(g('x').value) || 0, parseFloat(g('y').value) || 0, '#ff8c3a', 'BOSS ' + g('name').value);
+  });
   // 本图 NPC (来自 NPC 表, 未保存的改动也一并显示)
   document.querySelectorAll('#npc-table > tbody > tr:not(.npc-dlg)').forEach(tr => {
     const g = c => tr.querySelector(`[data-c="${c}"]`);
@@ -1418,6 +1640,20 @@ function applyPick(gx, gy) {
       tr.scrollIntoView({ block: 'center' });
       flash(`已在 ${map} (${gx}, ${gy}) 新建 NPC — 填好 id/名称后记得保存`);
     });
+    return;
+  }
+  if (pickMode === 'boss') {
+    const tr = bossPickRow;
+    const inPlace = mapViewHost === 'boss';
+    endPick();
+    if (!inPlace) go('bosses');
+    if (tr) {
+      tr.querySelector('[data-b="x"]').value = gx;
+      tr.querySelector('[data-b="y"]').value = gy;
+      if (inPlace) { bossPickRow = tr; startPick('boss'); drawMarkers(); }
+      else { tr.classList.remove('editing'); tr.scrollIntoView({ block: 'center' }); }
+    }
+    flash(`已取 (${gx}, ${gy}) — 记得保存 BOSS`);
     return;
   }
   if (pickMode === 'npc') {

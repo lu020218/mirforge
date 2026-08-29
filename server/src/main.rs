@@ -114,11 +114,12 @@ async fn main() {
             .await
             .expect("种子导入失败");
         info!(
-            "配置库初始化: 物品 {} / 技能 {} / 任务 {} / NPC {} / 区域 {}",
+            "配置库初始化: 物品 {} / 技能 {} / 任务 {} / NPC {} / BOSS {} / 区域 {}",
             seed.items.len(),
             seed.skills.warrior.len() + seed.skills.mage.len() + seed.skills.taoist.len(),
             seed.quests.len(),
             seed.npcs.len(),
+            seed.bosses.len(),
             zone_seed.len()
         );
     }

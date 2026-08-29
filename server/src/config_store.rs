@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use sqlx::{Row, SqlitePool};
 
 use crate::game::{
-    DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, NpcDialogPage, NpcOptionDef,
+    BossDef, DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, NpcDialogPage, NpcOptionDef,
     PortalSidecar, QuestDef, ShopEntry, SkillDef, SkillKind, SkillsCfg, ZoneSidecar,
 };
 
@@ -95,6 +95,28 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             image INTEGER NOT NULL DEFAULT 0,
             kind TEXT NOT NULL DEFAULT 'talk',
             enabled INTEGER NOT NULL DEFAULT 1,
+            ord INTEGER NOT NULL DEFAULT 0
+        )",
+        "CREATE TABLE IF NOT EXISTS cfg_bosses (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            map TEXT NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            image INTEGER NOT NULL DEFAULT 0,
+            hp INTEGER NOT NULL DEFAULT 1000,
+            damage INTEGER NOT NULL DEFAULT 20,
+            exp INTEGER NOT NULL DEFAULT 500,
+            respawn_secs INTEGER NOT NULL DEFAULT 1800,
+            roam REAL NOT NULL DEFAULT 0,
+            announce INTEGER NOT NULL DEFAULT 1,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            ord INTEGER NOT NULL DEFAULT 0
+        )",
+        "CREATE TABLE IF NOT EXISTS cfg_boss_drops (
+            boss_id TEXT NOT NULL,
+            item TEXT NOT NULL,
+            chance REAL NOT NULL,
             ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_npc_shop (
@@ -306,12 +328,106 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         }
     }
 
+    let mut bosses: Vec<BossDef> = sqlx::query(
+        "SELECT id, name, map, x, y, image, hp, damage, exp, respawn_secs, roam, announce, enabled
+         FROM cfg_bosses ORDER BY ord, id",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| BossDef {
+        id: r.get("id"),
+        name: r.get("name"),
+        map: r.get("map"),
+        x: r.get("x"),
+        y: r.get("y"),
+        image: r.get::<i64, _>("image") as u16,
+        hp: r.get::<i64, _>("hp") as i32,
+        damage: r.get::<i64, _>("damage") as i32,
+        exp: r.get::<i64, _>("exp") as u64,
+        respawn_secs: r.get::<i64, _>("respawn_secs").max(1) as u64,
+        roam: r.get("roam"),
+        announce: r.get::<i64, _>("announce") != 0,
+        enabled: r.get::<i64, _>("enabled") != 0,
+        drops: Vec::new(),
+    })
+    .collect();
+    let mut bdrops: HashMap<String, Vec<DropSidecar>> = HashMap::new();
+    for r in sqlx::query("SELECT boss_id, item, chance FROM cfg_boss_drops ORDER BY boss_id, ord")
+        .fetch_all(pool)
+        .await?
+    {
+        bdrops
+            .entry(r.get("boss_id"))
+            .or_default()
+            .push(DropSidecar {
+                item: r.get("item"),
+                chance: r.get("chance"),
+            });
+    }
+    for b in bosses.iter_mut() {
+        if let Some(ds) = bdrops.remove(&b.id) {
+            b.drops = ds
+                .into_iter()
+                .map(|d| crate::game::DropEntry {
+                    item: d.item,
+                    chance: d.chance,
+                })
+                .collect();
+        }
+    }
+
     Ok(GameData {
         items,
         skills,
         quests,
         npcs,
+        bosses,
     })
+}
+
+pub async fn save_bosses(pool: &SqlitePool, bosses: &[BossDef]) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for t in ["cfg_bosses", "cfg_boss_drops"] {
+        sqlx::query(&format!("DELETE FROM {t}"))
+            .execute(&mut *tx)
+            .await?;
+    }
+    for (i, b) in bosses.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO cfg_bosses
+             (id, name, map, x, y, image, hp, damage, exp, respawn_secs, roam, announce, enabled, ord)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&b.id)
+        .bind(&b.name)
+        .bind(&b.map)
+        .bind(b.x)
+        .bind(b.y)
+        .bind(b.image as i64)
+        .bind(b.hp as i64)
+        .bind(b.damage as i64)
+        .bind(b.exp as i64)
+        .bind(b.respawn_secs as i64)
+        .bind(b.roam)
+        .bind(b.announce as i64)
+        .bind(b.enabled as i64)
+        .bind(i as i64)
+        .execute(&mut *tx)
+        .await?;
+        for (di, d) in b.drops.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO cfg_boss_drops (boss_id, item, chance, ord) VALUES (?, ?, ?, ?)",
+            )
+            .bind(&b.id)
+            .bind(&d.item)
+            .bind(d.chance)
+            .bind(di as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await
 }
 
 pub async fn save_npcs(pool: &SqlitePool, npcs: &[NpcDef]) -> Result<(), sqlx::Error> {
@@ -656,6 +772,7 @@ pub async fn seed_from_files(
     save_skills(pool, &data.skills).await?;
     save_quests(pool, &data.quests).await?;
     save_npcs(pool, &data.npcs).await?;
+    save_bosses(pool, &data.bosses).await?;
     for (map, sc) in zones {
         save_zone(pool, map, sc).await?;
     }

@@ -1,2 +1,4 @@
 管理页面
-Dashboard	物品设置		技能设置		任务设置		地图设置		服务器设置
+Dashboard	物品设置		技能设置		任务设置		地图设置		BOSS设置		服务器设置
+
+(BOSS设置 已完成 — 见 docs/ADMIN_CONFIG.md)

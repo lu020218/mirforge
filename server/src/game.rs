@@ -259,6 +259,44 @@ pub struct GameData {
     pub skills: SkillsCfg,
     pub quests: Vec<QuestDef>,
     pub npcs: Vec<NpcDef>,
+    pub bosses: Vec<BossDef>,
+}
+
+/// BOSS = 定点刷新 + 长重生 + 大属性 + 可选击杀公告的怪物
+///
+/// 与地图里的普通刷新点分开配: 那些是"一片区域里刷 N 只", BOSS 是"某个点
+/// 上唯一的一只, 打掉要等很久"。运行时两者都落成 `Monster`, 走同一套 AI
+/// 与生命周期, 只是重生间隔与公告不同。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct BossDef {
+    pub id: String,
+    pub name: String,
+    /// 所在地图 (区域 id)
+    pub map: String,
+    pub x: f64,
+    pub y: f64,
+    /// Data/Monster/{image:03}.Lib
+    pub image: u16,
+    pub hp: i32,
+    pub damage: i32,
+    pub exp: u64,
+    /// 重生间隔 (秒)
+    #[serde(default = "default_boss_respawn")]
+    pub respawn_secs: u64,
+    /// 游荡半径 (0 = 钉在原地)
+    #[serde(default)]
+    pub roam: f64,
+    /// 击杀后全服公告
+    #[serde(default = "default_true")]
+    pub announce: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub drops: Vec<DropEntry>,
+}
+
+fn default_boss_respawn() -> u64 {
+    1800
 }
 
 /// 场景 NPC 配置 (存在/展示/对话; 商店见 docs/NPC_DESIGN.md P3)
@@ -344,6 +382,7 @@ impl GameData {
             skills: serde_json::from_str(include_str!("../data/skills.json")).expect("内置 skills"),
             quests: serde_json::from_str(include_str!("../data/quests.json")).expect("内置 quests"),
             npcs: serde_json::from_str(include_str!("../data/npcs.json")).expect("内置 npcs"),
+            bosses: serde_json::from_str(include_str!("../data/bosses.json")).expect("内置 bosses"),
         }
     }
 
@@ -368,6 +407,7 @@ impl GameData {
             skills: read(dir.join("skills.json"), "技能").unwrap_or(b.skills),
             quests: read(dir.join("quests.json"), "任务").unwrap_or(b.quests),
             npcs: read(dir.join("npcs.json"), "NPC").unwrap_or(b.npcs),
+            bosses: read(dir.join("bosses.json"), "BOSS").unwrap_or(b.bosses),
         }
     }
 }
@@ -422,6 +462,32 @@ impl GameData {
             if let Some(pr) = q.prereq.as_deref() {
                 if !qids.contains(pr) {
                     errs.push(format!("任务 {} 前置不存在: {pr}", q.id));
+                }
+            }
+        }
+        let mut bid = std::collections::HashSet::new();
+        for b in &self.bosses {
+            if !bid.insert(&b.id) {
+                errs.push(format!("BOSS id 重复: {}", b.id));
+            }
+            if b.name.trim().is_empty() {
+                errs.push(format!("BOSS {} 名称为空", b.id));
+            }
+            if b.hp <= 0 {
+                errs.push(format!("BOSS {} 的 HP 必须大于 0", b.id));
+            }
+            if b.respawn_secs == 0 {
+                errs.push(format!("BOSS {} 的重生间隔必须大于 0 秒", b.id));
+            }
+            for d in &b.drops {
+                if !self.items.iter().any(|i| i.template == d.item) {
+                    errs.push(format!("BOSS {} 掉落引用的物品不存在: {}", b.id, d.item));
+                }
+                if !(0.0..=1.0).contains(&d.chance) {
+                    errs.push(format!(
+                        "BOSS {} 掉落 {} 的概率应在 0~1 之间, 收到 {}",
+                        b.id, d.item, d.chance
+                    ));
                 }
             }
         }
@@ -566,7 +632,7 @@ struct GroundItem {
 }
 
 /// 掉落表条目 (边车配置)
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DropEntry {
     pub item: String,
     pub chance: f64,
@@ -609,6 +675,14 @@ const ATTACK_COOLDOWN: Duration = Duration::from_millis(1500);
 struct Monster {
     id: String,
     template: String,
+    /// 显示名 (BOSS 击杀公告用; 普通怪为空)
+    name: String,
+    /// 是 BOSS: 重生慢, 死亡可全服公告
+    boss: bool,
+    /// 重生间隔 (普通怪 RESPAWN_TIME, BOSS 按配置)
+    respawn: Duration,
+    /// 击杀后是否全服公告
+    announce: bool,
     /// 客户端图库号 (Data/Monster/{image:03}.Lib)
     image: u16,
     zone: String,
@@ -697,6 +771,10 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
             out.push(Monster {
                 id: format!("mon_{}_{}_{}_{}", zone.id, sp.image, si, i),
                 template: sp.template.clone(),
+                name: String::new(),
+                boss: false,
+                respawn: RESPAWN_TIME,
+                announce: false,
                 image: sp.image,
                 zone: zone.id.clone(),
                 home: (x, y),
@@ -723,6 +801,49 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
         }
     }
     out
+}
+
+/// 把本区的 BOSS 配置落成 Monster (与普通刷新点走同一套 AI/生命周期)
+fn materialize_bosses(zone: &Zone) -> Vec<Monster> {
+    let now = Instant::now();
+    data()
+        .bosses
+        .iter()
+        .filter(|b| b.enabled && b.map == zone.id)
+        .map(|b| {
+            let (x, y) = nearest_walkable(&zone.walk, b.x, b.y);
+            Monster {
+                id: format!("boss_{}_{}", zone.id, b.id),
+                template: b.id.clone(),
+                name: b.name.clone(),
+                boss: true,
+                respawn: Duration::from_secs(b.respawn_secs.max(1)),
+                announce: b.announce,
+                image: b.image,
+                zone: zone.id.clone(),
+                home: (x, y),
+                roam: b.roam,
+                x,
+                y,
+                dir: 4,
+                target: None,
+                chasing: false,
+                attack_until: None,
+                pending_hit: None,
+                next_attack: now,
+                next_decide: now,
+                passive: false,
+                hp: b.hp,
+                max_hp: b.hp,
+                damage: b.damage,
+                exp: b.exp,
+                drops: b.drops.clone(),
+                dying_until: None,
+                respawn_at: None,
+                removed_sent: false,
+            }
+        })
+        .collect()
 }
 
 /// 连接级状态（角色选定前）
@@ -820,6 +941,7 @@ impl Game {
         let mut monsters = Vec::new();
         for zone in zones.values() {
             monsters.extend(materialize_monsters(zone, &mut rng));
+            monsters.extend(materialize_bosses(zone));
         }
         info!("怪物已刷新: {} 只", monsters.len());
         Game {
@@ -941,7 +1063,8 @@ impl Game {
         }
         self.monsters.retain(|m| m.zone != map);
         let mut rng = self.rng | 1;
-        let fresh = materialize_monsters(&zone, &mut rng);
+        let mut fresh = materialize_monsters(&zone, &mut rng);
+        fresh.extend(materialize_bosses(&zone));
         info!("区域 {map} 热重载: 怪物 {} 只", fresh.len());
         self.monsters.extend(fresh);
         self.zones.insert(map.to_string(), zone);
@@ -1173,6 +1296,25 @@ impl Game {
         .await;
     }
 
+    /// 全服公告 (BOSS 击杀等)
+    async fn broadcast_all(&self, msg: &str) {
+        let conns: Vec<String> = self
+            .players
+            .values()
+            .filter(|p| p.connected)
+            .map(|p| p.conn_id.clone())
+            .collect();
+        broadcast_to(
+            &self.sessions,
+            &conns,
+            ServerMessage::Notification {
+                message: msg.into(),
+                notification_type: "system".into(),
+            },
+        )
+        .await;
+    }
+
     async fn notify(&self, conn_id: &str, msg: &str) {
         send_to(
             &self.sessions,
@@ -1370,6 +1512,69 @@ impl Game {
         errs
     }
 
+    /// 配置改动后重刷 BOSS: 撤掉旧的, 按新配置重新落地
+    ///
+    /// 代价是在场的 BOSS 会被重置 (满血回原位), 但配置改了本来就该以新配置
+    /// 为准; 普通刷新点不受影响。
+    async fn refresh_bosses(&mut self) {
+        let removed: Vec<protocol::EntityUpdate> = self
+            .monsters
+            .iter()
+            .filter(|m| m.boss)
+            .map(|m| protocol::EntityUpdate {
+                id: m.id.clone(),
+                position: None,
+                hp: None,
+                animation: None,
+                dir: None,
+                removed: Some(true),
+                armour: None,
+                weapon: None,
+                image: None,
+            })
+            .collect();
+        self.monsters.retain(|m| !m.boss);
+        for zone in self.zones.values() {
+            let fresh = materialize_bosses(zone);
+            self.monsters.extend(fresh);
+        }
+        if !removed.is_empty() {
+            let conns: Vec<String> = self
+                .players
+                .values()
+                .filter(|p| p.connected)
+                .map(|p| p.conn_id.clone())
+                .collect();
+            broadcast_to(
+                &self.sessions,
+                &conns,
+                ServerMessage::StateUpdate {
+                    entities: removed,
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
+        }
+    }
+
+    /// BOSS 落位校验: 地图已接入 / 坐标可走
+    fn check_boss_placement(&self, bosses: &[BossDef]) -> Vec<String> {
+        let mut errs = Vec::new();
+        for b in bosses {
+            let Some(z) = self.zones.get(&b.map) else {
+                errs.push(format!("BOSS {} 的地图未接入为区域: {}", b.id, b.map));
+                continue;
+            };
+            if !z.walk.is_walkable_circle(b.x, b.y, BODY_RADIUS) {
+                errs.push(format!(
+                    "BOSS {} 的坐标不可站立 ({:.1},{:.1})",
+                    b.id, b.x, b.y
+                ));
+            }
+        }
+        errs
+    }
+
     /// 全员立即存档
     async fn save_all(&self) {
         for (id, p) in &self.players {
@@ -1413,6 +1618,7 @@ impl Game {
                 });
             }
             AdminCmd::ConfigReloaded => {
+                self.refresh_bosses().await;
                 // 在线玩家即时重推技能表 (数值/新技能立即可见)
                 let ids: Vec<String> = self
                     .players
@@ -1431,7 +1637,7 @@ impl Game {
                     }
                 }
                 info!(
-                    "配置热重载: 已重推 {} 名在线玩家技能与 NPC",
+                    "配置热重载: BOSS 已重刷, 已重推 {} 名在线玩家技能与 NPC",
                     self.players.len()
                 );
             }
@@ -1479,8 +1685,10 @@ impl Game {
                 self.save_all().await;
                 let _ = done.send(());
             }
-            AdminCmd::CheckNpcs { npcs, done } => {
-                let _ = done.send(self.check_npc_placement(&npcs));
+            AdminCmd::CheckPlacement { npcs, bosses, done } => {
+                let mut errs = self.check_npc_placement(&npcs);
+                errs.extend(self.check_boss_placement(&bosses));
+                let _ = done.send(errs);
             }
             AdminCmd::ZonesInfo(reply) => {
                 let zones: Vec<crate::admin::ZoneRow> = self
@@ -2163,15 +2371,29 @@ impl Game {
         )
         .await;
         if killed {
-            let template = self
+            let (template, boss_name) = self
                 .monsters
                 .iter()
                 .find(|m| m.id == mon_id)
-                .map(|m| m.template.clone())
+                .map(|m| {
+                    (
+                        m.template.clone(),
+                        (m.boss && m.announce).then(|| m.name.clone()),
+                    )
+                })
                 .unwrap_or_default();
             self.award_exp(char_id, exp_gain).await;
             self.roll_drops(char_id, mon_id).await;
             self.progress_quests(char_id, &template).await;
+            if let Some(name) = boss_name {
+                let who = self
+                    .players
+                    .get(char_id)
+                    .map(|p| p.character.name.clone())
+                    .unwrap_or_default();
+                self.broadcast_all(&format!("勇士 {who} 击杀了 {name}！"))
+                    .await;
+            }
         }
         killed
     }
@@ -2823,7 +3045,7 @@ impl Game {
         for m in self.monsters.iter_mut() {
             if m.dying_until.is_some_and(|t| now >= t) {
                 m.dying_until = None;
-                m.respawn_at = Some(now + RESPAWN_TIME);
+                m.respawn_at = Some(now + m.respawn);
             }
             if m.respawn_at.is_some_and(|t| now >= t) {
                 m.respawn_at = None;

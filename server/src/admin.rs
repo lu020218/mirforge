@@ -28,9 +28,11 @@ pub enum AdminCmd {
     SaveAll(oneshot::Sender<()>),
     /// 区域列表 + 可接入地图
     ZonesInfo(oneshot::Sender<ZonesInfo>),
-    /// NPC 落位校验 (地图已接入 / 坐标可走 / 传送目标合法) —— 走格数据在游戏循环里
-    CheckNpcs {
+    /// NPC/BOSS 落位校验 (地图已接入 / 坐标可走 / 传送目标合法)
+    /// —— 走格与区域表只在游戏循环里, 所以单独问一次
+    CheckPlacement {
         npcs: Vec<crate::game::NpcDef>,
+        bosses: Vec<crate::game::BossDef>,
         done: oneshot::Sender<Vec<String>>,
     },
     /// 边车更新 (校验/写回/热重载该区怪物)
@@ -198,6 +200,7 @@ struct ConfigPayload {
     skills: serde_json::Value,
     quests: serde_json::Value,
     npcs: serde_json::Value,
+    bosses: serde_json::Value,
 }
 
 async fn api_config_get(
@@ -213,6 +216,7 @@ async fn api_config_get(
         skills: serde_json::to_value(&d.skills).unwrap_or_default(),
         quests: serde_json::to_value(&d.quests).unwrap_or_default(),
         npcs: serde_json::to_value(&d.npcs).unwrap_or_default(),
+        bosses: serde_json::to_value(&d.bosses).unwrap_or_default(),
     }))
 }
 
@@ -264,6 +268,10 @@ async fn api_config_put(
                 next.npcs =
                     serde_json::from_value(req.value.clone()).map_err(|e| format!("npcs: {e}"))?
             }
+            "bosses" => {
+                next.bosses =
+                    serde_json::from_value(req.value.clone()).map_err(|e| format!("bosses: {e}"))?
+            }
             k => return Err(format!("未知配置类别: {k}")),
         }
         Ok(())
@@ -272,13 +280,14 @@ async fn api_config_put(
         return Ok(fail(e));
     }
     let mut errors = next.validate();
-    if req.kind == "npcs" && errors.is_empty() {
+    if matches!(req.kind.as_str(), "npcs" | "bosses") && errors.is_empty() {
         // 地图/走格只有游戏循环有, 单独问一次
         let (tx, rx) = oneshot::channel();
         if st
             .tx
-            .send(AdminCmd::CheckNpcs {
+            .send(AdminCmd::CheckPlacement {
                 npcs: next.npcs.clone(),
+                bosses: next.bosses.clone(),
                 done: tx,
             })
             .is_ok()
@@ -295,6 +304,7 @@ async fn api_config_put(
         "items" => crate::config_store::save_items(pool, &next.items).await,
         "skills" => crate::config_store::save_skills(pool, &next.skills).await,
         "npcs" => crate::config_store::save_npcs(pool, &next.npcs).await,
+        "bosses" => crate::config_store::save_bosses(pool, &next.bosses).await,
         _ => crate::config_store::save_quests(pool, &next.quests).await,
     };
     if let Err(e) = saved {
@@ -535,12 +545,25 @@ async fn api_icons_grid(
 ///
 /// 与 `/api/icons` 不同 — 那里是同一个库里的连续帧, 这里是逐个库取首帧。
 async fn api_npc_grid(
+    st: State<AppState>,
+    headers: HeaderMap,
+    q: Query<IconsQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    api_sprite_grid(st, headers, AxPath("npc".to_string()), q).await
+}
+
+/// 精灵形象网格: 每格一个库的站立首帧 (kind = npc / monster)
+async fn api_sprite_grid(
     State(st): State<AppState>,
     headers: HeaderMap,
+    AxPath(kind): AxPath<String>,
     Query(q): Query<IconsQuery>,
 ) -> Result<axum::response::Response, StatusCode> {
     if !authed(&st, &headers) {
         return Err(StatusCode::UNAUTHORIZED);
+    }
+    if !matches!(kind.as_str(), "npc" | "monster") {
+        return Err(StatusCode::NOT_FOUND);
     }
     let count = q.count.min(64);
     let (cols, cw, ch) = (8usize, 96u32, 120u32);
@@ -559,7 +582,7 @@ async fn api_npc_grid(
         for i in 0..count {
             let n = (start + i) as u16;
             let (ox, oy) = (((i % cols) as u32) * cw, ((i / cols) as u32) * ch);
-            with_preview_lib("npc", n, |lib| {
+            with_preview_lib(&kind, n, |lib| {
                 let img = lib.image(0).ok().flatten()?;
                 let (w, h) = (img.width as u32, img.height as u32);
                 // 水平居中, 垂直贴底 (NPC 立绘基准在脚下)
@@ -877,6 +900,7 @@ pub fn spawn(
         )
         .route("/api/icons", get(api_icons_grid))
         .route("/api/npcs/grid", get(api_npc_grid))
+        .route("/api/spritegrid/:kind", get(api_sprite_grid))
         .route("/api/frame/:kind/:n", get(api_frame_png))
         .route("/api/minimaps", get(api_minimap_grid))
         .route("/api/mapthumb/:map", get(api_map_thumb))
