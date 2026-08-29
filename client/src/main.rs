@@ -102,6 +102,7 @@ fn main() {
         .init_resource::<panels::Drag>()
         .init_resource::<panels::Grab>()
         .init_resource::<panels::UiHover>()
+        .init_resource::<NpcHits>()
         .init_resource::<screens::CharSelectState>()
         .init_resource::<hud::ChatState>()
         .init_resource::<MiniMap>()
@@ -877,6 +878,7 @@ fn player_move(
     mut egui_ctx: EguiContexts,
     ui_hover: Res<panels::UiHover>,
     grab: Res<panels::Grab>,
+    npc_hits: Res<NpcHits>,
     mut last_cursor: Local<Option<Vec2>>,
     // 本次按下要搭话的 NPC 与是否已开口 (按住期间一直站定, 松手才清)
     mut talk_to: Local<Option<(String, bool)>>,
@@ -911,12 +913,12 @@ fn player_move(
     }
     // 光标世界格坐标 (Bevy y 向上, 世界 y 向下取负还原); 每帧换算,
     // 镜头滚动时朝向随光标屏幕位置更新
-    let cursor_cell = last_cursor
-        .and_then(|c| {
-            let (cam, cam_tf) = q_cam.get_single().ok()?;
-            cam.viewport_to_world_2d(cam_tf, c).ok()
-        })
-        .map(|w| DVec2::new(w.x as f64 / CELL_W as f64, -(w.y as f64) / CELL_H as f64));
+    let cursor_world = last_cursor.and_then(|c| {
+        let (cam, cam_tf) = q_cam.get_single().ok()?;
+        cam.viewport_to_world_2d(cam_tf, c).ok()
+    });
+    let cursor_cell =
+        cursor_world.map(|w| DVec2::new(w.x as f64 / CELL_W as f64, -(w.y as f64) / CELL_H as f64));
     let run = buttons.pressed(MouseButton::Right);
     let held = buttons.pressed(MouseButton::Left) || run;
     if !buttons.pressed(MouseButton::Left) {
@@ -948,13 +950,24 @@ fn player_move(
                 return;
             }
             // 点在 NPC 身上 → 记下搭话对象; 够不着先走过去, 到了自动开口
+            //
+            // 先按精灵实际渲染矩形判定 (整个人都能点中), 精灵还没出帧时退回格子框
             if buttons.just_pressed(MouseButton::Left) {
-                if let Some(n) = net
-                    .npcs
-                    .iter()
-                    .find(|n| (n.x - cc.x).abs() < 0.8 && (n.y - cc.y).abs() < 1.1)
-                {
-                    *talk_to = Some((n.id.clone(), false));
+                let by_sprite = cursor_world.and_then(|w| {
+                    npc_hits
+                        .0
+                        .iter()
+                        .find(|(_, r)| r.contains(w))
+                        .map(|(id, _)| id.clone())
+                });
+                let hit = by_sprite.or_else(|| {
+                    net.npcs
+                        .iter()
+                        .find(|n| (n.x - cc.x).abs() < 0.8 && (n.y - cc.y).abs() < 1.1)
+                        .map(|n| n.id.clone())
+                });
+                if let Some(id) = hit {
+                    *talk_to = Some((id, false));
                 }
             }
             // 点在地面物品上且够得着 → 拾取 (超距则照常走路靠近)
@@ -2110,6 +2123,13 @@ fn remote_step(
     }
 }
 
+/// NPC 精灵的世界坐标包围盒 (由 npc_step 每帧写入, 供点击判定用)
+///
+/// 之前用固定的格子框判定, 但 NPC 精灵带帧偏移且向上延伸近百像素 ——
+/// 点头/点身子都会落空, 只有脚下那一小块能点中。
+#[derive(Resource, Default)]
+pub struct NpcHits(HashMap<String, Rect>);
+
 /// 当前显示的 NPC 对话页
 #[derive(Clone)]
 pub struct NpcDialog {
@@ -2123,6 +2143,7 @@ pub struct NpcDialog {
 /// 场景 NPC 精灵 (随区域/热重载重建)
 #[derive(Component)]
 struct NpcSprite {
+    id: String,
     /// NPC 形象编号 → Data/NPC/{image:02}.Lib
     image: u16,
     /// 格坐标 (服务器配置)
@@ -2139,6 +2160,7 @@ fn npc_step(
     mut world: ResMut<World>,
     mut images: ResMut<Assets<Image>>,
     skin: Res<hud::Skin>,
+    mut hits: ResMut<NpcHits>,
     mut seen_rev: Local<u32>,
     q: Query<(Entity, &NpcSprite)>,
 ) {
@@ -2148,10 +2170,12 @@ fn npc_step(
         for (e, _) in q.iter() {
             commands.entity(e).despawn_recursive();
         }
+        hits.0.clear();
         for n in &net.npcs {
             commands
                 .spawn((
                     NpcSprite {
+                        id: n.id.clone(),
                         image: n.image,
                         x: n.x,
                         y: n.y,
@@ -2192,6 +2216,12 @@ fn npc_step(
             // 与远程实体同一套排序 (按格 y), 略低于同格玩家
             Transform::from_xyz(px, -py, 10.0 + npc.y as f32 * 0.01 + 0.002),
         ));
+        // Anchor::TopLeft: 精灵自 (px,-py) 向右向下铺开
+        let size = f.rect.size();
+        hits.0.insert(
+            npc.id.clone(),
+            Rect::new(px, -py - size.y, px + size.x, -py),
+        );
     }
 }
 

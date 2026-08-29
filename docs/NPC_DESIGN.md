@@ -44,7 +44,8 @@ NPC id 唯一 · 所在地图已接入 · 坐标可走 · 商店引用的物品�
 | C→S | `buyItem` / `sellItem` | npc_id + template/数量 · item_id |
 | S→C | `goldChanged` | gold |
 
-服务器所有交互均校验距离（与 NPC 相距 ≤ 交互半径）与合法性，拒绝越权。
+服务器所有交互均校验距离（与 NPC 相距 ≤ `sim::NPC_TALK_RANGE`）与合法性，拒绝越权。
+**不校验视线**：隔着房屋、围墙照样能对话，与原版一致；半径本身即是上界。
 
 ## 四、管理台入口（本方案重点）
 
@@ -97,8 +98,8 @@ NPC id 唯一 · 所在地图已接入 · 坐标可走 · 商店引用的物品�
 | 校验 | 页号唯一、跳页目标存在、任务动作引用的任务 id 存在、动作名合法 |
 | 管理台 | NPC 行「对话」按钮 → 行内手风琴：页号/正文/选项表（标签·动作下拉·参数，参数框随动作联动） |
 | 协议 | C→S `talkNpc` / `npcOption`，S→C `npcDialog` / `npcDialogEnd` |
-| 服务端 | 交互距离 ≤ 3 格校验；动作分发 page / quest_accept / quest_complete / close；走远后再点选项明确回 `npcDialogEnd` |
-| 客户端 | 左键点 NPC 发 `talkNpc`（不触发走路）；鎏金风对话框，标题=NPC 名，选项按钮悬停变金边 |
+| 服务端 | 交互距离 ≤ `sim::NPC_TALK_RANGE`（8 格，**不做视线判定**）；动作分发 page / quest_accept / quest_complete / close；走远后再点选项明确回 `npcDialogEnd` |
+| 客户端 | 左键点 NPC 发 `talkNpc`（不触发走路，够不着先走过去进圈自动开口）；命中按精灵实际渲染矩形判定（整个人都点得中，不是脚下一小格）；鎏金风对话框，标题=NPC 名，选项按钮悬停变金边 |
 | 示例数据 | `server/data/npcs.json` 内置比奇守卫两页对话，含接取/交付「新手试炼·猎鸡」 |
 
 补齐项（第二轮）：
