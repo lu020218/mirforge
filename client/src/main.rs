@@ -92,7 +92,12 @@ fn main() {
         .add_systems(Startup, (hud::load_skin, setup))
         .add_systems(
             OnEnter(Screen::InGame),
-            (make_portrait, hud::setup, panels::setup),
+            (
+                make_portrait,
+                hud::setup,
+                panels::setup,
+                panels::setup_bigmap,
+            ),
         )
         .add_systems(OnExit(Screen::InGame), (hud::teardown, panels::teardown))
         .add_systems(OnEnter(Screen::Login), screens::login_setup)
@@ -156,6 +161,8 @@ fn main() {
                 (
                     hud::chat_input,
                     panels::toggle,
+                    panels::toggle_bigmap,
+                    panels::bigmap,
                     hud::menu_clicks,
                     panels::drag,
                     panels::close,

@@ -3,9 +3,11 @@
 //! 48px 标题栏 (可拖拽/关闭)、8 列背包格、经典 F10 装备环绕布局、
 //! 两列属性; 任务面板沿同风格自延 (设计稿未含)。
 
+use bevy::math::DVec2;
 use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
 
+use crate::hud::HP_RED;
 use crate::hud::{
     Skin, DISABLED, EDGE_DARK, EDGE_GOLD, EXP_GOLD, GOLD, GOLD_BRIGHT, TEXT_DIM, TEXT_MAIN,
 };
@@ -239,8 +241,12 @@ fn spawn_panel(
         });
 }
 
-/// 开发钩子: MIRFORGE_PANELS=bcl — 进图后自动展开对应面板 (配合 MIRFORGE_SHOT 做视觉自查)
-pub fn dev_open(mut q: Query<(&Panel, &mut Node)>, mut done: Local<bool>) {
+/// 开发钩子: MIRFORGE_PANELS=bclm — 进图后自动展开对应面板/大地图 (配合 MIRFORGE_SHOT 做视觉自查)
+pub fn dev_open(
+    mut q: Query<(&Panel, &mut Node)>,
+    mut q_map: Query<&mut Node, (With<BigMapRoot>, Without<Panel>)>,
+    mut done: Local<bool>,
+) {
     // 面板在进图时才建, 所以要等查询非空才算生效
     if *done || q.is_empty() {
         return;
@@ -258,6 +264,11 @@ pub fn dev_open(mut q: Query<(&Panel, &mut Node)>, mut done: Local<bool>) {
             PanelKind::Quest => 'l',
         };
         if spec.contains(key) {
+            node.display = Display::Flex;
+        }
+    }
+    if spec.contains('m') {
+        for mut node in q_map.iter_mut() {
             node.display = Display::Flex;
         }
     }
@@ -588,6 +599,305 @@ pub fn dialog_clicks(
             }
             Interaction::Hovered => border.0 = EDGE_GOLD,
             Interaction::None => border.0 = EDGE_DARK,
+        }
+    }
+}
+
+// ─────────── 大地图 (M) ───────────
+
+/// 大地图显示区边长上限 (逻辑 px), 图按比例塞进这个方框
+const BIGMAP_BOX: f32 = 560.0;
+/// 点阵容量: 怪物与 NPC 各自的上限, 超出不画
+const BIGMAP_DOTS: usize = 64;
+
+#[derive(Component)]
+pub struct BigMapRoot;
+#[derive(Component)]
+pub struct BigMapImg;
+/// 地图显示区 (高度随图的实际比例收紧, 免得留一大片黑边)
+#[derive(Component)]
+pub struct BigMapArea;
+#[derive(Component)]
+pub struct BigMapPlayerDot;
+/// 大地图上的实体点: kind 0=怪物 1=NPC
+#[derive(Component)]
+pub struct BigMapDot(u8, usize);
+#[derive(Component)]
+pub struct BigMapTitle;
+#[derive(Component)]
+pub struct BigMapFoot;
+
+/// 进图时预建 (默认隐藏); 与面板族同样是常驻节点, 靠 display 开关
+pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
+    let font = skin.font.clone();
+    commands
+        .spawn((
+            BigMapRoot,
+            UiBlock,
+            RelativeCursorPosition::default(),
+            Node {
+                display: Display::None,
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Px(70.0),
+                margin: UiRect::left(Val::Px(-(BIGMAP_BOX + 36.0) / 2.0)),
+                width: Val::Px(BIGMAP_BOX + 36.0),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderColor(EDGE_GOLD),
+            BorderRadius::all(Val::Px(4.0)),
+            GlobalZIndex(30),
+        ))
+        .with_children(|root| {
+            ornate_corners(root);
+            root.spawn((
+                Node {
+                    height: Val::Px(46.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(16.0)),
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(TITLE_BG),
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn((text(&font, "地 图", 15.0, GOLD_BRIGHT), BigMapTitle));
+                bar.spawn(text(&font, "M / Esc 关闭", 11.0, TEXT_DIM));
+            });
+            // 地图区: 图与所有点都绝对定位在这里
+            root.spawn((
+                BigMapArea,
+                Node {
+                    width: Val::Px(BIGMAP_BOX),
+                    height: Val::Px(BIGMAP_BOX),
+                    margin: UiRect::all(Val::Px(17.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                BackgroundColor(SLOT_BG),
+            ))
+            .with_children(|area| {
+                area.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        ..default()
+                    },
+                    ImageNode::default(),
+                    Visibility::Hidden,
+                    BigMapImg,
+                ));
+                for i in 0..BIGMAP_DOTS {
+                    area.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: Val::Px(4.0),
+                            height: Val::Px(4.0),
+                            display: Display::None,
+                            ..default()
+                        },
+                        BackgroundColor(HP_RED),
+                        BorderRadius::all(Val::Percent(50.0)),
+                        BigMapDot(0, i),
+                    ));
+                }
+                for i in 0..BIGMAP_DOTS {
+                    area.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: Val::Px(5.0),
+                            height: Val::Px(5.0),
+                            display: Display::None,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.60, 0.49, 0.88)),
+                        BorderRadius::all(Val::Percent(50.0)),
+                        BigMapDot(1, i),
+                    ));
+                }
+                // 玩家点最后建, 盖在其它点之上
+                area.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Px(7.0),
+                        height: Val::Px(7.0),
+                        display: Display::None,
+                        ..default()
+                    },
+                    BackgroundColor(GOLD_BRIGHT),
+                    BorderRadius::all(Val::Percent(50.0)),
+                    BigMapPlayerDot,
+                ));
+            });
+            root.spawn((
+                Node {
+                    height: Val::Px(38.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(17.0)),
+                    border: UiRect::top(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn((text(&font, "", 12.0, TEXT_DIM), BigMapFoot));
+                bar.spawn(text(&font, "金=自己 · 红=怪物 · 紫=NPC", 11.0, TEXT_DIM));
+            });
+        });
+}
+
+/// M 开关大地图; Esc 关闭
+pub fn toggle_bigmap(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<crate::hud::ChatState>,
+    mut q: Query<&mut Node, With<BigMapRoot>>,
+) {
+    if chat.active {
+        return;
+    }
+    let open = keys.just_pressed(KeyCode::KeyM);
+    let close = keys.just_pressed(KeyCode::Escape);
+    if !open && !close {
+        return;
+    }
+    for mut node in q.iter_mut() {
+        node.display = if close || node.display != Display::None {
+            Display::None
+        } else {
+            Display::Flex
+        };
+    }
+}
+
+/// 大地图内容: 整图等比塞进方框, 点按「像素位 = 格坐标 × 图尺寸/地图格数」换算
+///
+/// 几个 Query 都要写 &mut Node, 靠成串的 Without 向 Bevy 证明互不相交,
+/// 类型因此偏长 —— 与本文件其它系统同样用 allow 压掉。
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn bigmap(
+    net: Res<Net>,
+    world: Res<crate::World>,
+    minimap: Res<crate::MiniMap>,
+    remotes: Res<crate::Remotes>,
+    q_root: Query<&Node, With<BigMapRoot>>,
+    q_player: Query<&crate::Player>,
+    mut q_img: Query<
+        (&mut ImageNode, &mut Node, &mut Visibility),
+        (With<BigMapImg>, Without<BigMapRoot>, Without<BigMapArea>),
+    >,
+    mut q_area: Query<&mut Node, (With<BigMapArea>, Without<BigMapRoot>)>,
+    mut q_dot: Query<
+        (&BigMapDot, &mut Node),
+        (
+            Without<BigMapImg>,
+            Without<BigMapRoot>,
+            Without<BigMapArea>,
+            Without<BigMapPlayerDot>,
+        ),
+    >,
+    mut q_pdot: Query<
+        &mut Node,
+        (
+            With<BigMapPlayerDot>,
+            Without<BigMapImg>,
+            Without<BigMapRoot>,
+            Without<BigMapArea>,
+        ),
+    >,
+    mut q_title: Query<&mut Text, (With<BigMapTitle>, Without<BigMapFoot>)>,
+    mut q_foot: Query<&mut Text, With<BigMapFoot>>,
+) {
+    // 关着就不算 —— 每帧重排点位不便宜
+    if q_root.iter().all(|n| n.display == Display::None) {
+        return;
+    }
+    let player = q_player.get_single().ok();
+    for mut t in q_title.iter_mut() {
+        t.0 = if net.zone_name.is_empty() {
+            "地 图".into()
+        } else {
+            net.zone_name.clone()
+        };
+    }
+    for mut t in q_foot.iter_mut() {
+        t.0 = match player {
+            Some(p) => format!("坐标 {:.0}, {:.0}", p.pos.x, p.pos.y),
+            None => String::new(),
+        };
+    }
+    // 图: 等比缩放塞进方框; 没有小地图帧时整个区域留空
+    let fit = match &minimap.image {
+        Some((handle, size)) => {
+            let k = (BIGMAP_BOX / size.x.max(1.0)).min(BIGMAP_BOX / size.y.max(1.0));
+            let (dw, dh) = (size.x * k, size.y * k);
+            // 显示区收紧到图的实际高度, 只在横向留居中余量
+            for mut node in q_area.iter_mut() {
+                node.height = Val::Px(dh);
+            }
+            let ox = (BIGMAP_BOX - dw) / 2.0;
+            for (mut img, mut node, mut vis) in q_img.iter_mut() {
+                img.image = handle.clone();
+                img.rect = None;
+                node.width = Val::Px(dw);
+                node.height = Val::Px(dh);
+                node.left = Val::Px(ox);
+                node.top = Val::Px(0.0);
+                *vis = Visibility::Inherited;
+            }
+            // 格坐标 → 区域内像素
+            let sx = size.x / world.map.width.max(1) as f32 * k;
+            let sy = size.y / world.map.height.max(1) as f32 * k;
+            Some((sx, sy, ox, 0.0))
+        }
+        None => {
+            for (_, _, mut vis) in q_img.iter_mut() {
+                *vis = Visibility::Hidden;
+            }
+            None
+        }
+    };
+    let Some((sx, sy, ox, oy)) = fit else {
+        for (_, mut node) in q_dot.iter_mut() {
+            node.display = Display::None;
+        }
+        for mut node in q_pdot.iter_mut() {
+            node.display = Display::None;
+        }
+        return;
+    };
+    let place = |node: &mut Node, x: f64, y: f64, r: f32| {
+        node.left = Val::Px(ox + x as f32 * sx - r);
+        node.top = Val::Px(oy + y as f32 * sy - r);
+        node.display = Display::Flex;
+    };
+    // 怪物 (活着的) 与 NPC 各自成组
+    let mobs: Vec<DVec2> = remotes
+        .0
+        .values()
+        .filter(|r| r.image.is_some() && r.anim != 4)
+        .map(|r| r.pos)
+        .collect();
+    for (dot, mut node) in q_dot.iter_mut() {
+        let pos = match dot.0 {
+            0 => mobs.get(dot.1).copied(),
+            _ => net.npcs.get(dot.1).map(|n| DVec2::new(n.x, n.y)),
+        };
+        match pos {
+            Some(p) => place(&mut node, p.x, p.y, 2.0),
+            None => node.display = Display::None,
+        }
+    }
+    for mut node in q_pdot.iter_mut() {
+        match player {
+            Some(p) => place(&mut node, p.pos.x, p.pos.y, 3.5),
+            None => node.display = Display::None,
         }
     }
 }
