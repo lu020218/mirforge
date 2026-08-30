@@ -106,7 +106,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
         PanelKind::Bag,
         "背 包",
         (468.0, 220.0),
-        430.0, // 内宽 428 容 10×34 格 + 9×5 间隙 = 385
+        BAG_PANEL_W,
     );
     spawn_panel(
         &mut commands,
@@ -1504,6 +1504,14 @@ const BAG_SLOTS: usize = BAG_COLS * 5;
 const BAG_COLS: usize = 10;
 /// 背包格边长 (逻辑 px)
 const BAG_CELL: f32 = 34.0;
+/// 格间距
+const BAG_GAP: f32 = 5.0;
+/// 格区四周内边距
+const BAG_PAD: f32 = 8.0;
+/// 面板宽度 = 格区 + 内边距 + 1px 边框×2 (Bevy UI 按 border-box 量)
+/// —— 由格数算出, 改列数不用再手调宽度, 也不会留下一圈空白
+const BAG_PANEL_W: f32 =
+    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 2.0;
 
 /// 图标句柄 + 原始像素尺寸
 type Icon = Option<(Handle<Image>, Vec2)>;
@@ -1570,15 +1578,14 @@ fn build_bag(
         _ => None,
     };
     e.with_children(|body| {
-        // 格区: 10 列 34px 格 gap 5 = 385, 面板内宽 428 (430 减 1px 边框×2)
-        // 用 justify_content 居中而非固定内边距 — 后者差 2px 就会挤掉一列
+        // 格区: 面板宽度就是按它算的, 所以这里正好铺满, 只留 BAG_PAD 一圈
         body.spawn(Node {
-            padding: UiRect::axes(Val::Px(8.0), Val::Px(16.0)),
+            padding: UiRect::all(Val::Px(BAG_PAD)),
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
             justify_content: JustifyContent::Center,
-            column_gap: Val::Px(5.0),
-            row_gap: Val::Px(5.0),
+            column_gap: Val::Px(BAG_GAP),
+            row_gap: Val::Px(BAG_GAP),
             ..default()
         })
         .with_children(|grid| {
@@ -1620,19 +1627,6 @@ fn build_bag(
                 }
             }
         });
-        // 物品属性走悬停 Tips (见 tooltip), 这里只留一行操作提示
-        body.spawn(Node {
-            padding: UiRect::horizontal(Val::Px(16.0)),
-            ..default()
-        })
-        .with_children(|row| {
-            row.spawn(text(
-                &font,
-                "左键提起 → 放到装备栏穿戴 / 放到地面丢弃",
-                12.0,
-                TEXT_DIM,
-            ));
-        });
         // 底栏 42px: 顶分隔线 + 统计
         body.spawn((
             Node {
@@ -1641,7 +1635,6 @@ fn build_bag(
                 justify_content: JustifyContent::SpaceBetween,
                 padding: UiRect::horizontal(Val::Px(16.0)),
                 border: UiRect::top(Val::Px(1.0)),
-                margin: UiRect::top(Val::Px(8.0)),
                 ..default()
             },
             BorderColor(EDGE_DARK),
