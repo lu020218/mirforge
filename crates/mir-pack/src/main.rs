@@ -17,6 +17,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("pack") if args.len() == 3 => pack(Path::new(&args[1]), Path::new(&args[2])),
+        Some("pack-list") if args.len() >= 3 => pack_list(
+            Path::new(&args[1]),
+            &args[2..].iter().map(PathBuf::from).collect::<Vec<_>>(),
+        ),
         Some("info") if args.len() == 2 => info(Path::new(&args[1])),
         Some("preview") if (3..=5).contains(&args.len()) => {
             let start = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -26,6 +30,7 @@ fn main() {
         _ => {
             eprintln!("用法:");
             eprintln!("  mir-pack pack <PNG目录> <输出.mfl>     打包 (目录含 NNNNN.PNG + Placements/)");
+            eprintln!("  mir-pack pack-list <输出.mfl> <PNG>...  散图按参数顺序打成帧 (立绘等无锚点素材)");
             eprintln!("  mir-pack info <输入.mfl>              查看帧数统计");
             eprintln!("  mir-pack preview <输入.mfl> <输出.png> [起始帧] [帧数]  出预览拼图");
             std::process::exit(2);
@@ -113,6 +118,30 @@ fn pack(src: &Path, out: &Path) -> Result<(), AnyErr> {
         bytes.len() / 1024,
         out.display()
     );
+    Ok(())
+}
+
+/// 散图打包: 帧号 = 参数顺序, 锚点 (0,0)。立绘/图标这类不吃帧表的素材用
+fn pack_list(out: &Path, srcs: &[PathBuf]) -> Result<(), AnyErr> {
+    let mut frames = Vec::new();
+    for p in srcs {
+        let img = image::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        frames.push(Some(MflFrame {
+            width: w as u16,
+            height: h as u16,
+            offset_x: 0,
+            offset_y: 0,
+            rgba: rgba.into_raw(),
+        }));
+    }
+    let bytes = mfl::write(&frames)?;
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(out, &bytes)?;
+    println!("打包完成: {} 帧 → {}", frames.len(), out.display());
     Ok(())
 }
 

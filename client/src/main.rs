@@ -92,12 +92,7 @@ fn main() {
         .add_systems(Startup, (hud::load_skin, panels::make_wood, setup))
         .add_systems(
             OnEnter(Screen::InGame),
-            (
-                make_portrait,
-                hud::setup,
-                panels::setup,
-                panels::setup_bigmap,
-            ),
+            (hud::setup, panels::setup, panels::setup_bigmap),
         )
         .add_systems(OnExit(Screen::InGame), (hud::teardown, panels::teardown))
         .add_systems(OnEnter(Screen::Login), screens::login_setup)
@@ -176,6 +171,7 @@ fn main() {
                     panels::dialog_clicks,
                     panels::shop,
                     panels::shop_clicks,
+                    make_portrait.before(panels::refresh),
                     panels::refresh,
                 )
                     .run_if(in_state(Screen::InGame)),
@@ -419,6 +415,10 @@ impl World {
     /// Crystal 兜底即可整体移除。
     fn pack_path(&self, name: &str) -> Option<PathBuf> {
         let (dir, num) = name.split_once('/')?;
+        // 纯 packs 类别 (Crystal 无对应物): 立绘等, 名字原样定位
+        if dir == "portrait" {
+            return Some(self.packs_root.join(dir).join(format!("{num}.mfl")));
+        }
         let n: u32 = num.parse().ok()?;
         let kind = match dir {
             "CArmour" => "armor",
@@ -677,24 +677,45 @@ fn ground_render(
     }
 }
 
-/// 进入游戏时按性别取立绘帧 → 独立 Image (面板 ImageNode 用)
+/// 人物面板立绘 → 独立 Image; 随装备变化重建 (inv_rev 驱动)
+///
+/// 取图优先级:
+/// 1. 穿着衣甲 → packs/portrait/{shape:03}.mfl (帧 0=男 1=女, 展示大图)
+/// 2. 未穿衣甲 → packs/portrait/naked.mfl (裸模)
+/// 3. 都没有 → Crystal CArmour/00 朝南站立帧兜底
 fn make_portrait(
     mut commands: Commands,
     mut world: ResMut<World>,
     mut images: ResMut<Assets<Image>>,
     net: Res<Net>,
+    mut last: Local<Option<u32>>,
 ) {
+    if *last == Some(net.inv_rev) {
+        return;
+    }
+    *last = Some(net.inv_rev);
     let female = net
         .characters
         .iter()
         .find(|c| Some(&c.id) == net.character_id.as_ref())
         .map(|c| c.gender == "female")
         .unwrap_or(false);
+    let gender_frame = if female { 1 } else { 0 };
+    let armor_shape = net.equipment.get("armor").map(|i| i.shape);
+    let pack_name = match armor_shape {
+        Some(s) => format!("portrait/{s:03}"),
+        None => "portrait/naked".into(),
+    };
     // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808
     let idx = if female { 808 + 16 } else { 16 };
     let portrait = world
-        .open_lib("CArmour/00")
-        .and_then(|l| l.image(idx).ok().flatten())
+        .open_lib(&pack_name)
+        .and_then(|l| l.image(gender_frame).ok().flatten())
+        .or_else(|| {
+            world
+                .open_lib("CArmour/00")
+                .and_then(|l| l.image(idx).ok().flatten())
+        })
         .map(|img| {
             let size = Vec2::new(img.width as f32, img.height as f32);
             let handle = images.add(Image::new(

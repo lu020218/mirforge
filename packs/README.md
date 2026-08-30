@@ -10,11 +10,18 @@ packs 覆盖 Crystal**;当某类资源全部由 packs 提供时,对应的 Crysta
 packs/
   weapon/050.mfl      武器外观 (对应物品表"外观"字段, 建议自有资源从 050 起编号)
   armor/050.mfl       衣甲外观
+  portrait/050.mfl    人物面板立绘 (帧 0=男 1=女, 编号对应衣甲外观号)
+  portrait/naked.mfl  裸模立绘 (未穿衣甲时用, 帧 0=男 1=女)
   hair/               发型 (预留)
   monster/            怪物 (预留)
   npc/                NPC (预留)
   manifest.md         来源与授权登记 (人工维护)
 ```
+
+立绘取图优先级: 穿着衣甲 → `portrait/{外观号}.mfl` → 没有则退回
+Crystal 站立帧; 未穿衣甲 → `portrait/naked.mfl`。展示图用
+`mir-pack pack-list` 打包 (男图在前女图在后)。市售素材的展示图常按
+"文件夹顺序×10 + 尾号(1=女 2=男)"编号, 打包前先与站立帧比对确认。
 
 编号即文件名(三位十进制)。要**替换** Crystal 原版某个外观,提供同号 .mfl
 即可(如 `armor/000.mfl` 顶掉原版 0 号布衣),配置无需改动。
