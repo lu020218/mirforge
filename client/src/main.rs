@@ -505,9 +505,14 @@ impl World {
     }
 }
 
-/// 角色面板立绘 (CArmour 朝南站立帧)
-#[derive(Resource, Default)]
-pub struct Portrait(pub Option<(Handle<Image>, Vec2)>);
+/// 角色面板立绘: 裸模常驻打底, 衣甲展示图叠加其上 (两图共享画布中心)
+#[derive(Resource, Default, Clone)]
+pub struct Portrait {
+    /// 底层: 裸模 (packs/portrait/naked.mfl), 缺失时退 Crystal 站立帧
+    pub base: Option<(Handle<Image>, Vec2)>,
+    /// 叠加层: 已穿衣甲的展示图 (packs/portrait/{shape:03}.mfl)
+    pub gear: Option<(Handle<Image>, Vec2)>,
+}
 
 /// 物品图标 (Items.Lib 帧 → 独立 Image, 惰性缓存)
 #[derive(Resource, Default)]
@@ -702,36 +707,47 @@ fn make_portrait(
         .unwrap_or(false);
     let gender_frame = if female { 1 } else { 0 };
     let armor_shape = net.equipment.get("armor").map(|i| i.shape);
-    let pack_name = match armor_shape {
-        Some(s) => format!("portrait/{s:03}"),
-        None => "portrait/naked".into(),
+    let mut mk = |img: mir_formats::DecodedImage| {
+        let size = Vec2::new(img.width as f32, img.height as f32);
+        let handle = images.add(Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: img.width as u32,
+                height: img.height as u32,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            img.rgba,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        ));
+        (handle, size)
     };
+    // 底层裸模常驻; 缺包时退 Crystal 站立帧 (那张自带衣服, 不再叠加)
+    let naked = world
+        .open_lib("portrait/naked")
+        .and_then(|l| l.image(gender_frame).ok().flatten());
+    let has_naked = naked.is_some();
     // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808
     let idx = if female { 808 + 16 } else { 16 };
-    let portrait = world
-        .open_lib(&pack_name)
-        .and_then(|l| l.image(gender_frame).ok().flatten())
+    let base = naked
         .or_else(|| {
             world
                 .open_lib("CArmour/00")
                 .and_then(|l| l.image(idx).ok().flatten())
         })
-        .map(|img| {
-            let size = Vec2::new(img.width as f32, img.height as f32);
-            let handle = images.add(Image::new(
-                bevy::render::render_resource::Extent3d {
-                    width: img.width as u32,
-                    height: img.height as u32,
-                    depth_or_array_layers: 1,
-                },
-                bevy::render::render_resource::TextureDimension::D2,
-                img.rgba,
-                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                bevy::asset::RenderAssetUsages::RENDER_WORLD,
-            ));
-            (handle, size)
-        });
-    commands.insert_resource(Portrait(portrait));
+        .map(&mut mk);
+    let gear = if has_naked {
+        armor_shape
+            .and_then(|s| {
+                world
+                    .open_lib(&format!("portrait/{s:03}"))
+                    .and_then(|l| l.image(gender_frame).ok().flatten())
+            })
+            .map(&mut mk)
+    } else {
+        None
+    };
+    commands.insert_resource(Portrait { base, gear });
 }
 
 // ─────────── 启动 ───────────

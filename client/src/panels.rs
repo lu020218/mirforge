@@ -1621,7 +1621,13 @@ pub fn refresh(
         return;
     }
     *last_rev = rev;
-    let portrait = portrait.as_ref().and_then(|p| p.0.clone());
+    let portrait = portrait
+        .as_ref()
+        .map(|p| crate::Portrait {
+            base: p.base.clone(),
+            gear: p.gear.clone(),
+        })
+        .unwrap_or_default();
     // 本次重建涉及的物品图标预取
     let mut icon_of = |img: u16| icons.get(img, &world.data_root, &mut images);
     let inv_icons: Vec<Icon> = net.inventory.iter().map(|i| icon_of(i.image)).collect();
@@ -1873,7 +1879,7 @@ fn build_character(
     e: &mut bevy::ecs::system::EntityCommands,
     net: &Net,
     skin: &Skin,
-    portrait: Option<(Handle<Image>, Vec2)>,
+    portrait: crate::Portrait,
     icons: &std::collections::HashMap<String, Icon>,
     ui: f32,
     grab: &Grab,
@@ -1970,17 +1976,34 @@ fn build_character(
                     // 无底色无边框, 立绘直接融入面板皮革底
                 ))
                 .with_children(|frame| {
-                    if let Some((img, size)) = portrait {
-                        // 站立帧等比放大到高 ~220 (像素风 nearest)
-                        let scale = (220.0 / size.y).min(140.0 / size.x);
+                    // 裸模常驻打底, 衣甲展示图绝对定位叠加; 两图共享画布中心
+                    // (素材即按此对位绘制), 用同一缩放系数保持相对位置。
+                    // 只缩不放: 展示图是高清原图, 放大反而糊
+                    let box_w = CHAR_INNER - CHAR_SLOT * 2.0 - CHAR_GAP * 2.0 - 24.0;
+                    let box_h = 230.0;
+                    if let Some((img, size)) = portrait.base.clone() {
+                        let k = (box_h / size.y).min(box_w / size.x).min(1.0);
                         frame.spawn((
                             Node {
-                                width: Val::Px(size.x * scale),
-                                height: Val::Px(size.y * scale),
+                                width: Val::Px(size.x * k),
+                                height: Val::Px(size.y * k),
                                 ..default()
                             },
                             ImageNode::new(img),
                         ));
+                        if let Some((gimg, gsize)) = portrait.gear.clone() {
+                            frame.spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px((box_w - gsize.x * k) / 2.0),
+                                    top: Val::Px((box_h - gsize.y * k) / 2.0),
+                                    width: Val::Px(gsize.x * k),
+                                    height: Val::Px(gsize.y * k),
+                                    ..default()
+                                },
+                                ImageNode::new(gimg),
+                            ));
+                        }
                     }
                 });
                 mid.spawn(Node {
