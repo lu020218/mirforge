@@ -24,7 +24,7 @@ Crystal 站立帧; 未穿衣甲 → `portrait/naked.mfl`。展示图用
 对位偏移 (衣服图相对裸模共享中心的微调, 引擎叠加时应用):
 
 ```
-mir-pack pack-list packs/portrait/050.mfl 男展示.PNG@3,8 女展示.PNG@6,6
+mir-pack pack-list packs/portrait/050.mfl 男展示.PNG@3,10 女展示.PNG@6,8
 ```
 
 市售素材的展示图常按"文件夹顺序×10 + 尾号(1=女 2=男)"编号, 打包前先与
