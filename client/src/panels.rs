@@ -64,8 +64,7 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
                 tot += amp;
                 amp *= 0.5;
             }
-            let grain =
-                streak * 0.14 + (n / tot - 0.5) * 0.05 + (hash(x, y, 99) - 0.5) * 0.05;
+            let grain = streak * 0.14 + (n / tot - 0.5) * 0.05 + (hash(x, y, 99) - 0.5) * 0.05;
             let k = 0.92 + grain;
             for base in [0.165f32, 0.105, 0.075] {
                 rgba.push(((base * k).clamp(0.0, 1.0) * 255.0) as u8);
@@ -1948,14 +1947,11 @@ fn build_character(
                     Node {
                         width: Val::Px(CHAR_INNER - CHAR_SLOT * 2.0 - CHAR_GAP * 2.0 - 24.0),
                         height: Val::Px(230.0),
-                        border: UiRect::all(Val::Px(1.0)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
                         ..default()
                     },
-                    // 无底色, 融入面板皮革底; 只留一圈暗线框出立绘区
-                    BorderColor(EDGE_DARK),
-                    BorderRadius::all(Val::Px(4.0)),
+                    // 无底色无边框, 立绘直接融入面板皮革底
                 ))
                 .with_children(|frame| {
                     if let Some((img, size)) = portrait {
