@@ -518,6 +518,22 @@ impl GameData {
             if n.kind != "shop" && !n.shop.is_empty() {
                 errs.push(format!("NPC {} 配了售货清单, 但类型不是「商店」", n.id));
             }
+            // 反向的坑: 配了货却没有任何入口 —— 玩家点它只会看到一段普通对话。
+            // (没配对话页时服务端会给缺省进店入口, 所以只在配了对话页时才算错)
+            if n.kind == "shop"
+                && !n.shop.is_empty()
+                && !n.dialogs.is_empty()
+                && !n
+                    .dialogs
+                    .iter()
+                    .any(|d| d.options.iter().any(|o| o.action == "shop"))
+            {
+                errs.push(format!(
+                    "NPC {} 是商店且已上架 {} 件, 但对话里没有任何「打开商店」选项 —— 玩家进不了店",
+                    n.id,
+                    n.shop.len()
+                ));
+            }
             // 对话页: 页号唯一, 跳页目标存在, 任务动作引用的任务存在
             let pages: std::collections::HashSet<u32> = n.dialogs.iter().map(|d| d.page).collect();
             if pages.len() != n.dialogs.len() {
@@ -1151,11 +1167,45 @@ impl Game {
     }
 
     /// 取某 NPC 的某一页; page=0 表示「第一页」(取页号最小的一页)
-    fn npc_page(npc: &NpcDef, page: u32) -> Option<&NpcDialogPage> {
+    /// 没配对话页时的缺省页
+    ///
+    /// 商店 NPC 直接带一个进店入口 —— 否则"类型选了商店、货也上架了"却依然
+    /// 只能看到一句招呼, 没有任何办法把店打开。
+    fn default_page(npc: &NpcDef) -> NpcDialogPage {
+        let shop = npc.kind == "shop" && !npc.shop.is_empty();
+        let mut options = Vec::new();
+        if shop {
+            options.push(NpcOptionDef {
+                label: "我看看货".into(),
+                action: "shop".into(),
+                arg: String::new(),
+            });
+        }
+        options.push(NpcOptionDef {
+            label: "告辞".into(),
+            action: "close".into(),
+            arg: String::new(),
+        });
+        NpcDialogPage {
+            page: 1,
+            text: if shop {
+                format!("{}：看看要点什么？", npc.name)
+            } else {
+                format!("{}：勇士，愿玛法大陆保佑你。", npc.name)
+            },
+            options,
+        }
+    }
+
+    /// 取某页; page=0 表示第一页。没配对话页时回缺省页, 让下游只有一条路径
+    fn npc_page(npc: &NpcDef, page: u32) -> Option<NpcDialogPage> {
+        if npc.dialogs.is_empty() {
+            return matches!(page, 0 | 1).then(|| Self::default_page(npc));
+        }
         if page == 0 {
-            npc.dialogs.iter().min_by_key(|d| d.page)
+            npc.dialogs.iter().min_by_key(|d| d.page).cloned()
         } else {
-            npc.dialogs.iter().find(|d| d.page == page)
+            npc.dialogs.iter().find(|d| d.page == page).cloned()
         }
     }
 
@@ -1207,24 +1257,6 @@ impl Game {
         let Some(npc) = self.npc_in_reach(conn_id, npc_id) else {
             return;
         };
-        if npc.dialogs.is_empty() {
-            send_to(
-                &self.sessions,
-                conn_id,
-                ServerMessage::NpcDialog {
-                    npc_id: npc.id.clone(),
-                    name: npc.name.clone(),
-                    page: 1,
-                    text: format!("{}：勇士，愿玛法大陆保佑你。", npc.name),
-                    options: vec![protocol::NpcDialogOption {
-                        idx: 0,
-                        label: "告辞".into(),
-                    }],
-                },
-            )
-            .await;
-            return;
-        }
         self.send_npc_page(conn_id, &npc, 0).await;
     }
 
@@ -1432,10 +1464,8 @@ impl Game {
             send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
             return;
         };
-        // 没配对话时的缺省招呼只有一个「告辞」
-        let Some(opt) = Self::npc_page(&npc, page)
-            .and_then(|d| d.options.get(idx as usize))
-            .cloned()
+        let Some(opt) =
+            Self::npc_page(&npc, page).and_then(|d| d.options.get(idx as usize).cloned())
         else {
             send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
             return;

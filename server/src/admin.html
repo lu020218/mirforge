@@ -740,7 +740,9 @@ function shopSection(tr) {
   const isShop = tr.querySelector('[data-c="kind"]').value === 'shop';
   box.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">售货清单</b>
     <span class="hint">${isShop ? '价格填 0 则用物品基准价 · 库存 -1 为无限 · 回收价 = 基准价 × 50%'
-                               : '当前类型不是「商店」，改成商店后才能配货'}</span></div>`;
+                               : '当前类型不是「商店」，改成商店后才能配货'}</span></div>
+    ${isShop ? '<div class="hint" style="margin-bottom:8px">进店入口：不配对话页时点击 NPC 直接开店；' +
+               '若配了对话页，需要在某一页加一个动作为「打开商店」的选项，否则玩家进不了店（保存时会拦）。</div>' : ''}`;
   if (!isShop) return box;
   const tbl = document.createElement('table');
   tbl.className = 'shop-tbl';
