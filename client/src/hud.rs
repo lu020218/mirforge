@@ -233,7 +233,7 @@ fn spawn_stat_bar(
                     ..default()
                 },
                 BackgroundColor(BAR_BG),
-                BorderColor(EDGE_GOLD),
+                BorderColor(GOLD),
                 BorderRadius::all(Val::Px(7.0)),
             ))
             .with_children(|b| {
@@ -487,7 +487,7 @@ pub fn setup(
                 ..default()
             },
             BackgroundColor(Color::srgb(0.071, 0.078, 0.129)),
-            BorderColor(EDGE_GOLD),
+            BorderColor(GOLD),
         ))
         .with_children(|map| {
             // 原版小地图图层 (mmap.Lib 帧, 以玩家为中心裁剪窗口; 无帧映射时隐藏)
@@ -1060,7 +1060,7 @@ pub fn update(
                             ..default()
                         },
                         BackgroundColor(TRACK_BG),
-                        BorderColor(EDGE_GOLD),
+                        BorderColor(GOLD),
                     ))
                     .with_children(|item| {
                         item.spawn(text(&skin.font, q.name.clone(), 12.0, TEXT_MAIN));

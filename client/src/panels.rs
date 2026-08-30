@@ -14,6 +14,11 @@ use crate::hud::{
 use crate::Net;
 use protocol::ClientMessage;
 
+/// 金属边高光 (亮金半透明, 叠在主边内侧)
+const GOLD_HIGHLIGHT: Color = Color::srgba(1.0, 0.847, 0.463, 0.55);
+/// 金属边外描边 (深褐, 把金边从场景里勾出来)
+const GOLD_SHADOW: Color = Color::srgba(0.16, 0.11, 0.04, 0.9);
+
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
 const PANEL_BG: Color = Color::srgba(0.051, 0.059, 0.094, 0.94); // rgba(13,15,24,.94)
@@ -132,48 +137,38 @@ pub fn teardown(mut commands: Commands, q: Query<Entity, With<Panel>>) {
     }
 }
 
-/// 四角金饰线: 左上/右下 22px, 右上/左下 26px, 2px #c9a55c (设计稿 ornate)
-pub fn ornate_corners(panel: &mut ChildBuilder) {
-    let corners: [(f32, [bool; 4]); 4] = [
-        // (尺寸, [top, right, bottom, left] 哪两边描线)
-        (22.0, [true, false, false, true]), // 左上
-        (22.0, [false, true, true, false]), // 右下
-        (26.0, [true, true, false, false]), // 右上
-        (26.0, [false, false, true, true]), // 左下
-    ];
-    for (i, (size, [t, r, b, l])) in corners.into_iter().enumerate() {
-        let mut node = Node {
+/// 金属质感金边: 根节点自身为 2px 金色主边 (GOLD), 这里再叠两圈同心线 ——
+/// 亮金内圈作高光、暗色外圈作描边, 三层叠出金属浮雕感。
+/// (Bevy 的 BorderColor 是单色, 层叠是做出质感的唯一办法)
+pub fn metal_frame(panel: &mut ChildBuilder) {
+    // 内圈高光: 贴着主边内侧 (绝对子节点原点在边框内侧, inset 0 正好)
+    panel.spawn((
+        Node {
             position_type: PositionType::Absolute,
-            width: Val::Px(size),
-            height: Val::Px(size),
-            border: UiRect {
-                top: Val::Px(if t { 2.0 } else { 0.0 }),
-                right: Val::Px(if r { 2.0 } else { 0.0 }),
-                bottom: Val::Px(if b { 2.0 } else { 0.0 }),
-                left: Val::Px(if l { 2.0 } else { 0.0 }),
-            },
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            top: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            border: UiRect::all(Val::Px(1.0)),
             ..default()
-        };
-        match i {
-            0 => {
-                node.top = Val::Px(-2.0);
-                node.left = Val::Px(-2.0);
-            }
-            1 => {
-                node.bottom = Val::Px(-2.0);
-                node.right = Val::Px(-2.0);
-            }
-            2 => {
-                node.top = Val::Px(-2.0);
-                node.right = Val::Px(-2.0);
-            }
-            _ => {
-                node.bottom = Val::Px(-2.0);
-                node.left = Val::Px(-2.0);
-            }
-        }
-        panel.spawn((node, BorderColor(GOLD)));
-    }
+        },
+        BorderColor(GOLD_HIGHLIGHT),
+        BorderRadius::all(Val::Px(3.0)),
+    ));
+    // 外圈描边: 主边外侧 1px, 把金边从场景里勾出来
+    panel.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(-3.0),
+            right: Val::Px(-3.0),
+            top: Val::Px(-3.0),
+            bottom: Val::Px(-3.0),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BorderColor(GOLD_SHADOW),
+        BorderRadius::all(Val::Px(6.0)),
+    ));
 }
 
 fn spawn_panel(
@@ -194,17 +189,17 @@ fn spawn_panel(
                 width: Val::Px(width),
                 flex_direction: FlexDirection::Column,
                 display: Display::None,
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(EDGE_GOLD),
+            BorderColor(GOLD),
             GlobalZIndex(10),
             UiBlock,
             RelativeCursorPosition::default(),
         ))
         .with_children(|panel| {
-            ornate_corners(panel);
+            metal_frame(panel);
             // 标题栏 48px (拖拽区): 微金渐变近似底 + 底分隔线
             panel
                 .spawn((
@@ -511,16 +506,16 @@ pub fn dialog(
                 margin: UiRect::left(Val::Px(-210.0)), // 宽 420 的一半, 居中
                 width: Val::Px(420.0),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(EDGE_GOLD),
+            BorderColor(GOLD),
             BorderRadius::all(Val::Px(4.0)),
             GlobalZIndex(20),
         ))
         .with_children(|root| {
-            ornate_corners(root);
+            metal_frame(root);
             // 标题栏: NPC 名 + 关闭
             root.spawn((
                 Node {
@@ -654,16 +649,16 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
                 top: Val::Percent(50.0),
                 width: Val::Px(BIGMAP_FALLBACK),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(EDGE_GOLD),
+            BorderColor(GOLD),
             BorderRadius::all(Val::Px(4.0)),
             GlobalZIndex(30),
         ))
         .with_children(|root| {
-            ornate_corners(root);
+            metal_frame(root);
             root.spawn((
                 Node {
                     height: Val::Px(46.0),
@@ -899,14 +894,14 @@ pub fn bigmap(
                 node.width = Val::Px(aw);
                 node.height = Val::Px(ah);
             }
-            // 窗口宽度随图走 (+2 是左右边框, Bevy UI 按 border-box 量), 并重算居中偏移
-            let root_w = aw + 2.0;
+            // 窗口宽度随图走 (+4 是左右金属边, Bevy UI 按 border-box 量), 并重算居中偏移
+            let root_w = aw + 4.0;
             for mut node in q_root.iter_mut() {
                 node.width = Val::Px(root_w);
                 node.margin = UiRect::new(
                     Val::Px(-root_w / 2.0),
                     Val::Px(0.0),
-                    Val::Px(-(ah + BIGMAP_CHROME) / 2.0),
+                    Val::Px(-(ah + BIGMAP_CHROME + 4.0) / 2.0),
                     Val::Px(0.0),
                 );
             }
@@ -1052,16 +1047,16 @@ pub fn shop(
                 margin: UiRect::left(Val::Px(-235.0)),
                 width: Val::Px(470.0),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(EDGE_GOLD),
+            BorderColor(GOLD),
             BorderRadius::all(Val::Px(4.0)),
             GlobalZIndex(20),
         ))
         .with_children(|root| {
-            ornate_corners(root);
+            metal_frame(root);
             root.spawn((
                 Node {
                     height: Val::Px(44.0),
@@ -1345,7 +1340,7 @@ pub fn tooltip(
                         ..default()
                     },
                     BackgroundColor(PANEL_BG),
-                    BorderColor(EDGE_GOLD),
+                    BorderColor(GOLD),
                     BorderRadius::all(Val::Px(3.0)),
                     GlobalZIndex(90),
                 ))
@@ -1510,10 +1505,10 @@ const BAG_GAP: f32 = 5.0;
 const BAG_PAD: f32 = 8.0;
 /// 面板宽度 = 格区 + 内边距 + 1px 边框×2 (Bevy UI 按 border-box 量)
 /// —— 由格数算出, 改列数不用再手调宽度, 也不会留下一圈空白
-/// 末尾 +2 是抗舍入余量: 缩放后各段取整可能多出一两像素, 留一点免得最后一列
-/// 的边框被裁掉 (列数本身由 grid 钉死, 不会因此换行)
+/// +4 是金属边 (2px×2), 末尾 +2 是抗舍入余量: 缩放后各段取整可能多出一两
+/// 像素, 留一点免得最后一列的边框被裁掉 (列数本身由 grid 钉死, 不会换行)
 const BAG_PANEL_W: f32 =
-    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 2.0 + 2.0;
+    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 4.0 + 2.0;
 
 /// 图标句柄 + 原始像素尺寸
 type Icon = Option<(Handle<Image>, Vec2)>;

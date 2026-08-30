@@ -203,7 +203,7 @@ fn spawn_gold_btn(
             marker,
             node,
             BackgroundColor(BTN_GOLD_BG),
-            BorderColor(EDGE_GOLD),
+            BorderColor(GOLD),
             BorderRadius::all(Val::Px(3.0)),
         ))
         .with_children(|b| {
@@ -324,14 +324,14 @@ pub fn login_setup(mut commands: Commands, skin: Res<Skin>) {
                         Val::Px(40.0),
                         Val::Px(36.0),
                     ),
-                    border: UiRect::all(Val::Px(1.0)),
+                    border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 },
                 BackgroundColor(CARD_BG),
-                BorderColor(EDGE_GOLD),
+                BorderColor(GOLD),
             ))
             .with_children(|card| {
-                crate::panels::ornate_corners(card);
+                crate::panels::metal_frame(card);
                 for (label, ph, pw, order) in [
                     ("账 号", "输入账号", false, 0u8),
                     ("密 码", "输入密码", true, 1u8),
@@ -785,14 +785,14 @@ fn spawn_create_panel(commands: &mut Commands, skin: &Skin) {
                         flex_direction: FlexDirection::Column,
                         row_gap: Val::Px(20.0),
                         padding: UiRect::all(Val::Px(40.0)),
-                        border: UiRect::all(Val::Px(1.0)),
+                        border: UiRect::all(Val::Px(2.0)),
                         ..default()
                     },
                     BackgroundColor(CARD_BG),
-                    BorderColor(EDGE_GOLD),
+                    BorderColor(GOLD),
                 ))
                 .with_children(|card| {
-                    crate::panels::ornate_corners(card);
+                    crate::panels::metal_frame(card);
                     card.spawn(text(&skin.font, "创 建 角 色", 20.0, TEXT_MAIN));
                     card.spawn(Node {
                         flex_direction: FlexDirection::Column,
