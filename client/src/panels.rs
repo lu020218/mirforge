@@ -164,6 +164,7 @@ pub enum PanelKind {
     Bag,
     Character,
     Quest,
+    Skill,
 }
 
 #[derive(Component)]
@@ -235,7 +236,7 @@ pub fn ui_hover(mut hover: ResMut<UiHover>, q: Query<&RelativeCursorPosition, Wi
     hover.0 = q.iter().any(|r| r.mouse_over());
 }
 
-/// 进入游戏时预建三面板 (默认隐藏), 位置为设计稿坐标
+/// 进入游戏时预建各面板 (默认隐藏), 位置为设计稿坐标
 pub fn setup(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>) {
     spawn_panel(
         &mut commands,
@@ -263,6 +264,15 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>) {
         "任 务",
         (60.0, 180.0),
         400.0,
+    );
+    spawn_panel(
+        &mut commands,
+        &skin,
+        &wood,
+        PanelKind::Skill,
+        "技 能",
+        (600.0, 200.0),
+        380.0,
     );
 }
 
@@ -384,6 +394,7 @@ pub fn dev_open(
             PanelKind::Bag => 'b',
             PanelKind::Character => 'c',
             PanelKind::Quest => 'l',
+            PanelKind::Skill => 'k',
         };
         if spec.contains(key) {
             node.display = Display::Flex;
@@ -396,7 +407,7 @@ pub fn dev_open(
     }
 }
 
-/// B/C/L 开关面板 (聊天输入时跳过)
+/// B/C/L/K 开关面板 (聊天输入时跳过)
 pub fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
     chat: Res<crate::hud::ChatState>,
@@ -424,6 +435,9 @@ pub fn toggle(
     }
     if keys.just_pressed(KeyCode::KeyL) {
         flip(PanelKind::Quest, &mut q);
+    }
+    if keys.just_pressed(KeyCode::KeyK) {
+        flip(PanelKind::Skill, &mut q);
     }
 }
 
@@ -1593,6 +1607,7 @@ pub fn refresh(
     mut images: ResMut<Assets<Image>>,
     ui_scale: Res<UiScale>,
     grab: Res<Grab>,
+    skill_icons: Option<Res<crate::hud::SkillIcons>>,
     mut last_rev: Local<(u32, u32, u32, u32)>,
     q_body: Query<(Entity, &PanelBody)>,
 ) {
@@ -1630,6 +1645,7 @@ pub fn refresh(
                 &grab,
             ),
             PanelKind::Quest => build_quest(&mut e, &net, &skin),
+            PanelKind::Skill => build_skill(&mut e, &net, &skin, skill_icons.as_deref()),
         }
     }
 }
@@ -2253,6 +2269,157 @@ fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin
                                     ));
                                 });
                             }
+                        });
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// 技能: 本职业技能列表 — 图标/名称/快捷键/耗魔/冷却/射程, 未到等级置灰
+fn build_skill(
+    e: &mut bevy::ecs::system::EntityCommands,
+    net: &Net,
+    skin: &Skin,
+    icons: Option<&crate::hud::SkillIcons>,
+) {
+    let font = skin.font.clone();
+    let level = net.stat.map(|s| s.level).unwrap_or(0);
+    let skills = net.skills.clone();
+    let icons: Vec<Option<Handle<Image>>> = skills
+        .iter()
+        .enumerate()
+        .map(|(i, _)| icons.and_then(|ic| ic.0.get(i).cloned().flatten()))
+        .collect();
+    e.with_children(|body| {
+        body.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(16.0)),
+            ..default()
+        })
+        .with_children(|list| {
+            if skills.is_empty() {
+                list.spawn(text(&font, "暂无技能", 12.0, TEXT_DIM));
+            }
+            for (i, s) in skills.iter().enumerate() {
+                let unlocked = level >= s.required_level;
+                list.spawn((
+                    Node {
+                        column_gap: Val::Px(12.0),
+                        padding: UiRect::all(Val::Px(10.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(SLOT_BG),
+                    BorderColor(EDGE_DARK),
+                    BorderRadius::all(Val::Px(3.0)),
+                ))
+                .with_children(|card| {
+                    // 图标格: 与 HUD 技能格同规格, 未解锁降透明度
+                    card.spawn((
+                        Node {
+                            width: Val::Px(44.0),
+                            height: Val::Px(44.0),
+                            border: UiRect::all(Val::Px(1.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            overflow: Overflow::clip(),
+                            flex_shrink: 0.0,
+                            ..default()
+                        },
+                        BorderColor(if unlocked { EDGE_GOLD } else { EDGE_DARK }),
+                        BorderRadius::all(Val::Px(4.0)),
+                    ))
+                    .with_children(|slot| {
+                        if let Some(h) = icons[i].clone() {
+                            let mut img = ImageNode::new(h);
+                            if !unlocked {
+                                img.color = Color::srgba(1.0, 1.0, 1.0, 0.35);
+                            }
+                            slot.spawn((
+                                Node {
+                                    width: Val::Px(40.0),
+                                    height: Val::Px(40.0),
+                                    ..default()
+                                },
+                                img,
+                            ));
+                        } else {
+                            // 无图标: 技能名首字占位
+                            let head: String = s.name.chars().take(1).collect();
+                            slot.spawn(text(
+                                &font,
+                                head,
+                                14.0,
+                                if unlocked { TEXT_MAIN } else { DISABLED },
+                            ));
+                        }
+                    });
+                    // 名称 + 详情
+                    card.spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(4.0),
+                        flex_grow: 1.0,
+                        ..default()
+                    })
+                    .with_children(|col| {
+                        col.spawn(Node {
+                            column_gap: Val::Px(8.0),
+                            align_items: AlignItems::Baseline,
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn(text(
+                                &font,
+                                s.name.clone(),
+                                14.0,
+                                if unlocked { TEXT_MAIN } else { DISABLED },
+                            ));
+                            if !unlocked {
+                                row.spawn(text(
+                                    &font,
+                                    format!("需 Lv {}", s.required_level),
+                                    11.0,
+                                    HP_RED,
+                                ));
+                            }
+                        });
+                        let mut d = Vec::new();
+                        if s.mp_cost > 0 {
+                            d.push(format!("耗魔 {}", s.mp_cost));
+                        }
+                        if s.cooldown_ms > 0 {
+                            d.push(format!("冷却 {:.1}s", s.cooldown_ms as f32 / 1000.0));
+                        }
+                        d.push(if s.self_cast {
+                            "自身施放".into()
+                        } else {
+                            format!("射程 {:.0}", s.range)
+                        });
+                        col.spawn(text(&font, d.join(" · "), 11.0, TEXT_DIM));
+                    });
+                    // 快捷键胶囊 (与 HUD 动作条 1-5 对应)
+                    if i < 5 {
+                        card.spawn((
+                            Node {
+                                border: UiRect::all(Val::Px(1.0)),
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+                                flex_shrink: 0.0,
+                                ..default()
+                            },
+                            BorderColor(if unlocked { EDGE_GOLD } else { EDGE_DARK }),
+                            BorderRadius::all(Val::Px(9.0)),
+                        ))
+                        .with_children(|k| {
+                            k.spawn(text(
+                                &font,
+                                format!("{}", i + 1),
+                                11.0,
+                                if unlocked { EXP_GOLD } else { DISABLED },
+                            ));
                         });
                     }
                 });

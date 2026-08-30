@@ -286,6 +286,10 @@ fn magicon_index(id: &str) -> Option<usize> {
     })
 }
 
+/// 技能图标缓存 (与 net.skills 同序), HUD 技能格与技能面板共用
+#[derive(Resource, Default)]
+pub struct SkillIcons(pub Vec<Option<Handle<Image>>>);
+
 /// 按技能表顺序解码图标帧 → 独立 Image
 fn load_skill_icons(
     net: &Net,
@@ -322,6 +326,7 @@ pub fn setup(
     mut images: ResMut<Assets<Image>>,
 ) {
     let icons = load_skill_icons(&net, Some(world.data_root.as_path()), &mut images);
+    commands.insert_resource(SkillIcons(icons.clone()));
     // ── 底部中央动作条 (透明背景, gap 22) ──
     commands
         .spawn((
@@ -682,7 +687,7 @@ pub fn setup(
             let buttons: [(&str, &str, Option<PanelKind>); 7] = [
                 ("包", "B", Some(PanelKind::Bag)),
                 ("角", "C", Some(PanelKind::Character)),
-                ("技", "K", None),
+                ("技", "K", Some(PanelKind::Skill)),
                 ("务", "L", Some(PanelKind::Quest)),
                 ("友", "F", None),
                 ("会", "G", None),

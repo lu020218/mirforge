@@ -1887,7 +1887,10 @@ fn net_pump(
                     net.status = format!("恢复失败: {message}");
                     next.set(Screen::Login);
                 }
-                ServerMessage::SkillList { skills } => net.skills = skills,
+                ServerMessage::SkillList { skills } => {
+                    net.skills = skills;
+                    net.stat_rev += 1; // 技能面板跟 stat_rev 走
+                }
                 ServerMessage::QuestState { quests } => {
                     net.quests = quests;
                     net.quest_rev += 1;
