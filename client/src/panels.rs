@@ -1953,7 +1953,7 @@ fn build_character(
                         align_items: AlignItems::Center,
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.137, 0.145, 0.204)), // #23263a
+                    // 无底色, 融入面板皮革底; 只留一圈暗线框出立绘区
                     BorderColor(EDGE_DARK),
                     BorderRadius::all(Val::Px(4.0)),
                 ))
