@@ -77,6 +77,8 @@ MIRFORGE_RES=... tools/run-smokes.sh  # 五套协议级端到端冒烟 (需要�
 |---|---|
 | `MIRFORGE_AUTOLOGIN=用户名:密码[:职业]` | 自动 注册→登录→建角→选角 进图 |
 | `MIRFORGE_PANELS=bclm` | 进图后自动展开背包/角色/任务面板与大地图 |
+
+大地图 (M) 上左键点一处即自动寻路跑过去; 期间在世界里点任意一下即接管停下。
 | `MIRFORGE_SHOT=路径[,延迟秒]` | 延迟后截图存盘并退出 |
 | `MIRFORGE_TALK=npc_id[:选项下标]` | 进图后自动与该 NPC 搭话并选一项（对话框/商店窗自查用） |
 

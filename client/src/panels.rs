@@ -628,6 +628,9 @@ pub struct BigMapImg;
 pub struct BigMapArea;
 #[derive(Component)]
 pub struct BigMapPlayerDot;
+/// 寻路终点标记
+#[derive(Component)]
+pub struct BigMapGoalDot;
 /// 大地图上的实体点: kind 0=怪物 1=NPC
 #[derive(Component)]
 pub struct BigMapDot(u8, usize);
@@ -698,6 +701,9 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
                     ImageNode::default(),
                     Visibility::Hidden,
                     BigMapImg,
+                    // 点图寻路: Button 让它拿得到 Interaction, 相对位置换算成格坐标
+                    Button,
+                    RelativeCursorPosition::default(),
                 ));
                 for i in 0..BIGMAP_DOTS {
                     area.spawn((
@@ -727,6 +733,19 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
                         BigMapDot(1, i),
                     ));
                 }
+                // 寻路终点标记 (青色, 在玩家点之下)
+                area.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Px(7.0),
+                        height: Val::Px(7.0),
+                        display: Display::None,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.35, 0.86, 0.86)),
+                    BorderRadius::all(Val::Percent(50.0)),
+                    BigMapGoalDot,
+                ));
                 // 玩家点最后建, 盖在其它点之上
                 area.spawn((
                     Node {
@@ -792,6 +811,7 @@ pub fn bigmap(
     world: Res<crate::World>,
     minimap: Res<crate::MiniMap>,
     remotes: Res<crate::Remotes>,
+    auto: Res<crate::AutoPath>,
     windows: Query<&Window>,
     ui_scale: Res<UiScale>,
     mut q_root: Query<&mut Node, With<BigMapRoot>>,
@@ -808,6 +828,7 @@ pub fn bigmap(
             Without<BigMapRoot>,
             Without<BigMapArea>,
             Without<BigMapPlayerDot>,
+            Without<BigMapGoalDot>,
         ),
     >,
     mut q_pdot: Query<
@@ -817,6 +838,17 @@ pub fn bigmap(
             Without<BigMapImg>,
             Without<BigMapRoot>,
             Without<BigMapArea>,
+            Without<BigMapGoalDot>,
+        ),
+    >,
+    mut q_gdot: Query<
+        &mut Node,
+        (
+            With<BigMapGoalDot>,
+            Without<BigMapImg>,
+            Without<BigMapRoot>,
+            Without<BigMapArea>,
+            Without<BigMapPlayerDot>,
         ),
     >,
     mut q_title: Query<&mut Text, (With<BigMapTitle>, Without<BigMapFoot>)>,
@@ -947,6 +979,12 @@ pub fn bigmap(
     for mut node in q_pdot.iter_mut() {
         match player {
             Some(p) => place(&mut node, p.pos.x, p.pos.y, 3.5),
+            None => node.display = Display::None,
+        }
+    }
+    for mut node in q_gdot.iter_mut() {
+        match auto.goal {
+            Some(g) => place(&mut node, g.x, g.y, 3.5),
             None => node.display = Display::None,
         }
     }
@@ -2063,6 +2101,51 @@ fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin
             }
         });
     });
+}
+
+/// 大地图上点一下 → A* 算路 → 交给 AutoPath 跑过去
+#[allow(clippy::type_complexity)]
+pub fn bigmap_click(
+    world: Res<crate::World>,
+    mut auto: ResMut<crate::AutoPath>,
+    q_player: Query<&crate::Player>,
+    q_img: Query<(&Interaction, &RelativeCursorPosition), (With<BigMapImg>, Changed<Interaction>)>,
+) {
+    for (it, rel) in &q_img {
+        if *it != Interaction::Pressed {
+            continue;
+        }
+        let Some(n) = rel.normalized else { continue };
+        let Ok(p) = q_player.get_single() else {
+            continue;
+        };
+        // 图铺满整张地图, 归一化位置直接换算成格坐标
+        let target = DVec2::new(
+            (n.x as f64 * world.map.width as f64).clamp(0.0, world.map.width as f64 - 1.0),
+            (n.y as f64 * world.map.height as f64).clamp(0.0, world.map.height as f64 - 1.0),
+        );
+        match sim::find_path(
+            &world.walk,
+            (p.pos.x, p.pos.y),
+            (target.x, target.y),
+            sim::BODY_RADIUS,
+        ) {
+            Some(path) if !path.is_empty() => {
+                auto.waypoints = path.into_iter().map(|(x, y)| DVec2::new(x, y)).collect();
+                auto.goal = auto.waypoints.back().copied();
+                info!(
+                    "寻路: ({:.0},{:.0}) → ({:.0},{:.0}), {} 个拐点",
+                    p.pos.x,
+                    p.pos.y,
+                    target.x,
+                    target.y,
+                    auto.waypoints.len()
+                );
+            }
+            // 已在原地 / 无路可走: 清掉旧路线, 不留半截状态
+            _ => auto.clear(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -108,6 +108,7 @@ fn main() {
         .init_resource::<panels::Grab>()
         .init_resource::<panels::UiHover>()
         .init_resource::<NpcHits>()
+        .init_resource::<AutoPath>()
         .init_resource::<screens::CharSelectState>()
         .init_resource::<hud::ChatState>()
         .init_resource::<MiniMap>()
@@ -163,6 +164,7 @@ fn main() {
                     panels::toggle,
                     panels::toggle_bigmap,
                     panels::bigmap,
+                    panels::bigmap_click,
                     hud::menu_clicks,
                     panels::drag,
                     panels::close,
@@ -902,6 +904,8 @@ const RUN_SPEED: f64 = 3.4;
 // 动画与位移锁定: 走/跑一个 6 帧周期恰好覆盖 1/2 格, 脚步不打滑(否则视觉发飘)
 const WALK_FRAME_DT: f64 = 1.0 / (WALK_SPEED * 6.0);
 const RUN_FRAME_DT: f64 = 2.0 / (RUN_SPEED * 6.0);
+/// 自动寻路: 走到拐点多近算到达 (格)
+const AUTOPATH_REACH: f64 = 0.35;
 /// 光标离角色近于此距离(格)时不再追(防原地抖动)
 const CURSOR_DEADZONE: f64 = 0.4;
 
@@ -919,6 +923,7 @@ fn player_move(
     ui_hover: Res<panels::UiHover>,
     grab: Res<panels::Grab>,
     npc_hits: Res<NpcHits>,
+    mut auto: ResMut<AutoPath>,
     mut last_cursor: Local<Option<Vec2>>,
     // 本次按下要搭话的 NPC 与是否已开口 (按住期间一直站定, 松手才清)
     mut talk_to: Local<Option<(String, bool)>>,
@@ -936,6 +941,65 @@ fn player_move(
     // egui 面板占用指针时不当作行走输入
     if egui_ctx.ctx_mut().wants_pointer_input() {
         return;
+    }
+    // 手动操作随时接管: 在世界里一按键就放弃自动寻路 (点 UI 不算, 否则
+    // 在大地图上点下一个目标会先被自己清掉)
+    if !ui_hover.0
+        && (buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right))
+    {
+        auto.clear();
+    }
+    // ── 自动寻路: 没有手动输入时按路线跑 ──
+    if !buttons.pressed(MouseButton::Left) && !buttons.pressed(MouseButton::Right) && auto.active()
+    {
+        let dt = time.delta_secs_f64();
+        let now_t2 = time.elapsed_secs_f64();
+        let before = auto.waypoints.len();
+        while let Some(&wp) = auto.waypoints.front() {
+            if (wp - p.pos).length() <= AUTOPATH_REACH {
+                auto.waypoints.pop_front();
+            } else {
+                break;
+            }
+        }
+        // 换了拐点就重置卡住计时: 新拐点的距离必然比刚够到的那个远,
+        // 不重置会被当成"没有进展"而误判卡住 (整条路只走一两段就停)
+        if auto.waypoints.len() != before {
+            auto.last_dist = f64::INFINITY;
+            auto.stuck_since = now_t2;
+        }
+        match auto.waypoints.front().copied() {
+            None => auto.clear(),
+            Some(wp) => {
+                let d = wp - p.pos;
+                // 卡住 (被怪挡住/服务端不让走) 超过 1.5s 就放弃, 免得原地蹭
+                let dist = d.length();
+                if dist + 0.02 < auto.last_dist || auto.stuck_since == 0.0 {
+                    auto.last_dist = dist;
+                    auto.stuck_since = now_t2;
+                } else if now_t2 - auto.stuck_since > 1.5 {
+                    auto.clear();
+                }
+                if auto.active() {
+                    let dir = dir8_from(d.x, d.y);
+                    let v = DVec2::new(sim::DIR8[dir].0, sim::DIR8[dir].1) * RUN_SPEED * dt;
+                    let (nx, ny) = world.walk.try_move(p.pos.x, p.pos.y, v.x, v.y, BODY_RADIUS);
+                    let moved = (nx - p.pos.x).abs() > 1e-9 || (ny - p.pos.y).abs() > 1e-9;
+                    if moved {
+                        p.dir = dir8_from(nx - p.pos.x, ny - p.pos.y);
+                        net.acc += DVec2::new(nx - p.pos.x, ny - p.pos.y);
+                        p.pos = DVec2::new(nx, ny);
+                    }
+                    if moved != p.moving || (moved && !p.running) {
+                        p.anim_t = 0.0;
+                    }
+                    p.moving = moved;
+                    p.running = true;
+                    p.anim_t += dt;
+                    return;
+                }
+            }
+        }
     }
     // 光标在背包/人物等 UI 上, 或手上正提着物品(含刚放下那一下): 不走路也不攻击
     if ui_hover.0 || grab.item.is_some() || grab.released {
@@ -2181,6 +2245,28 @@ fn remote_step(
     }
     for id in gone {
         remotes.0.remove(&id);
+    }
+}
+
+/// 自动寻路: 大地图上点一下, 沿 A* 路线跑过去
+#[derive(Resource, Default)]
+pub struct AutoPath {
+    /// 待走的拐点 (格坐标), 依次消耗
+    pub waypoints: std::collections::VecDeque<DVec2>,
+    /// 终点 (大地图上画个标记)
+    pub goal: Option<DVec2>,
+    /// 上次推进的时刻与当时距下一拐点的距离 —— 卡住不动就放弃
+    stuck_since: f64,
+    last_dist: f64,
+}
+
+impl AutoPath {
+    pub fn clear(&mut self) {
+        self.waypoints.clear();
+        self.goal = None;
+    }
+    pub fn active(&self) -> bool {
+        !self.waypoints.is_empty()
     }
 }
 
