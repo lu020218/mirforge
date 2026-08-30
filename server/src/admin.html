@@ -86,10 +86,10 @@
   tr.detail > td { padding: 0 0 10px; border-bottom: 1px solid var(--line); }
   tr.editing > td { background: rgba(201,165,92,.07); }
   tr.editing > td:first-child { box-shadow: inset 2px 0 0 var(--gold); }
-  #picker, #mmpicker, #npc-picker { display: none; position: fixed; inset: 0;
+  #picker, #mmpicker, #npc-picker, #shape-picker { display: none; position: fixed; inset: 0;
                        background: rgba(0,0,0,.65); z-index: 20; }
-  #picker.on, #npc-picker.on { display: flex; align-items: center; justify-content: center; }
-  #picker .box, #mmpicker .box, #npc-picker .box { background: var(--panel); border: 1px solid var(--gold-edge);
+  #picker.on, #npc-picker.on, #shape-picker.on { display: flex; align-items: center; justify-content: center; }
+  #picker .box, #mmpicker .box, #npc-picker .box, #shape-picker .box { background: var(--panel); border: 1px solid var(--gold-edge);
                  border-radius: 5px; padding: 16px; max-height: 86vh; overflow: auto; }
   tr.npc-dlg > td { background: rgba(201,165,92,.05); padding: 0; }
   .dlg-box { padding: 14px 18px; border-left: 2px solid var(--gold); }
@@ -104,7 +104,7 @@
   .dlg-loc .mv-slot { min-height: 40px; }
   .shop-tbl { width: auto; margin-bottom: 6px; }
   .shop-tbl th { font-weight: normal; }
-  #picker img, #mmpicker img, #npc-picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
+  #picker img, #mmpicker img, #npc-picker img, #shape-picker img { image-rendering: pixelated; cursor: crosshair; display: block; }
 </style>
 </head>
 <body>
@@ -393,6 +393,16 @@
     <img id="npc-picker-img" width="768" onclick="pickNpcImage(event)">
   </div>
 </div>
+<div id="shape-picker" onclick="closeShapePicker(event)">
+  <div class="box">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <button class="ghost" onclick="shapePickerPage(-1)">上一页</button>
+      <span id="shape-picker-range" class="hint"></span>
+      <button class="ghost" onclick="shapePickerPage(1)">下一页</button>
+    </div>
+    <img id="shape-picker-img" width="768" onclick="pickShape(event)">
+  </div>
+</div>
 <div id="picker" onclick="closePicker(event)">
   <div class="box">
     <div class="toolbar" style="margin-top:0">
@@ -506,11 +516,19 @@ function itemRow(it) {
   tr.innerHTML = ITEM_COLS.map(c => {
     const inp = `<input class="${c === 'template' || c === 'name' ? 'wide' : ''}" data-c="${c}" value="${it[c] ?? (NUM_COLS.has(c) ? 0 : '')}">`;
     if (c === 'image') return `<td>${inp} <img class="icon" title="点击从图库选择" src="/api/frame/items/${it.image ?? 0}" onclick="openPicker(this)"></td>`;
+    if (c === 'shape') return `<td>${inp} <img class="icon" title="点击选择外观 (武器/衣甲站立帧)" src="${shapeThumb(it.slot, it.shape)}" onclick="openShapePicker(this)"></td>`;
     return `<td>${inp}</td>`;
   }).join('') + `<td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   tr.querySelector('input[data-c="image"]').addEventListener('change', e => {
-    tr.querySelector('img.icon').src = '/api/frame/items/' + (Number(e.target.value) || 0);
+    e.target.closest('td').querySelector('img.icon').src = '/api/frame/items/' + (Number(e.target.value) || 0);
   });
+  const refreshShape = () => {
+    const slot = tr.querySelector('input[data-c="slot"]').value.trim();
+    const n = Number(tr.querySelector('input[data-c="shape"]').value) || 0;
+    tr.querySelector('input[data-c="shape"]').closest('td').querySelector('img.icon').src = shapeThumb(slot, n);
+  };
+  tr.querySelector('input[data-c="shape"]').addEventListener('change', refreshShape);
+  tr.querySelector('input[data-c="slot"]').addEventListener('change', refreshShape);
   return tr;
 }
 function addItemRow() {
@@ -554,6 +572,40 @@ function pickIcon(ev) {
   document.getElementById('picker').classList.remove('on');
 }
 function closePicker(ev) { if (ev.target.id === 'picker') ev.target.classList.remove('on'); }
+
+// 外观选择弹层 (武器/衣甲站立帧网格)
+function shapeKind(slot) { return slot === 'weapon' ? 'weapon' : 'armour'; }
+function shapeThumb(slot, n) { return '/api/frame/' + shapeKind(slot || 'weapon') + '/' + (Number(n) || 0); }
+let shapeStart = 0, shapeTarget = null, shapePickKind = 'armour';
+const SHAPE_COUNT = 32, SHAPE_COLS = 8, SHAPE_CW = 96, SHAPE_CH = 120;
+function openShapePicker(imgEl) {
+  const tr = imgEl.closest('tr');
+  shapeTarget = imgEl.closest('td').querySelector('input');
+  shapePickKind = shapeKind(tr.querySelector('input[data-c="slot"]').value.trim());
+  shapeStart = Math.floor((Number(shapeTarget.value) || 0) / SHAPE_COUNT) * SHAPE_COUNT;
+  refreshShapePicker();
+  document.getElementById('shape-picker').classList.add('on');
+}
+function refreshShapePicker() {
+  document.getElementById('shape-picker-img').src =
+    `/api/spritegrid/${shapePickKind}?start=${shapeStart}&count=${SHAPE_COUNT}&_=${shapeStart}`;
+  document.getElementById('shape-picker-range').textContent =
+    `${shapePickKind === 'weapon' ? '武器' : '衣甲'} 外观 ${shapeStart} - ${shapeStart + SHAPE_COUNT - 1}`;
+}
+function shapePickerPage(d) { shapeStart = Math.max(0, shapeStart + d * SHAPE_COUNT); refreshShapePicker(); }
+function pickShape(ev) {
+  const img = ev.target, r = img.getBoundingClientRect();
+  const scale = img.naturalWidth / r.width;
+  const col = Math.floor((ev.clientX - r.left) * scale / SHAPE_CW);
+  const row = Math.floor((ev.clientY - r.top) * scale / SHAPE_CH);
+  const n = shapeStart + row * SHAPE_COLS + col;
+  if (shapeTarget) {
+    shapeTarget.value = n;
+    shapeTarget.dispatchEvent(new Event('change'));
+  }
+  document.getElementById('shape-picker').classList.remove('on');
+}
+function closeShapePicker(ev) { if (ev.target.id === 'shape-picker') ev.target.classList.remove('on'); }
 
 // ── 技能 ──
 const CLASSES = { warrior: '战士', mage: '法师', taoist: '道士' };

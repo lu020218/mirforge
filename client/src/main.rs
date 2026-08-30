@@ -728,35 +728,39 @@ fn make_portrait(
         ));
         (handle, size)
     };
-    // 底层裸模常驻; 缺包时退 Crystal 站立帧 (那张自带衣服, 不再叠加)
     let naked = world
         .open_lib("portrait/naked")
         .and_then(|l| l.image(gender_frame).ok().flatten());
-    let has_naked = naked.is_some();
-    // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808
+    // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808 (1200 帧的自有
+    // 库没有女装段, 取不到就退男装帧)
     let idx = if female { 808 + 16 } else { 16 };
-    let base = naked
-        .or_else(|| {
-            world
-                .open_lib("CArmour/00")
-                .and_then(|l| l.image(idx).ok().flatten())
-        })
-        .map(&mut mk);
-    let gear = if has_naked {
-        armor_shape
-            .and_then(|s| {
-                world
-                    .open_lib(&format!("portrait/{s:03}"))
-                    .and_then(|l| l.image(gender_frame).ok().flatten())
-            })
-            .map(|img| {
-                let off = Vec2::new(img.offset_x as f32, img.offset_y as f32);
-                let (h, size) = mk(img);
-                (h, size, off)
-            })
-    } else {
-        None
+    let stand = |world: &mut World, lib: &str| {
+        world
+            .open_lib(lib)
+            .and_then(|l| l.image(idx).ok().flatten().or_else(|| l.image(16).ok().flatten()))
     };
+    // 有衣甲且有展示图 → 裸模打底 + 展示图叠加;
+    // 有衣甲没展示图 → 该外观的站立帧 (packs 覆盖同样生效, 别让人光着);
+    // 没衣甲 → 裸模, 连裸模都没有 → 0 号站立帧
+    let (base_img, gear_img) = match armor_shape {
+        Some(s) => {
+            let g = world
+                .open_lib(&format!("portrait/{s:03}"))
+                .and_then(|l| l.image(gender_frame).ok().flatten());
+            if g.is_some() && naked.is_some() {
+                (naked, g)
+            } else {
+                (stand(&mut world, &format!("CArmour/{s:02}")), None)
+            }
+        }
+        None => (naked.or_else(|| stand(&mut world, "CArmour/00")), None),
+    };
+    let base = base_img.map(&mut mk);
+    let gear = gear_img.map(|img| {
+        let off = Vec2::new(img.offset_x as f32, img.offset_y as f32);
+        let (h, size) = mk(img);
+        (h, size, off)
+    });
     commands.insert_resource(Portrait { base, gear });
 }
 

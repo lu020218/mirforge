@@ -587,13 +587,19 @@ async fn api_sprite_grid(
     if !authed(&st, &headers) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    if !matches!(kind.as_str(), "npc" | "monster") {
+    if !matches!(kind.as_str(), "npc" | "monster" | "weapon" | "armour") {
         return Err(StatusCode::NOT_FOUND);
     }
     let count = q.count.min(64);
     let (cols, cw, ch) = (8usize, 96u32, 120u32);
     let rows = count.div_ceil(cols).max(1);
     let start = q.start;
+    // npc/monster 首帧即站立; 武器/衣甲按 Player 帧表取朝南站立帧 16
+    let frame_idx = if matches!(kind.as_str(), "weapon" | "armour") {
+        16
+    } else {
+        0
+    };
     let png = tokio::task::spawn_blocking(move || {
         let mut canvas = image::RgbaImage::new(cols as u32 * cw, rows as u32 * ch);
         for (x, y, p) in canvas.enumerate_pixels_mut() {
@@ -608,7 +614,7 @@ async fn api_sprite_grid(
             let n = (start + i) as u16;
             let (ox, oy) = (((i % cols) as u32) * cw, ((i / cols) as u32) * ch);
             with_preview_lib(&kind, n, |lib| {
-                let img = lib.image(0).ok().flatten()?;
+                let img = lib.image(frame_idx).ok().flatten()?;
                 let (w, h) = (img.width as u32, img.height as u32);
                 // 水平居中, 垂直贴底 (NPC 立绘基准在脚下)
                 let dx = ox + cw.saturating_sub(w) / 2;
