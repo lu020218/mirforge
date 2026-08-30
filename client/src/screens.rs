@@ -10,7 +10,7 @@ use crate::hud::{
 };
 use crate::{ClientMessage, Net};
 
-const CARD_BG: Color = Color::srgba(0.051, 0.059, 0.094, 0.88); // rgba(13,15,24,.88)
+const CARD_BG: Color = Color::srgb(0.137, 0.098, 0.059); // #231910 深木色, 不透明
 const INPUT_BG: Color = Color::srgb(0.055, 0.063, 0.090); // #0e1017
 const BTN_GOLD_BG: Color = Color::srgb(0.216, 0.176, 0.098); // #372d19 (渐变中值)
 /// rgba(201,165,92,.07) 的 sRGB 预合成值 (Bevy 在 linear 空间混合会偏亮)
@@ -255,7 +255,7 @@ pub struct RegisterBtn;
 #[derive(Component)]
 pub struct StatusText;
 
-pub fn login_setup(mut commands: Commands, skin: Res<Skin>) {
+pub fn login_setup(mut commands: Commands, skin: Res<Skin>, wood: Res<crate::panels::WoodTex>) {
     commands
         .spawn((
             LoginRoot,
@@ -331,6 +331,7 @@ pub fn login_setup(mut commands: Commands, skin: Res<Skin>) {
                 BorderColor(GOLD),
             ))
             .with_children(|card| {
+                crate::panels::wood_bg(card, &wood);
                 crate::panels::metal_frame(card);
                 for (label, ph, pw, order) in [
                     ("账 号", "输入账号", false, 0u8),
@@ -584,6 +585,7 @@ pub fn charselect_teardown(mut commands: Commands, q: Query<Entity, With<CharSel
 pub fn charselect_update(
     mut commands: Commands,
     skin: Res<Skin>,
+    wood: Res<crate::panels::WoodTex>,
     mut net: ResMut<Net>,
     mut state: ResMut<CharSelectState>,
     q_list: Query<Entity, With<CharListBody>>,
@@ -612,7 +614,7 @@ pub fn charselect_update(
     // 创建新角色卡 → 弹创建层
     if q_create.iter().any(|it| *it == Interaction::Pressed) && !state.creating {
         state.creating = true;
-        spawn_create_panel(&mut commands, &skin);
+        spawn_create_panel(&mut commands, &skin, &wood);
     }
     // 进入游戏 (按钮或 Enter)
     let enter_key = keys
@@ -759,7 +761,7 @@ pub fn charselect_update(
 }
 
 /// 创建角色弹层 (居中卡: 名字 + 三职业 + 确认/取消)
-fn spawn_create_panel(commands: &mut Commands, skin: &Skin) {
+fn spawn_create_panel(commands: &mut Commands, skin: &Skin, wood: &crate::panels::WoodTex) {
     commands
         .spawn((
             CreatePanel,
@@ -792,6 +794,7 @@ fn spawn_create_panel(commands: &mut Commands, skin: &Skin) {
                     BorderColor(GOLD),
                 ))
                 .with_children(|card| {
+                    crate::panels::wood_bg(card, wood);
                     crate::panels::metal_frame(card);
                     card.spawn(text(&skin.font, "创 建 角 色", 20.0, TEXT_MAIN));
                     card.spawn(Node {

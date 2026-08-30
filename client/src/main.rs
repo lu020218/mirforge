@@ -89,7 +89,7 @@ fn main() {
         .init_state::<Screen>()
         .init_resource::<Net>()
         .init_resource::<Remotes>()
-        .add_systems(Startup, (hud::load_skin, setup))
+        .add_systems(Startup, (hud::load_skin, panels::make_wood, setup))
         .add_systems(
             OnEnter(Screen::InGame),
             (

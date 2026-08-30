@@ -5,6 +5,7 @@
 
 use bevy::math::DVec2;
 use bevy::prelude::*;
+use bevy::ui::widget::NodeImageMode;
 use bevy::ui::RelativeCursorPosition;
 
 use crate::hud::HP_RED;
@@ -14,6 +15,81 @@ use crate::hud::{
 use crate::Net;
 use protocol::ClientMessage;
 
+/// 程序生成的木板纹理 (启动时一次, 各窗口平铺共用)
+#[derive(Resource)]
+pub struct WoodTex(pub Handle<Image>);
+
+/// 生成 128×128 可平铺木纹: 横向木板 + 板缝 + 波形木纹 + 细噪声
+///
+/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。波形用整周期所以水平
+/// 无缝; 噪声在接缝处有 ±5% 亮度差, 平铺后肉眼难辨。
+pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::Image>>) {
+    const W: u32 = 128;
+    const H: u32 = 128;
+    const PLANK: u32 = 32;
+    fn hash(x: u32, y: u32) -> f32 {
+        let mut h = x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263);
+        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+        ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
+    }
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        let plank = y / PLANK;
+        let seam = y % PLANK == 0;
+        // 每块板整体深浅略有差, 像不同木料
+        let plank_k = (hash(plank, 7) - 0.5) * 0.16;
+        for x in 0..W {
+            let fx = x as f32 / W as f32 * std::f32::consts::TAU;
+            let grain = (fx * 3.0 + plank as f32 * 2.1).sin() * 0.09
+                + (fx * 11.0 + plank as f32 * 5.7).sin() * 0.05
+                + (hash(x, y) - 0.5) * 0.10;
+            let mut k = 0.9 + grain + plank_k;
+            if seam {
+                k *= 0.45; // 板缝压暗
+            }
+            for base in [0.212f32, 0.149, 0.090] {
+                rgba.push(((base * k).clamp(0.0, 1.0) * 255.0) as u8);
+            }
+            rgba.push(255);
+        }
+    }
+    let handle = images.add(bevy::image::Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        rgba,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    ));
+    commands.insert_resource(WoodTex(handle));
+}
+
+/// 木板底: 铺满窗口内区。必须在其它子节点之前生成 (先画者在下层)
+pub fn wood_bg(parent: &mut ChildBuilder, wood: &WoodTex) {
+    parent.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            top: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            ..default()
+        },
+        ImageNode {
+            image: wood.0.clone(),
+            image_mode: NodeImageMode::Tiled {
+                tile_x: true,
+                tile_y: true,
+                stretch_value: 1.0,
+            },
+            ..default()
+        },
+    ));
+}
+
 /// 金属边高光 (亮金半透明, 叠在主边内侧)
 const GOLD_HIGHLIGHT: Color = Color::srgba(1.0, 0.847, 0.463, 0.55);
 /// 金属边外描边 (深褐, 把金边从场景里勾出来)
@@ -21,10 +97,10 @@ const GOLD_SHADOW: Color = Color::srgba(0.16, 0.11, 0.04, 0.9);
 
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
-const PANEL_BG: Color = Color::srgba(0.051, 0.059, 0.094, 0.94); // rgba(13,15,24,.94)
+const PANEL_BG: Color = Color::srgb(0.137, 0.098, 0.059); // #231910 深木色, 不透明
 const SLOT_BG: Color = Color::srgb(0.055, 0.063, 0.090); // #0e1017
-/// 标题栏微金渐变的 sRGB 预合成近似 (Bevy 无渐变)
-const TITLE_BG: Color = Color::srgb(0.110, 0.106, 0.114);
+/// 标题栏: 半透明压暗层叠在木纹上, 分出题区又不盖掉纹理
+const TITLE_BG: Color = Color::srgba(0.0, 0.0, 0.0, 0.38);
 const BTN_GOLD_BG: Color = Color::srgb(0.216, 0.176, 0.098); // #372d19
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,10 +180,11 @@ pub fn ui_hover(mut hover: ResMut<UiHover>, q: Query<&RelativeCursorPosition, Wi
 }
 
 /// 进入游戏时预建三面板 (默认隐藏), 位置为设计稿坐标
-pub fn setup(mut commands: Commands, skin: Res<Skin>) {
+pub fn setup(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>) {
     spawn_panel(
         &mut commands,
         &skin,
+        &wood,
         PanelKind::Bag,
         "背 包",
         (468.0, 220.0),
@@ -116,6 +193,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
     spawn_panel(
         &mut commands,
         &skin,
+        &wood,
         PanelKind::Character,
         "角 色",
         (1010.0, 180.0),
@@ -124,6 +202,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>) {
     spawn_panel(
         &mut commands,
         &skin,
+        &wood,
         PanelKind::Quest,
         "任 务",
         (60.0, 180.0),
@@ -174,6 +253,7 @@ pub fn metal_frame(panel: &mut ChildBuilder) {
 fn spawn_panel(
     commands: &mut Commands,
     skin: &Skin,
+    wood: &WoodTex,
     kind: PanelKind,
     title: &str,
     pos: (f32, f32),
@@ -199,6 +279,7 @@ fn spawn_panel(
             RelativeCursorPosition::default(),
         ))
         .with_children(|panel| {
+            wood_bg(panel, wood);
             metal_frame(panel);
             // 标题栏 48px (拖拽区): 微金渐变近似底 + 底分隔线
             panel
@@ -480,6 +561,7 @@ pub fn dialog(
     mut commands: Commands,
     net: Res<Net>,
     skin: Res<Skin>,
+    wood: Res<WoodTex>,
     mut seen_rev: Local<u32>,
     q_old: Query<Entity, With<DialogRoot>>,
 ) {
@@ -515,6 +597,7 @@ pub fn dialog(
             GlobalZIndex(20),
         ))
         .with_children(|root| {
+            wood_bg(root, &wood);
             metal_frame(root);
             // 标题栏: NPC 名 + 关闭
             root.spawn((
@@ -635,7 +718,7 @@ pub struct BigMapTitle;
 pub struct BigMapFoot;
 
 /// 进图时预建 (默认隐藏); 与面板族同样是常驻节点, 靠 display 开关
-pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
+pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>) {
     let font = skin.font.clone();
     commands
         .spawn((
@@ -658,6 +741,7 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
             GlobalZIndex(30),
         ))
         .with_children(|root| {
+            wood_bg(root, &wood);
             metal_frame(root);
             root.spawn((
                 Node {
@@ -1005,6 +1089,7 @@ pub fn shop(
     mut commands: Commands,
     net: Res<Net>,
     skin: Res<Skin>,
+    wood: Res<WoodTex>,
     world: Res<crate::World>,
     mut icons: ResMut<crate::ItemIcons>,
     mut images: ResMut<Assets<Image>>,
@@ -1056,6 +1141,7 @@ pub fn shop(
             GlobalZIndex(20),
         ))
         .with_children(|root| {
+            wood_bg(root, &wood);
             metal_frame(root);
             root.spawn((
                 Node {
