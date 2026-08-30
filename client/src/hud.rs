@@ -296,9 +296,14 @@ fn load_skill_icons(
     data_dir: Option<&std::path::Path>,
     images: &mut Assets<Image>,
 ) -> Vec<Option<Handle<Image>>> {
-    let lib = data_dir
-        .and_then(|d| std::fs::read(d.join("MagIcon.Lib")).ok())
-        .and_then(|d| mir_formats::crystal_lib::CrystalLib::parse(d).ok());
+    // Crystal 路线已废除: 技能图标只走 packs/magicon.mfl
+    let _ = data_dir;
+    let packs = std::env::var("MIRFORGE_PACKS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
+    let lib = std::fs::read(packs.join("magicon.mfl"))
+        .ok()
+        .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok());
     net.skills
         .iter()
         .map(|s| {

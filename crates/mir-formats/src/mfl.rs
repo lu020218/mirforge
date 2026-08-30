@@ -156,37 +156,78 @@ pub struct MflFrame {
     pub rgba: Vec<u8>,
 }
 
-/// 打包成 .mfl 字节流。索引即帧号, 打包工具与运行时读取共用此真源。
-pub fn write(frames: &[Option<MflFrame>]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&(frames.len() as u32).to_le_bytes());
-    let table_at = out.len();
-    out.resize(table_at + frames.len() * 4, 0);
-    for (i, f) in frames.iter().enumerate() {
-        let Some(f) = f else { continue };
+/// 流式写入器: 先定帧位数, 逐帧追加 (空帧 push_empty), 末尾 finish。
+/// 大库转码不用把全部解码帧攒在内存里。
+pub struct MflWriter {
+    buf: Vec<u8>,
+    count: usize,
+    next: usize,
+}
+
+impl MflWriter {
+    pub fn new(count: usize) -> Self {
+        let mut buf = Vec::with_capacity(8 + count * 4);
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&(count as u32).to_le_bytes());
+        buf.resize(8 + count * 4, 0);
+        Self {
+            buf,
+            count,
+            next: 0,
+        }
+    }
+
+    pub fn push_empty(&mut self) -> Result<()> {
+        if self.next >= self.count {
+            return Err(FormatError::Unrecognized("mfl writer overflow"));
+        }
+        self.next += 1;
+        Ok(())
+    }
+
+    pub fn push(&mut self, f: &MflFrame) -> Result<()> {
+        if self.next >= self.count {
+            return Err(FormatError::Unrecognized("mfl writer overflow"));
+        }
         if f.rgba.len() != f.width as usize * f.height as usize * 4 {
             return Err(FormatError::Unrecognized("mfl frame rgba size"));
         }
         if f.width == 0 || f.height == 0 {
-            continue; // 空图当空帧
+            return self.push_empty(); // 空图当空帧
         }
-        let off = out.len() as u32;
-        out[table_at + i * 4..table_at + i * 4 + 4].copy_from_slice(&off.to_le_bytes());
+        let i = self.next;
+        self.next += 1;
+        let off = self.buf.len() as u32;
+        self.buf[8 + i * 4..8 + i * 4 + 4].copy_from_slice(&off.to_le_bytes());
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        gz.write_all(&f.rgba)
+        let z = gz
+            .write_all(&f.rgba)
             .and_then(|_| gz.finish())
-            .map(|z| {
-                out.extend_from_slice(&f.width.to_le_bytes());
-                out.extend_from_slice(&f.height.to_le_bytes());
-                out.extend_from_slice(&f.offset_x.to_le_bytes());
-                out.extend_from_slice(&f.offset_y.to_le_bytes());
-                out.extend_from_slice(&(z.len() as u32).to_le_bytes());
-                out.extend_from_slice(&z);
-            })
             .map_err(|_| FormatError::Unrecognized("mfl gzip"))?;
+        self.buf.extend_from_slice(&f.width.to_le_bytes());
+        self.buf.extend_from_slice(&f.height.to_le_bytes());
+        self.buf.extend_from_slice(&f.offset_x.to_le_bytes());
+        self.buf.extend_from_slice(&f.offset_y.to_le_bytes());
+        self.buf.extend_from_slice(&(z.len() as u32).to_le_bytes());
+        self.buf.extend_from_slice(&z);
+        Ok(())
     }
-    Ok(out)
+
+    pub fn finish(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+/// 打包成 .mfl 字节流。索引即帧号, 打包工具与运行时读取共用此真源。
+pub fn write(frames: &[Option<MflFrame>]) -> Result<Vec<u8>> {
+    let mut w = MflWriter::new(frames.len());
+    for f in frames {
+        match f {
+            Some(f) => w.push(f)?,
+            None => w.push_empty()?,
+        }
+    }
+    Ok(w.finish())
 }
 
 #[cfg(test)]

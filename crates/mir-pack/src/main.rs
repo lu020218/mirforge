@@ -22,6 +22,7 @@ fn main() {
             &args[2..].iter().map(PathBuf::from).collect::<Vec<_>>(),
         ),
         Some("info") if args.len() == 2 => info(Path::new(&args[1])),
+        Some("convert") if args.len() == 3 => convert(Path::new(&args[1]), Path::new(&args[2])),
         Some("preview") if (3..=5).contains(&args.len()) => {
             let start = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let n = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(16);
@@ -29,8 +30,13 @@ fn main() {
         }
         _ => {
             eprintln!("用法:");
-            eprintln!("  mir-pack pack <PNG目录> <输出.mfl>     打包 (目录含 NNNNN.PNG + Placements/)");
-            eprintln!("  mir-pack pack-list <输出.mfl> <PNG>...  散图按参数顺序打成帧 (立绘等无锚点素材)");
+            eprintln!(
+                "  mir-pack pack <PNG目录> <输出.mfl>     打包 (目录含 NNNNN.PNG + Placements/)"
+            );
+            eprintln!(
+                "  mir-pack pack-list <输出.mfl> <PNG>...  散图按参数顺序打成帧 (立绘等无锚点素材)"
+            );
+            eprintln!("  mir-pack convert <resources/Data> <packs>  引擎注册表内全部 Crystal 库转码为 .mfl");
             eprintln!("  mir-pack info <输入.mfl>              查看帧数统计");
             eprintln!("  mir-pack preview <输入.mfl> <输出.png> [起始帧] [帧数]  出预览拼图");
             std::process::exit(2);
@@ -157,6 +163,158 @@ fn pack_list(out: &Path, srcs: &[PathBuf]) -> Result<(), AnyErr> {
     Ok(())
 }
 
+/// 引擎注册表内的 Crystal 库 → packs 目标路径 (与客户端 pack_path 同一套映射)
+///
+/// 返回 (Data 下相对路径不带扩展名, packs 下相对路径)。地图库保持相对
+/// 路径, 五大类型归各自目录, 单例库平铺。
+fn convert_targets(data: &Path) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    // 编号目录: (Data 子目录, packs 类型目录)
+    for (dir, kind) in [
+        ("CArmour", "armor"),
+        ("CWeapon", "weapon"),
+        ("CHair", "hair"),
+        ("Monster", "monster"),
+        ("NPC", "npc"),
+    ] {
+        let Ok(rd) = std::fs::read_dir(data.join(dir)) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let (Some(stem), Some(ext)) = (
+                p.file_stem().and_then(|s| s.to_str()),
+                p.extension().and_then(|s| s.to_str()),
+            ) else {
+                continue;
+            };
+            if !ext.eq_ignore_ascii_case("lib") {
+                continue;
+            }
+            if let Ok(n) = stem.parse::<u32>() {
+                out.push((format!("{dir}/{stem}"), format!("{kind}/{n:03}.mfl")));
+            }
+        }
+    }
+    // 单例库
+    for (name, dst) in [
+        ("Items", "items.mfl"),
+        ("MagIcon", "magicon.mfl"),
+        ("mmap", "mmap.mfl"),
+        ("Magic", "magic/000.mfl"),
+        ("Magic2", "magic/001.mfl"),
+    ] {
+        if data.join(format!("{name}.Lib")).exists() || data.join(format!("{name}.lib")).exists() {
+            out.push((name.to_string(), dst.to_string()));
+        }
+    }
+    // 地图图库: Map/ 下全部 .Lib, 保持相对路径
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, base, out);
+            } else if p
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("lib"))
+            {
+                if let Ok(rel) = p.strip_prefix(base) {
+                    let rel = rel.with_extension("");
+                    let rel = rel.to_string_lossy().replace('\\', "/");
+                    out.push((format!("Map/{rel}"), format!("map/{rel}.mfl")));
+                }
+            }
+        }
+    }
+    walk(&data.join("Map"), &data.join("Map"), &mut out);
+    out
+}
+
+/// 单库转码: Crystal 帧逐帧解码 → 流式写 .mfl
+fn convert_one(src: &Path, dst: &Path) -> Result<(usize, usize), AnyErr> {
+    let lib = mir_formats::crystal_lib::CrystalLib::parse(std::fs::read(src)?)?;
+    let mut w = mfl::MflWriter::new(lib.len());
+    let (mut ok, mut empty) = (0usize, 0usize);
+    for i in 0..lib.len() {
+        match lib.image(i).ok().flatten() {
+            Some(img) => {
+                w.push(&MflFrame {
+                    width: img.width,
+                    height: img.height,
+                    offset_x: img.offset_x,
+                    offset_y: img.offset_y,
+                    rgba: img.rgba,
+                })?;
+                ok += 1;
+            }
+            None => {
+                w.push_empty()?;
+                empty += 1;
+            }
+        }
+    }
+    if let Some(dir) = dst.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(dst, w.finish())?;
+    Ok((ok, empty))
+}
+
+/// 全量转码 (多线程, 已存在的跳过 — 想重转先删目标文件)
+fn convert(data: &Path, packs: &Path) -> Result<(), AnyErr> {
+    let targets = convert_targets(data);
+    let total = targets.len();
+    let todo: Vec<_> = targets
+        .into_iter()
+        .filter(|(_, dst)| !packs.join(dst).exists())
+        .collect();
+    println!("注册表内库 {total} 个, 待转 {} 个 (已存在跳过)", todo.len());
+    let jobs = std::sync::Mutex::new(todo.into_iter());
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let failed = std::sync::Mutex::new(Vec::<String>::new());
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| loop {
+                let job = { jobs.lock().unwrap().next() };
+                let Some((name, dst)) = job else { break };
+                let src = ["Lib", "lib"]
+                    .iter()
+                    .map(|e| data.join(format!("{name}.{e}")))
+                    .find(|p| p.exists());
+                let Some(src) = src else {
+                    failed.lock().unwrap().push(format!("{name} (缺源)"));
+                    continue;
+                };
+                match convert_one(&src, &packs.join(&dst)) {
+                    Ok((ok, _)) => {
+                        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        println!("[{n}] {name} → {dst} ({ok} 实帧)");
+                    }
+                    Err(e) => failed.lock().unwrap().push(format!("{name}: {e}")),
+                }
+            });
+        }
+    });
+    let failed = failed.into_inner().unwrap();
+    println!(
+        "转码完成: 成功 {}, 失败 {}",
+        done.load(std::sync::atomic::Ordering::Relaxed),
+        failed.len()
+    );
+    for f in &failed {
+        eprintln!("  失败: {f}");
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} 个库转码失败", failed.len()).into())
+    }
+}
+
 fn info(path: &Path) -> Result<(), AnyErr> {
     let lib = MflLib::parse(std::fs::read(path)?)?;
     let mut real = 0usize;
@@ -197,11 +355,8 @@ fn preview(path: &Path, out: &Path, start: usize, n: usize) -> Result<(), AnyErr
     let cell_h = frames.iter().map(|(_, f)| f.height as u32).max().unwrap() + 4;
     let cols = frames.len().min(8) as u32;
     let rows = frames.len().div_ceil(8) as u32;
-    let mut canvas = image::RgbaImage::from_pixel(
-        cols * cell_w,
-        rows * cell_h,
-        image::Rgba([40, 34, 28, 255]),
-    );
+    let mut canvas =
+        image::RgbaImage::from_pixel(cols * cell_w, rows * cell_h, image::Rgba([40, 34, 28, 255]));
     for (k, (_, f)) in frames.iter().enumerate() {
         let (cx, cy) = ((k as u32 % 8) * cell_w + 2, (k as u32 / 8) * cell_h + 2);
         for yy in 0..f.height as u32 {

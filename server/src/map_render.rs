@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use mir_formats::crystal_lib::CrystalLib;
 use mir_formats::map::MirMap;
+use mir_formats::mfl::AnyLib;
 
 pub const CELL_W: u32 = 48;
 pub const CELL_H: u32 = 32;
@@ -18,7 +18,7 @@ pub const TILE_CELLS: u32 = 16;
 /// 高物件最多向上溢出的格数（渲染时多扫这些行，避免瓦片下缘缺半截建筑）
 const OVERFLOW_ROWS: u32 = 12;
 
-static MAP_LIBS: Mutex<Option<HashMap<String, Option<CrystalLib>>>> = Mutex::new(None);
+static MAP_LIBS: Mutex<Option<HashMap<String, Option<AnyLib>>>> = Mutex::new(None);
 /// 瓦片 PNG 缓存 (map, tx, ty) → bytes；管理台预览只读, 无需失效
 type TileCache = HashMap<(String, u32, u32), std::sync::Arc<Vec<u8>>>;
 static TILE_CACHE: Mutex<Option<TileCache>> = Mutex::new(None);
@@ -121,14 +121,14 @@ fn with_frame<R>(
     let mut guard = MAP_LIBS.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
     if !cache.contains_key(&name) {
-        let mut parsed = None;
-        for cand in [format!("{name}.Lib"), format!("{name}.lib")] {
-            let p = res_root.join("Data/Map").join(&cand);
-            if let Ok(data) = std::fs::read(&p) {
-                parsed = CrystalLib::parse(data).ok();
-                break;
-            }
-        }
+        // Crystal 路线已废除: 地图图库只走 packs/map (mir-pack convert 转码)
+        let _ = res_root;
+        let packs = std::env::var("MIRFORGE_PACKS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
+        let parsed = std::fs::read(packs.join("map").join(format!("{name}.mfl")))
+            .ok()
+            .and_then(|d| AnyLib::parse(d).ok());
         cache.insert(name.clone(), parsed);
     }
     let img = cache

@@ -444,32 +444,19 @@ fn packs_root() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("packs"))
 }
 
-/// packs/ 同类同号的 .mfl (自有资源优先于 Crystal, 与客户端同一覆盖规则)
+/// 预览库白名单 (packs/ 内固定路径, 杜绝任意文件读取)。
+/// Crystal 资源路线已废除, 预览只走 packs — mir-pack convert 负责转码。
 fn preview_pack_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
     let rel = match kind {
         "items" => "items.mfl".to_string(),
         "weapon" => format!("weapon/{n:03}.mfl"),
         "armour" => format!("armor/{n:03}.mfl"),
         "monster" => format!("monster/{n:03}.mfl"),
+        "minimap" => "mmap.mfl".to_string(),
         "npc" => format!("npc/{n:03}.mfl"),
         _ => return None,
     };
     Some(packs_root().join(rel))
-}
-
-/// 预览库白名单: 路径固定, 杜绝任意文件读取
-fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
-    let root = RES_ROOT.get()?;
-    let rel = match kind {
-        "items" => "Data/Items.Lib".to_string(),
-        "weapon" => format!("Data/CWeapon/{n:02}.Lib"),
-        "armour" => format!("Data/CArmour/{n:02}.Lib"),
-        "monster" => format!("Data/Monster/{n:03}.Lib"),
-        "minimap" => "Data/mmap.Lib".to_string(),
-        "npc" => format!("Data/NPC/{n:02}.Lib"),
-        _ => return None,
-    };
-    Some(root.join(rel))
 }
 
 fn with_preview_lib<R>(
@@ -483,9 +470,6 @@ fn with_preview_lib<R>(
     if !cache.contains_key(&key) {
         let lib = preview_pack_path(kind, n)
             .and_then(|p| std::fs::read(p).ok())
-            .or_else(|| {
-                preview_lib_path(kind, n).and_then(|p| std::fs::read(p).ok())
-            })
             .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok());
         cache.insert(key.clone(), lib);
     }

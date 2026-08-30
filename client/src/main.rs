@@ -28,9 +28,8 @@ use bevy::sprite::Anchor;
 use bevy::window::PresentMode;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use mir_atlas::{AtlasCpu, PAGE_SIZE};
-use mir_formats::crystal_lib::CrystalLib;
-use mir_formats::mfl::AnyLib;
 use mir_formats::map::MirMap;
+use mir_formats::mfl::AnyLib;
 use protocol::{CharacterClass, CharacterSummary, ClientMessage, ServerMessage, PROTOCOL_VERSION};
 use sim::{dir8_from, WalkGrid, BODY_RADIUS, NPC_TALK_RANGE};
 
@@ -415,8 +414,18 @@ impl World {
     /// 淘汰路线: 每接入一类就在这里补一行; 全部类别被 packs 覆盖后
     /// Crystal 兜底即可整体移除。
     fn pack_path(&self, name: &str) -> Option<PathBuf> {
+        // 单例: 技能特效两库
+        match name {
+            "Magic" => return Some(self.packs_root.join("magic/000.mfl")),
+            "Magic2" => return Some(self.packs_root.join("magic/001.mfl")),
+            _ => {}
+        }
+        // 地图图库: 保持 Map/ 下相对路径
+        if let Some(rest) = name.strip_prefix("Map/") {
+            return Some(self.packs_root.join("map").join(format!("{rest}.mfl")));
+        }
         let (dir, num) = name.split_once('/')?;
-        // 纯 packs 类别 (Crystal 无对应物): 立绘等, 名字原样定位
+        // 纯 packs 类别: 立绘等, 名字原样定位
         if dir == "portrait" {
             return Some(self.packs_root.join(dir).join(format!("{num}.mfl")));
         }
@@ -434,23 +443,14 @@ impl World {
 
     fn open_lib(&mut self, name: &str) -> Option<&AnyLib> {
         if !self.libs.contains_key(name) {
-            let mut lib = None;
-            // 自有资源包优先: 同类同号的 .mfl 直接顶掉 Crystal 原版
-            if let Some(p) = self.pack_path(name) {
-                if let Ok(data) = std::fs::read(&p) {
-                    lib = AnyLib::parse(data).ok();
-                }
-            }
-            if lib.is_none() {
-                for cand in [format!("{name}.Lib"), format!("{name}.lib")] {
-                    let p = self.data_root.join(&cand);
-                    if p.exists() {
-                        if let Ok(data) = std::fs::read(&p) {
-                            lib = AnyLib::parse(data).ok();
-                            break;
-                        }
-                    }
-                }
+            // 只走 packs (Crystal 资源路线已废除; mir-pack convert 负责把
+            // 原版库转码进 packs)。缺库只告警一次 — None 结果同样缓存。
+            let lib = self
+                .pack_path(name)
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|d| AnyLib::parse(d).ok());
+            if lib.is_none() && !name.starts_with("portrait/") {
+                warn!("packs 缺库: {name} (用 mir-pack convert 从原版资源转码)");
             }
             self.libs.insert(name.to_string(), lib);
         }
@@ -543,8 +543,8 @@ impl ItemIcons {
                 .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
             self.lib = std::fs::read(packs.join("items.mfl"))
                 .ok()
-                .or_else(|| std::fs::read(data_root.join("Items.Lib")).ok())
                 .and_then(|d| AnyLib::parse(d).ok());
+            let _ = data_root; // Crystal 路线已废除, 图标只走 packs/items.mfl
         }
         let h = self
             .lib
@@ -613,8 +613,8 @@ fn load_minimap(
     mm.loaded_for = key;
     let mut trim = Rect::default();
     mm.image = net.zone_minimap.map(|f| f as usize).and_then(|idx| {
-        let path = world.data_root.join("mmap.Lib");
-        let lib = CrystalLib::parse(std::fs::read(path).ok()?).ok()?;
+        let path = world.packs_root.join("mmap.mfl");
+        let lib = AnyLib::parse(std::fs::read(path).ok()?).ok()?;
         let img = lib.image(idx).ok().flatten()?;
         let size = Vec2::new(img.width as f32, img.height as f32);
         trim = opaque_bounds(&img.rgba, img.width as u32, img.height as u32)
@@ -735,9 +735,12 @@ fn make_portrait(
     // 库没有女装段, 取不到就退男装帧)
     let idx = if female { 808 + 16 } else { 16 };
     let stand = |world: &mut World, lib: &str| {
-        world
-            .open_lib(lib)
-            .and_then(|l| l.image(idx).ok().flatten().or_else(|| l.image(16).ok().flatten()))
+        world.open_lib(lib).and_then(|l| {
+            l.image(idx)
+                .ok()
+                .flatten()
+                .or_else(|| l.image(16).ok().flatten())
+        })
     };
     // 有衣甲且有展示图 → 裸模打底 + 展示图叠加;
     // 有衣甲没展示图 → 该外观的站立帧 (packs 覆盖同样生效, 别让人光着);
