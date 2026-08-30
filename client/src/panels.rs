@@ -2107,6 +2107,8 @@ fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin
 #[allow(clippy::type_complexity)]
 pub fn bigmap_click(
     world: Res<crate::World>,
+    remotes: Res<crate::Remotes>,
+    net: Res<Net>,
     mut auto: ResMut<crate::AutoPath>,
     q_player: Query<&crate::Player>,
     q_img: Query<(&Interaction, &RelativeCursorPosition), (With<BigMapImg>, Changed<Interaction>)>,
@@ -2124,22 +2126,34 @@ pub fn bigmap_click(
             (n.x as f64 * world.map.width as f64).clamp(0.0, world.map.width as f64 - 1.0),
             (n.y as f64 * world.map.height as f64).clamp(0.0, world.map.height as f64 - 1.0),
         );
-        match sim::find_path(
-            &world.walk,
-            (p.pos.x, p.pos.y),
-            (target.x, target.y),
-            sim::BODY_RADIUS,
-        ) {
+        let blockers = crate::avoid_points(&remotes, &net, p.pos);
+        if std::env::var("MIRFORGE_PATHDBG").is_ok() {
+            let plain = sim::find_path(
+                &world.walk,
+                (p.pos.x, p.pos.y),
+                (target.x, target.y),
+                sim::BODY_RADIUS,
+            );
+            let avoid = crate::plan_path(&world, p.pos, target, &blockers);
+            info!(
+                "PATHDBG 不避让 {:?} 拐点 / 避让 {:?} 拐点; 实体 {}",
+                plain.as_ref().map(|v| v.len()),
+                avoid.as_ref().map(|v| v.len()),
+                blockers.len()
+            );
+        }
+        match crate::plan_path(&world, p.pos, target, &blockers) {
             Some(path) if !path.is_empty() => {
-                auto.waypoints = path.into_iter().map(|(x, y)| DVec2::new(x, y)).collect();
-                auto.goal = auto.waypoints.back().copied();
+                auto.goal = path.back().copied();
+                auto.waypoints = path;
                 info!(
-                    "寻路: ({:.0},{:.0}) → ({:.0},{:.0}), {} 个拐点",
+                    "寻路: ({:.0},{:.0}) → ({:.0},{:.0}), {} 个拐点, 避开 {} 个实体",
                     p.pos.x,
                     p.pos.y,
                     target.x,
                     target.y,
-                    auto.waypoints.len()
+                    auto.waypoints.len(),
+                    blockers.len()
                 );
             }
             // 已在原地 / 无路可走: 清掉旧路线, 不留半截状态

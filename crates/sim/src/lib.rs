@@ -196,6 +196,21 @@ pub fn find_path(
     to: (f64, f64),
     radius: f64,
 ) -> Option<Vec<(f64, f64)>> {
+    find_path_avoiding(grid, from, to, radius, |_, _| false)
+}
+
+/// 同 [`find_path`], 但额外把 `avoid(cx, cy)` 为真的格当成不可走
+///
+/// 用来绕开怪群这类"临时障碍": 它们不在行走网格里 (实体本身并不阻挡移动),
+/// 只是路线上不想从中间穿过去。调用方负责别把起点周围也标成障碍, 否则
+/// 人陷在怪堆里就永远算不出路。
+pub fn find_path_avoiding<F: Fn(i32, i32) -> bool>(
+    grid: &WalkGrid,
+    from: (f64, f64),
+    to: (f64, f64),
+    radius: f64,
+    avoid: F,
+) -> Option<Vec<(f64, f64)>> {
     let (w, h) = (grid.width as i32, grid.height as i32);
     let clampc = |v: f64, hi: i32| (v.floor() as i32).clamp(0, hi - 1);
     let (sx, sy) = (clampc(from.0, w), clampc(from.1, h));
@@ -206,6 +221,7 @@ pub fn find_path(
             && x < w
             && y < h
             && grid.is_walkable_circle(x as f64 + 0.5, y as f64 + 0.5, radius)
+            && !avoid(x, y)
     };
     if (sx, sy) == (gx, gy) {
         return Some(Vec::new());
@@ -314,6 +330,43 @@ mod tests {
     /// 空旷 20×20; 便于构造带墙的用例
     fn open(w: u32, h: u32, blocked: &[(u32, u32)]) -> WalkGrid {
         WalkGrid::from_cells(w, h, |x, y| blocked.contains(&(x, y)))
+    }
+
+    #[test]
+    fn avoid_routes_around_temporary_blockers() {
+        let g = open(20, 20, &[]);
+        // 一排"怪"横在中间, 只留 x=0 一侧的口
+        let mobs: Vec<(i32, i32)> = (1..20).map(|y| (10i32, y)).collect();
+        let p = find_path_avoiding(&g, (5.5, 10.5), (15.5, 10.5), BODY_RADIUS, |x, y| {
+            mobs.contains(&(x, y))
+        })
+        .expect("应绕开");
+        let min_y = p.iter().map(|w| w.1).fold(f64::INFINITY, f64::min);
+        assert!(min_y < 2.0, "应绕过障碍列, 实际最小 y={min_y}");
+        // 同样起终点、不避让时是直线一段
+        let straight = find_path(&g, (5.5, 10.5), (15.5, 10.5), BODY_RADIUS).unwrap();
+        assert_eq!(straight.len(), 1);
+    }
+
+    #[test]
+    fn avoid_can_make_path_impossible() {
+        // 避让把目标围死时应返回 None, 由调用方决定是否退回不避让
+        let g = open(20, 20, &[]);
+        let ring = [
+            (14, 13),
+            (15, 13),
+            (16, 13),
+            (14, 14),
+            (16, 14),
+            (14, 15),
+            (15, 15),
+            (16, 15),
+        ];
+        let p = find_path_avoiding(&g, (2.5, 2.5), (15.5, 14.5), BODY_RADIUS, |x, y| {
+            ring.contains(&(x, y))
+        });
+        assert!(p.is_none());
+        assert!(find_path(&g, (2.5, 2.5), (15.5, 14.5), BODY_RADIUS).is_some());
     }
 
     #[test]

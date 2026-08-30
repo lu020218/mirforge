@@ -906,6 +906,18 @@ const WALK_FRAME_DT: f64 = 1.0 / (WALK_SPEED * 6.0);
 const RUN_FRAME_DT: f64 = 2.0 / (RUN_SPEED * 6.0);
 /// 自动寻路: 走到拐点多近算到达 (格)
 const AUTOPATH_REACH: f64 = 0.35;
+/// 寻路时把实体周围这个半径内的格当作临时障碍绕开 (格)
+///
+/// 实体本身并不阻挡移动 (移动只做地形判定), 这里纯粹是"别从怪堆里穿过去"。
+const AUTOPATH_AVOID: f64 = 1.2;
+/// 自己脚下这个范围内不做避让 —— 否则站在怪堆里就永远算不出路
+const AUTOPATH_FREE: f64 = 2.2;
+/// 重算路线的最小间隔 (秒)
+const AUTOPATH_REPLAN_GAP: f64 = 0.4;
+/// 检查前方多少个拐点是否被挡
+const AUTOPATH_LOOKAHEAD: usize = 4;
+/// 卡住后最多补救重算几次, 之后才放弃
+const AUTOPATH_STUCK_RETRIES: u8 = 3;
 /// 光标离角色近于此距离(格)时不再追(防原地抖动)
 const CURSOR_DEADZONE: f64 = 0.4;
 
@@ -968,17 +980,73 @@ fn player_move(
             auto.last_dist = f64::INFINITY;
             auto.stuck_since = now_t2;
         }
+        // 动态避障: 前方拐点被实体占住就就地重算 (限流)
+        if let Some(goal) = auto.goal {
+            if now_t2 >= auto.next_replan {
+                let blockers = avoid_points(&remotes, &net, p.pos);
+                let blocked = auto.waypoints.iter().take(AUTOPATH_LOOKAHEAD).any(|wp| {
+                    (*wp - p.pos).length() > AUTOPATH_FREE
+                        && blockers
+                            .iter()
+                            .any(|b| (*wp - *b).length() < AUTOPATH_AVOID)
+                });
+                if blocked {
+                    auto.next_replan = now_t2 + AUTOPATH_REPLAN_GAP;
+                    auto.stuck_replans = 0;
+                    if std::env::var("MIRFORGE_PATHDBG").is_ok() {
+                        info!(
+                            "PATHDBG 前方被挡, 重算: 位置 ({:.0},{:.0}) 剩 {} 拐点",
+                            p.pos.x,
+                            p.pos.y,
+                            auto.waypoints.len()
+                        );
+                    }
+                    match plan_path(&world, p.pos, goal, &blockers) {
+                        Some(path) if !path.is_empty() => {
+                            auto.waypoints = path;
+                            auto.last_dist = f64::INFINITY;
+                            auto.stuck_since = now_t2;
+                        }
+                        // 连地形路线都没有: 目标已不可达, 收工
+                        _ => auto.clear(),
+                    }
+                }
+            }
+        }
         match auto.waypoints.front().copied() {
             None => auto.clear(),
             Some(wp) => {
                 let d = wp - p.pos;
-                // 卡住 (被怪挡住/服务端不让走) 超过 1.5s 就放弃, 免得原地蹭
+                // 重算也救不回来时的兜底: 超过 2s 毫无进展就放弃
                 let dist = d.length();
                 if dist + 0.02 < auto.last_dist || auto.stuck_since == 0.0 {
                     auto.last_dist = dist;
                     auto.stuck_since = now_t2;
-                } else if now_t2 - auto.stuck_since > 1.5 {
-                    auto.clear();
+                } else if now_t2 - auto.stuck_since > 2.0 {
+                    // 卡住了先补救: 从当前位置重算一条 (可能绕开新出现的障碍),
+                    // 连试几次仍无进展才放弃 —— 直接放弃会让人停在半路
+                    if auto.stuck_replans < AUTOPATH_STUCK_RETRIES {
+                        auto.stuck_replans += 1;
+                        auto.stuck_since = now_t2;
+                        auto.last_dist = f64::INFINITY;
+                        let goal = auto.goal;
+                        let blockers = avoid_points(&remotes, &net, p.pos);
+                        match goal.and_then(|g| plan_path(&world, p.pos, g, &blockers)) {
+                            Some(path) if !path.is_empty() => {
+                                if std::env::var("MIRFORGE_PATHDBG").is_ok() {
+                                    info!(
+                                        "PATHDBG 卡住第 {} 次, 重算得 {} 拐点",
+                                        auto.stuck_replans,
+                                        path.len()
+                                    );
+                                }
+                                auto.waypoints = path;
+                            }
+                            _ => auto.clear(),
+                        }
+                    } else {
+                        auto.clear();
+                    }
                 }
                 if auto.active() {
                     let dir = dir8_from(d.x, d.y);
@@ -2248,6 +2316,61 @@ fn remote_step(
     }
 }
 
+/// 收集当前该避开的实体位置 (怪物 / NPC / 其他玩家)
+///
+/// 只取自己附近的: 避让判定要在 A* 的每个候选格上跑一遍, 实体一多就成了
+/// 平方级开销。远处的怪对眼下这段路线没意义 —— 走近了自然会重算。
+pub(crate) fn avoid_points(remotes: &Remotes, net: &Net, near: DVec2) -> Vec<DVec2> {
+    const RANGE: f64 = 50.0;
+    remotes
+        .0
+        .values()
+        .filter(|r| r.anim != 4) // 死亡中的不算
+        .map(|r| r.pos)
+        .chain(net.npcs.iter().map(|n| DVec2::new(n.x, n.y)))
+        .filter(|q| (*q - near).length() < RANGE)
+        .collect()
+}
+
+/// 从 `from` 到 `goal` 算一条避开实体的路; 避不开就退回只看地形的路
+pub(crate) fn plan_path(
+    world: &World,
+    from: DVec2,
+    goal: DVec2,
+    blockers: &[DVec2],
+) -> Option<std::collections::VecDeque<DVec2>> {
+    let avoid = |cx: i32, cy: i32| {
+        let c = DVec2::new(cx as f64 + 0.5, cy as f64 + 0.5);
+        if (c - from).length() < AUTOPATH_FREE {
+            return false; // 起点附近不避, 否则从怪堆里出不来
+        }
+        blockers.iter().any(|b| (c - *b).length() < AUTOPATH_AVOID)
+    };
+    let path = sim::find_path_avoiding(
+        &world.walk,
+        (from.x, from.y),
+        (goal.x, goal.y),
+        BODY_RADIUS,
+        avoid,
+    )
+    // 绕不过去 (比如目标就被怪围着) 就退回地形路线, 总比没有强
+    .or_else(|| sim::find_path(&world.walk, (from.x, from.y), (goal.x, goal.y), BODY_RADIUS))?;
+    let mut out: std::collections::VecDeque<DVec2> =
+        path.into_iter().map(|(x, y)| DVec2::new(x, y)).collect();
+    // A* 是按格心规划的。人若卡在格子边缘 (贴着墙角), 朝下一个格心的量化方向
+    // 可能正对着墙, 两个轴向滑动也都被挡 —— 表现就是路算出来了却一步不动。
+    // 先插一个"回到本格中心"的拐点, 把人从墙边挪开, 后面的几何才成立。
+    let center = DVec2::new(from.x.floor() + 0.5, from.y.floor() + 0.5);
+    if (center - from).length() > 0.2
+        && world
+            .walk
+            .is_walkable_circle(center.x, center.y, BODY_RADIUS)
+    {
+        out.push_front(center);
+    }
+    Some(out)
+}
+
 /// 自动寻路: 大地图上点一下, 沿 A* 路线跑过去
 #[derive(Resource, Default)]
 pub struct AutoPath {
@@ -2258,12 +2381,17 @@ pub struct AutoPath {
     /// 上次推进的时刻与当时距下一拐点的距离 —— 卡住不动就放弃
     stuck_since: f64,
     last_dist: f64,
+    /// 下次允许重算路线的时刻 (限流, 免得每帧都跑 A*)
+    next_replan: f64,
+    /// 卡住后已尝试的补救重算次数 (超过上限才真正放弃)
+    stuck_replans: u8,
 }
 
 impl AutoPath {
     pub fn clear(&mut self) {
         self.waypoints.clear();
         self.goal = None;
+        self.stuck_replans = 0;
     }
     pub fn active(&self) -> bool {
         !self.waypoints.is_empty()
