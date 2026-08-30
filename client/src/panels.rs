@@ -69,18 +69,19 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
 
 /// 木板底: 铺满窗口内区。必须在其它子节点之前生成 (先画者在下层)
 ///
-/// 向外出血 2px 垫到金属边框之下, 并自带不透明底色:
-/// 个别窗口尺寸下父子矩形按物理像素各自取整可能差出一两像素, 曾在右/下边框
-/// 内侧露出一条场景 —— 出血让边框之内在几何上不可能透底, 底色兜住纹理
-/// 万一没铺满的部分。
+/// inset 必须是 0, 不能向外出血: 绝对子节点的原点在父边框内侧, 负 inset 会
+/// 延伸到父边框之上——子节点画在父边框上层, 曾把 2px 金色主边整个盖成木纹
+/// (看起来像"金线外多了一圈深色", 而那条细金线其实只是内圈高光)。
+/// 防透底靠双保险: 本节点自带不透明底色 + root 自身的不透明 PANEL_BG,
+/// 即便某个缩放下子矩形取整偏短, 露出的也是深木色而非场景。
 pub fn wood_bg(parent: &mut ChildBuilder, wood: &WoodTex) {
     parent.spawn((
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(-2.0),
-            right: Val::Px(-2.0),
-            top: Val::Px(-2.0),
-            bottom: Val::Px(-2.0),
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            top: Val::Px(0.0),
+            bottom: Val::Px(0.0),
             ..default()
         },
         ImageNode {
