@@ -611,6 +611,11 @@ const BIGMAP_INSET: f32 = 40.0;
 const BIGMAP_CHROME: f32 = 46.0 + 38.0;
 /// 没有小地图帧时的占位尺寸
 const BIGMAP_FALLBACK: f32 = 420.0;
+/// 图与窗口边框之间的内边距 (逻辑 px)
+///
+/// 顺带盖掉一个观感问题: mmap 帧右侧常带一两列全透明像素, 图若直接贴边,
+/// 那几列会露出面板底色, 看着像右边框变黑了。
+const BIGMAP_PAD: f32 = 2.0;
 /// 点阵容量: 怪物与 NPC 各自的上限, 超出不画
 const BIGMAP_DOTS: usize = 64;
 
@@ -825,8 +830,9 @@ pub fn bigmap(
     let s = ui_scale.0.max(0.01);
     let (max_w, max_h) = match windows.get_single() {
         Ok(w) => (
-            (w.width() / s - BIGMAP_INSET * 2.0).max(200.0),
-            (w.height() / s - BIGMAP_INSET * 2.0 - BIGMAP_CHROME).max(160.0),
+            (w.width() / s - BIGMAP_INSET * 2.0 - BIGMAP_PAD * 2.0 - 2.0).max(200.0),
+            (w.height() / s - BIGMAP_INSET * 2.0 - BIGMAP_CHROME - BIGMAP_PAD * 2.0 - 2.0)
+                .max(160.0),
         ),
         Err(_) => (BIGMAP_FALLBACK, BIGMAP_FALLBACK),
     };
@@ -846,40 +852,45 @@ pub fn bigmap(
     }
     // 图: 等比缩放塞进方框; 没有小地图帧时整个区域留空
     let fit = match &minimap.image {
-        Some((handle, size)) => {
+        Some((handle, _)) => {
+            // 只取非透明区域: 边缘空像素会露底色, 显得右/下边框发黑
+            let trim = minimap.trim;
+            let size = Vec2::new(trim.width().max(1.0), trim.height().max(1.0));
             // 能放多大放多大, 但放大只取整数倍 —— 小地图是像素图, 非整数
             // 倍率放大会发糊 (与背包图标同一条规矩)。缩小则只能按需取小数。
             let raw = (max_w / size.x.max(1.0)).min(max_h / size.y.max(1.0));
             let k = if raw >= 1.0 { raw.floor() } else { raw };
             let (dw, dh) = (size.x * k, size.y * k);
-            // 显示区正好等于图, 四周不留空白
+            // 显示区 = 图 + 四周内边距
+            let (aw, ah) = (dw + BIGMAP_PAD * 2.0, dh + BIGMAP_PAD * 2.0);
             for mut node in q_area.iter_mut() {
-                node.width = Val::Px(dw);
-                node.height = Val::Px(dh);
+                node.width = Val::Px(aw);
+                node.height = Val::Px(ah);
             }
-            // 窗口宽度随图走, 并重新算居中偏移 (左移半个宽, 上移半个总高)
+            // 窗口宽度随图走 (+2 是左右边框, Bevy UI 按 border-box 量), 并重算居中偏移
+            let root_w = aw + 2.0;
             for mut node in q_root.iter_mut() {
-                node.width = Val::Px(dw);
+                node.width = Val::Px(root_w);
                 node.margin = UiRect::new(
-                    Val::Px(-dw / 2.0),
+                    Val::Px(-root_w / 2.0),
                     Val::Px(0.0),
-                    Val::Px(-(dh + BIGMAP_CHROME) / 2.0),
+                    Val::Px(-(ah + BIGMAP_CHROME) / 2.0),
                     Val::Px(0.0),
                 );
             }
             for (mut img, mut node, mut vis) in q_img.iter_mut() {
                 img.image = handle.clone();
-                img.rect = None;
+                img.rect = Some(trim);
                 node.width = Val::Px(dw);
                 node.height = Val::Px(dh);
-                node.left = Val::Px(0.0);
-                node.top = Val::Px(0.0);
+                node.left = Val::Px(BIGMAP_PAD);
+                node.top = Val::Px(BIGMAP_PAD);
                 *vis = Visibility::Inherited;
             }
-            // 格坐标 → 区域内像素
+            // 格坐标 → 区域内像素 (点位同样要带上内边距)
             let sx = size.x / world.map.width.max(1) as f32 * k;
             let sy = size.y / world.map.height.max(1) as f32 * k;
-            Some((sx, sy, 0.0, 0.0))
+            Some((sx, sy, BIGMAP_PAD, BIGMAP_PAD))
         }
         None => {
             // 该区没配小地图帧: 收回占位尺寸, 免得沿用上一张图的宽度

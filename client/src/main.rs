@@ -529,10 +529,30 @@ impl ItemIcons {
     }
 }
 
+/// 扫出 RGBA 里非透明像素的包围盒 (全透明则返回 None)
+fn opaque_bounds(rgba: &[u8], w: u32, h: u32) -> Option<Rect> {
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+    for y in 0..h {
+        for x in 0..w {
+            if rgba[((y * w + x) * 4 + 3) as usize] > 8 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    (x1 >= x0 && y1 >= y0)
+        .then(|| Rect::new(x0 as f32, y0 as f32, (x1 + 1) as f32, (y1 + 1) as f32))
+}
+
 /// 当前区域小地图 (Data/mmap.Lib 帧 → 独立 Image)
 #[derive(Resource, Default)]
 pub struct MiniMap {
     pub image: Option<(Handle<Image>, Vec2)>,
+    /// 图内非透明区域 (像素坐标)。mmap 帧边缘常带一两列空像素, 贴边显示时
+    /// 会露出底色, 看着像边框发黑 —— 大地图按这个矩形取图。
+    pub trim: Rect,
     /// 已加载的 (地图名, 帧号)
     loaded_for: (String, Option<u16>),
 }
@@ -550,11 +570,14 @@ fn load_minimap(
         return;
     }
     mm.loaded_for = key;
+    let mut trim = Rect::default();
     mm.image = net.zone_minimap.map(|f| f as usize).and_then(|idx| {
         let path = world.data_root.join("mmap.Lib");
         let lib = CrystalLib::parse(std::fs::read(path).ok()?).ok()?;
         let img = lib.image(idx).ok().flatten()?;
         let size = Vec2::new(img.width as f32, img.height as f32);
+        trim = opaque_bounds(&img.rgba, img.width as u32, img.height as u32)
+            .unwrap_or(Rect::new(0.0, 0.0, size.x, size.y));
         let handle = images.add(Image::new(
             Extent3d {
                 width: img.width as u32,
@@ -568,6 +591,7 @@ fn load_minimap(
         ));
         Some((handle, size))
     });
+    mm.trim = trim;
     if mm.image.is_none() {
         info!("地图 {} 未配置小地图帧", world.map_name);
     }
