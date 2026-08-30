@@ -12,6 +12,7 @@
 
 pub mod crystal_lib;
 pub mod map;
+pub mod mfl;
 pub mod scan;
 pub mod wil;
 pub mod wzl;

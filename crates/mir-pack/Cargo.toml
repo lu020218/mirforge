@@ -1,0 +1,13 @@
+[package]
+name = "mir-pack"
+description = "packs/ 自有资源打包工具: PNG+Placements 目录 → .mfl 图库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mir-formats = { path = "../mir-formats" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

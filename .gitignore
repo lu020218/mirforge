@@ -6,6 +6,8 @@ Cargo.lock.bak
 /assets/
 /resources/
 /new_res/
+# 自有资源包: 工具与说明入库, 打包产物不入 (版权见 packs/README.md)
+/packs/**/*.mfl
 *.map
 *.wil
 *.wix

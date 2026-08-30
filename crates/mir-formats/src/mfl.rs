@@ -1,0 +1,185 @@
+//! MirForge 自有图库格式 `.mfl` (MirForge Library)。
+//!
+//! 与 Crystal .Lib 划清界限的自有容器: packs/ 体系下的武器/衣甲/图标等
+//! 自购或自制资源一律用它, Crystal 原版资源保持 .Lib 只读兜底, 逐步淘汰。
+//!
+//! 布局 (小端):
+//! - 头: 魔数 `MFL1` 4 字节、`count u32`;
+//! - 索引表: `count` 个 `u32` 文件内偏移 (0 = 空帧);
+//! - 每帧: `w u16, h u16, x i16, y i16, len u32` 共 12 字节,
+//!   随后 `len` 字节 GZip 压缩的 RGBA8 像素 (w*h*4)。
+//!
+//! 与 .Lib 的差异: 有魔数可靠识别; 像素直接存 RGBA (不再背 BGRA 历史包袱);
+//! 帧头去掉不用的阴影字段。
+
+use std::io::{Read, Write};
+
+use crate::{DecodedImage, FormatError, Result};
+
+pub const MAGIC: &[u8; 4] = b"MFL1";
+
+/// 已打开的 .mfl 图库 (持有原始字节, 按需解帧)。
+#[derive(Debug)]
+pub struct MflLib {
+    data: Vec<u8>,
+    offsets: Vec<u32>,
+}
+
+impl MflLib {
+    pub fn parse(data: Vec<u8>) -> Result<Self> {
+        if data.len() < 8 {
+            return Err(FormatError::Truncated {
+                need: 8,
+                got: data.len(),
+            });
+        }
+        if &data[0..4] != MAGIC {
+            return Err(FormatError::Unrecognized("mfl magic"));
+        }
+        let count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        if count > 2_000_000 {
+            return Err(FormatError::Unrecognized("mfl count"));
+        }
+        let need = 8 + count * 4;
+        if data.len() < need {
+            return Err(FormatError::Truncated {
+                need,
+                got: data.len(),
+            });
+        }
+        let offsets = (0..count)
+            .map(|i| {
+                let o = 8 + i * 4;
+                u32::from_le_bytes(data[o..o + 4].try_into().unwrap())
+            })
+            .collect();
+        Ok(Self { data, offsets })
+    }
+
+    pub fn len(&self) -> usize {
+        self.offsets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.offsets.is_empty()
+    }
+
+    /// 解码第 `index` 帧。空帧/越界/坏条目返回 Ok(None), 与 CrystalLib 同约定。
+    pub fn image(&self, index: usize) -> Result<Option<DecodedImage>> {
+        let Some(&off) = self.offsets.get(index) else {
+            return Ok(None);
+        };
+        let o = off as usize;
+        if o == 0 || o + 12 > self.data.len() {
+            return Ok(None);
+        }
+        let ru = |i: usize| u16::from_le_bytes(self.data[o + i..o + i + 2].try_into().unwrap());
+        let ri = |i: usize| i16::from_le_bytes(self.data[o + i..o + i + 2].try_into().unwrap());
+        let (w, h) = (ru(0), ru(2));
+        let (x, y) = (ri(4), ri(6));
+        let len = u32::from_le_bytes(self.data[o + 8..o + 12].try_into().unwrap()) as usize;
+        if w == 0 || h == 0 || len == 0 {
+            return Ok(None);
+        }
+        let start = o + 12;
+        let Some(end) = start.checked_add(len) else {
+            return Ok(None);
+        };
+        if end > self.data.len() {
+            return Ok(None);
+        }
+        let expect = w as usize * h as usize * 4;
+        let mut rgba = Vec::with_capacity(expect);
+        if flate2::read::GzDecoder::new(&self.data[start..end])
+            .read_to_end(&mut rgba)
+            .is_err()
+            || rgba.len() < expect
+        {
+            return Ok(None);
+        }
+        rgba.truncate(expect);
+        Ok(Some(DecodedImage {
+            width: w,
+            height: h,
+            offset_x: x,
+            offset_y: y,
+            rgba,
+        }))
+    }
+}
+
+/// 待写入的一帧 (None = 空帧占位)
+pub struct MflFrame {
+    pub width: u16,
+    pub height: u16,
+    pub offset_x: i16,
+    pub offset_y: i16,
+    /// RGBA8, 长度 = width * height * 4
+    pub rgba: Vec<u8>,
+}
+
+/// 打包成 .mfl 字节流。索引即帧号, 打包工具与运行时读取共用此真源。
+pub fn write(frames: &[Option<MflFrame>]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&(frames.len() as u32).to_le_bytes());
+    let table_at = out.len();
+    out.resize(table_at + frames.len() * 4, 0);
+    for (i, f) in frames.iter().enumerate() {
+        let Some(f) = f else { continue };
+        if f.rgba.len() != f.width as usize * f.height as usize * 4 {
+            return Err(FormatError::Unrecognized("mfl frame rgba size"));
+        }
+        if f.width == 0 || f.height == 0 {
+            continue; // 空图当空帧
+        }
+        let off = out.len() as u32;
+        out[table_at + i * 4..table_at + i * 4 + 4].copy_from_slice(&off.to_le_bytes());
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&f.rgba)
+            .and_then(|_| gz.finish())
+            .map(|z| {
+                out.extend_from_slice(&f.width.to_le_bytes());
+                out.extend_from_slice(&f.height.to_le_bytes());
+                out.extend_from_slice(&f.offset_x.to_le_bytes());
+                out.extend_from_slice(&f.offset_y.to_le_bytes());
+                out.extend_from_slice(&(z.len() as u32).to_le_bytes());
+                out.extend_from_slice(&z);
+            })
+            .map_err(|_| FormatError::Unrecognized("mfl gzip"))?;
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip() {
+        let px = vec![255u8; 2 * 3 * 4];
+        let frames = vec![
+            None,
+            Some(MflFrame {
+                width: 2,
+                height: 3,
+                offset_x: -5,
+                offset_y: 7,
+                rgba: px.clone(),
+            }),
+        ];
+        let bytes = write(&frames).unwrap();
+        let lib = MflLib::parse(bytes).unwrap();
+        assert_eq!(lib.len(), 2);
+        assert!(lib.image(0).unwrap().is_none());
+        let f = lib.image(1).unwrap().unwrap();
+        assert_eq!((f.width, f.height, f.offset_x, f.offset_y), (2, 3, -5, 7));
+        assert_eq!(f.rgba, px);
+        assert!(lib.image(9).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_bad_magic() {
+        assert!(MflLib::parse(b"XXXX\0\0\0\0".to_vec()).is_err());
+    }
+}

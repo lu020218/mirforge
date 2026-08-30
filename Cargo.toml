@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/mir-formats",
     "crates/mir-atlas",
+    "crates/mir-pack",
     "crates/protocol",
     "crates/sim",
     "server",

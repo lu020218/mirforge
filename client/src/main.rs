@@ -334,7 +334,9 @@ struct World {
     maps: HashMap<String, PathBuf>,
     /// 资源数据根 (Data/, 其下 Map/ Monster/ CArmour/ CWeapon/ Magic 等)
     data_root: PathBuf,
-    libs: HashMap<String, Option<CrystalLib>>,
+    /// 自有资源包根 (packs/, 按类型分目录的 .mfl; 同类同号覆盖 Crystal)
+    packs_root: PathBuf,
+    libs: HashMap<String, Option<AnyLib>>,
     atlas: AtlasCpu,
     pages: Vec<Handle<Image>>,
     frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
@@ -411,15 +413,41 @@ impl World {
         })
     }
 
-    fn open_lib(&mut self, name: &str) -> Option<&CrystalLib> {
+    /// Crystal 库名 → packs/ 同类同号的 .mfl 路径 (自有资源覆盖 Crystal 的映射真源)
+    ///
+    /// 淘汰路线: 每接入一类就在这里补一行; 全部类别被 packs 覆盖后
+    /// Crystal 兜底即可整体移除。
+    fn pack_path(&self, name: &str) -> Option<PathBuf> {
+        let (dir, num) = name.split_once('/')?;
+        let n: u32 = num.parse().ok()?;
+        let kind = match dir {
+            "CArmour" => "armor",
+            "CWeapon" => "weapon",
+            "CHair" => "hair",
+            "Monster" => "monster",
+            "NPC" => "npc",
+            _ => return None,
+        };
+        Some(self.packs_root.join(kind).join(format!("{n:03}.mfl")))
+    }
+
+    fn open_lib(&mut self, name: &str) -> Option<&AnyLib> {
         if !self.libs.contains_key(name) {
             let mut lib = None;
-            for cand in [format!("{name}.Lib"), format!("{name}.lib")] {
-                let p = self.data_root.join(&cand);
-                if p.exists() {
-                    if let Ok(data) = std::fs::read(&p) {
-                        lib = CrystalLib::parse(data).ok();
-                        break;
+            // 自有资源包优先: 同类同号的 .mfl 直接顶掉 Crystal 原版
+            if let Some(p) = self.pack_path(name) {
+                if let Ok(data) = std::fs::read(&p) {
+                    lib = mir_formats::mfl::MflLib::parse(data).ok().map(AnyLib::Mfl);
+                }
+            }
+            if lib.is_none() {
+                for cand in [format!("{name}.Lib"), format!("{name}.lib")] {
+                    let p = self.data_root.join(&cand);
+                    if p.exists() {
+                        if let Ok(data) = std::fs::read(&p) {
+                            lib = CrystalLib::parse(data).ok().map(AnyLib::Crystal);
+                            break;
+                        }
                     }
                 }
             }
@@ -800,11 +828,16 @@ fn setup(
                 .map(|n| (n.to_lowercase(), m.path.clone()))
         })
         .collect();
+    // 自有资源包根: MIRFORGE_PACKS 可覆盖, 默认工作目录下 packs/
+    let packs_root = std::env::var("MIRFORGE_PACKS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("packs"));
     commands.insert_resource(World {
         map,
         map_name: map_name.to_lowercase(),
         maps,
         data_root,
+        packs_root,
         libs: HashMap::new(),
         atlas: AtlasCpu::default(),
         pages,
@@ -812,6 +845,21 @@ fn setup(
         chunks: HashMap::new(),
         walk,
     });
+}
+
+/// 图库句柄: 自有 .mfl (packs/) 或 Crystal .Lib (兜底), 读帧同接口
+enum AnyLib {
+    Mfl(mir_formats::mfl::MflLib),
+    Crystal(CrystalLib),
+}
+
+impl AnyLib {
+    fn image(&self, idx: usize) -> mir_formats::Result<Option<mir_formats::DecodedImage>> {
+        match self {
+            AnyLib::Mfl(l) => l.image(idx),
+            AnyLib::Crystal(l) => l.image(idx),
+        }
+    }
 }
 
 impl World {
