@@ -10,6 +10,7 @@ packs 覆盖 Crystal**;当某类资源全部由 packs 提供时,对应的 Crysta
 packs/
   weapon/050.mfl      武器外观 (对应物品表"外观"字段, 建议自有资源从 050 起编号)
   armor/050.mfl       衣甲外观
+  items.mfl           物品图标库 (整库, 帧号 = 物品表"图标帧"字段)
   portrait/050.mfl    人物面板立绘 (帧 0=男 1=女, 编号对应衣甲外观号)
   portrait/naked.mfl  裸模立绘 (未穿衣甲时用, 帧 0=男 1=女)
   hair/               发型 (预留)

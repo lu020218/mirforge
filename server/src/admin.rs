@@ -434,8 +434,28 @@ async fn api_zones_add(
 
 static RES_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 static PREVIEW_LIBS: std::sync::Mutex<
-    Option<std::collections::HashMap<String, Option<mir_formats::crystal_lib::CrystalLib>>>,
+    Option<std::collections::HashMap<String, Option<mir_formats::mfl::AnyLib>>>,
 > = std::sync::Mutex::new(None);
+
+/// 自有资源包根 (与客户端同规则: MIRFORGE_PACKS 可覆盖, 默认工作目录 packs/)
+fn packs_root() -> std::path::PathBuf {
+    std::env::var("MIRFORGE_PACKS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("packs"))
+}
+
+/// packs/ 同类同号的 .mfl (自有资源优先于 Crystal, 与客户端同一覆盖规则)
+fn preview_pack_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
+    let rel = match kind {
+        "items" => "items.mfl".to_string(),
+        "weapon" => format!("weapon/{n:03}.mfl"),
+        "armour" => format!("armor/{n:03}.mfl"),
+        "monster" => format!("monster/{n:03}.mfl"),
+        "npc" => format!("npc/{n:03}.mfl"),
+        _ => return None,
+    };
+    Some(packs_root().join(rel))
+}
 
 /// 预览库白名单: 路径固定, 杜绝任意文件读取
 fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
@@ -455,15 +475,18 @@ fn preview_lib_path(kind: &str, n: u16) -> Option<std::path::PathBuf> {
 fn with_preview_lib<R>(
     kind: &str,
     n: u16,
-    f: impl FnOnce(&mir_formats::crystal_lib::CrystalLib) -> Option<R>,
+    f: impl FnOnce(&mir_formats::mfl::AnyLib) -> Option<R>,
 ) -> Option<R> {
     let key = format!("{kind}/{n}");
     let mut guard = PREVIEW_LIBS.lock().ok()?;
     let cache = guard.get_or_insert_with(Default::default);
     if !cache.contains_key(&key) {
-        let lib = preview_lib_path(kind, n)
+        let lib = preview_pack_path(kind, n)
             .and_then(|p| std::fs::read(p).ok())
-            .and_then(|d| mir_formats::crystal_lib::CrystalLib::parse(d).ok());
+            .or_else(|| {
+                preview_lib_path(kind, n).and_then(|p| std::fs::read(p).ok())
+            })
+            .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok());
         cache.insert(key.clone(), lib);
     }
     cache.get(&key).and_then(|l| l.as_ref()).and_then(f)

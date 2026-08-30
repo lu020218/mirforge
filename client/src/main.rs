@@ -29,6 +29,7 @@ use bevy::window::PresentMode;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use mir_atlas::{AtlasCpu, PAGE_SIZE};
 use mir_formats::crystal_lib::CrystalLib;
+use mir_formats::mfl::AnyLib;
 use mir_formats::map::MirMap;
 use protocol::{CharacterClass, CharacterSummary, ClientMessage, ServerMessage, PROTOCOL_VERSION};
 use sim::{dir8_from, WalkGrid, BODY_RADIUS, NPC_TALK_RANGE};
@@ -437,7 +438,7 @@ impl World {
             // 自有资源包优先: 同类同号的 .mfl 直接顶掉 Crystal 原版
             if let Some(p) = self.pack_path(name) {
                 if let Ok(data) = std::fs::read(&p) {
-                    lib = mir_formats::mfl::MflLib::parse(data).ok().map(AnyLib::Mfl);
+                    lib = AnyLib::parse(data).ok();
                 }
             }
             if lib.is_none() {
@@ -445,7 +446,7 @@ impl World {
                     let p = self.data_root.join(&cand);
                     if p.exists() {
                         if let Ok(data) = std::fs::read(&p) {
-                            lib = CrystalLib::parse(data).ok().map(AnyLib::Crystal);
+                            lib = AnyLib::parse(data).ok();
                             break;
                         }
                     }
@@ -515,10 +516,10 @@ pub struct Portrait {
     pub gear: Option<(Handle<Image>, Vec2, Vec2)>,
 }
 
-/// 物品图标 (Items.Lib 帧 → 独立 Image, 惰性缓存)
+/// 物品图标 (packs/items.mfl 优先, Crystal Items.Lib 兜底; 帧 → 独立 Image, 惰性缓存)
 #[derive(Resource, Default)]
 pub struct ItemIcons {
-    lib: Option<CrystalLib>,
+    lib: Option<AnyLib>,
     cache: HashMap<u16, Option<(Handle<Image>, Vec2)>>,
 }
 
@@ -537,9 +538,13 @@ impl ItemIcons {
             return c.clone();
         }
         if self.lib.is_none() {
-            self.lib = std::fs::read(data_root.join("Items.Lib"))
+            let packs = std::env::var("MIRFORGE_PACKS")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
+            self.lib = std::fs::read(packs.join("items.mfl"))
                 .ok()
-                .and_then(|d| CrystalLib::parse(d).ok());
+                .or_else(|| std::fs::read(data_root.join("Items.Lib")).ok())
+                .and_then(|d| AnyLib::parse(d).ok());
         }
         let h = self
             .lib
@@ -887,21 +892,6 @@ fn setup(
         chunks: HashMap::new(),
         walk,
     });
-}
-
-/// 图库句柄: 自有 .mfl (packs/) 或 Crystal .Lib (兜底), 读帧同接口
-enum AnyLib {
-    Mfl(mir_formats::mfl::MflLib),
-    Crystal(CrystalLib),
-}
-
-impl AnyLib {
-    fn image(&self, idx: usize) -> mir_formats::Result<Option<mir_formats::DecodedImage>> {
-        match self {
-            AnyLib::Mfl(l) => l.image(idx),
-            AnyLib::Crystal(l) => l.image(idx),
-        }
-    }
 }
 
 impl World {

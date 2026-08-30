@@ -108,6 +108,44 @@ impl MflLib {
     }
 }
 
+/// 图库句柄: 按魔数自动识别 .mfl (自有) 或 Crystal .Lib (兜底), 读帧同接口。
+/// 客户端渲染与服务端管理台预览共用, 覆盖规则只需写一遍。
+#[derive(Debug)]
+pub enum AnyLib {
+    Mfl(MflLib),
+    Crystal(crate::crystal_lib::CrystalLib),
+}
+
+impl AnyLib {
+    pub fn parse(data: Vec<u8>) -> Result<Self> {
+        if data.starts_with(MAGIC) {
+            Ok(AnyLib::Mfl(MflLib::parse(data)?))
+        } else {
+            Ok(AnyLib::Crystal(crate::crystal_lib::CrystalLib::parse(
+                data,
+            )?))
+        }
+    }
+
+    pub fn image(&self, index: usize) -> Result<Option<DecodedImage>> {
+        match self {
+            AnyLib::Mfl(l) => l.image(index),
+            AnyLib::Crystal(l) => l.image(index),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            AnyLib::Mfl(l) => l.len(),
+            AnyLib::Crystal(l) => l.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// 待写入的一帧 (None = 空帧占位)
 pub struct MflFrame {
     pub width: u16,
