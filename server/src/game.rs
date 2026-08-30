@@ -1362,6 +1362,39 @@ impl Game {
         .await;
     }
 
+    /// 某区里会挡路的实体圆心 (可排除自己)
+    ///
+    /// NPC 是站着不动的摊主一类, 也该挡; 尸体 (死亡动画/等重生) 不挡。
+    /// 怪之间不互相阻挡 —— 刷新点是按半径随机撒的, 互挡会让整窝当场卡死。
+    fn blockers_for(
+        players: &HashMap<String, PlayerState>,
+        monsters: &[Monster],
+        zone: &str,
+        except: Option<String>,
+    ) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = players
+            .iter()
+            .filter(|(id, p)| {
+                p.connected && p.zone == zone && except.as_deref() != Some(id.as_str())
+            })
+            .map(|(_, p)| (p.x, p.y))
+            .collect();
+        out.extend(
+            monsters
+                .iter()
+                .filter(|m| m.zone == zone && m.alive())
+                .map(|m| (m.x, m.y)),
+        );
+        out.extend(
+            data()
+                .npcs
+                .iter()
+                .filter(|n| n.enabled && n.map == zone)
+                .map(|n| (n.x, n.y)),
+        );
+        out
+    }
+
     /// 全服公告 (BOSS 击杀等)
     async fn broadcast_all(&self, msg: &str) {
         let conns: Vec<String> = self
@@ -2356,17 +2389,17 @@ impl Game {
         conn_id: &str,
         direction: Position,
     ) -> Option<(String, String, f64, f64)> {
-        let (id, p) = self
+        // 先把要用的值抄出来, 释放对 players 的借用 —— 后面算碰撞要读整张表
+        let (id_of, last_move, px0, py0, zone_id) = self
             .players
-            .iter_mut()
-            .find(|(_, p)| p.conn_id == conn_id)?;
-        let zone = self.zones.get(&p.zone)?;
+            .iter()
+            .find(|(_, p)| p.conn_id == conn_id)
+            .map(|(id, p)| (id.clone(), p.last_move, p.x, p.y, p.zone.clone()))?;
         let now = Instant::now();
         let dt = now
-            .duration_since(p.last_move)
+            .duration_since(last_move)
             .min(MAX_STEP_WINDOW)
             .as_secs_f64();
-        p.last_move = now;
         let (mut dx, mut dy) = (direction.x, direction.y);
         let len = (dx * dx + dy * dy).sqrt();
         let max = MAX_SPEED * dt;
@@ -2375,7 +2408,13 @@ impl Game {
             dx *= k;
             dy *= k;
         }
-        let (nx, ny) = zone.walk.try_move(p.x, p.y, dx, dy, BODY_RADIUS);
+        // 实体碰撞: 别的玩家 / 活着的怪 / NPC 都挡路
+        let blockers =
+            Self::blockers_for(&self.players, &self.monsters, &zone_id, Some(id_of.clone()));
+        let zone = self.zones.get(&zone_id)?;
+        let (nx, ny) = sim::resolve_move(&zone.walk, (px0, py0), (dx, dy), BODY_RADIUS, &blockers);
+        let p = self.players.get_mut(&id_of)?;
+        p.last_move = now;
         p.moving = (nx - p.x).abs() > 1e-9 || (ny - p.y).abs() > 1e-9;
         // 跑步阈值: 单包速度超走路上限即视为跑 (广播动画用)
         p.running = p.moving && len / dt.max(1e-6) > 2.0;
@@ -2395,13 +2434,13 @@ impl Game {
         let to_zone = portal.to_zone.clone();
         info!(
             "传送: {} {} ({nx:.1},{ny:.1}) → {to_zone} ({tx:.1},{ty:.1})",
-            id, p.zone
+            id_of, p.zone
         );
         p.zone = to_zone;
         p.x = tx;
         p.y = ty;
         p.moving = false;
-        Some((conn_id.to_string(), id.clone(), tx, ty))
+        Some((conn_id.to_string(), id_of, tx, ty))
     }
 
     /// 普攻结算：射程/冷却校验 → 扣血 → 飘字广播 → 击杀经验/升级/尸体与重生
@@ -3315,6 +3354,13 @@ impl Game {
             .filter(|(_, p)| p.connected)
             .map(|(id, p)| (id.clone(), p.zone.clone(), p.x, p.y))
             .collect();
+        // NPC 位置快照 (同样避免借用冲突)
+        let npc_pos: Vec<(String, f64, f64)> = data()
+            .npcs
+            .iter()
+            .filter(|n| n.enabled)
+            .map(|n| (n.map.clone(), n.x, n.y))
+            .collect();
         let mut rolls: Vec<f64> = Vec::with_capacity(self.monsters.len());
         for _ in 0..self.monsters.len() {
             let r = self.rand01();
@@ -3405,7 +3451,20 @@ impl Game {
                 let (vx, vy) = sim::DIR8[dir];
                 let adv = step.min(dx * vx + dy * vy);
                 let (sx, sy) = (vx * adv, vy * adv);
-                let (nx, ny) = zone.walk.try_move(m.x, m.y, sx, sy, BODY_RADIUS);
+                // 怪也不许穿人穿摊主 (怪之间不互挡, 见 blockers_for 注记)
+                let blockers: Vec<(f64, f64)> = players
+                    .iter()
+                    .filter(|(_, z, _, _)| z == &m.zone)
+                    .map(|(_, _, x, y)| (*x, *y))
+                    .chain(
+                        npc_pos
+                            .iter()
+                            .filter(|(z, _, _)| z == &m.zone)
+                            .map(|(_, x, y)| (*x, *y)),
+                    )
+                    .collect();
+                let (nx, ny) =
+                    sim::resolve_move(&zone.walk, (m.x, m.y), (sx, sy), BODY_RADIUS, &blockers);
                 if (nx - m.x).abs() < 1e-9 && (ny - m.y).abs() < 1e-9 {
                     m.target = None; // 完全卡死则放弃本次目标
                 } else {

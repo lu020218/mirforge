@@ -143,6 +143,53 @@ impl WalkGrid {
     }
 }
 
+// ─────────── 实体碰撞 ───────────
+
+/// 两个实体圆心近于此距离即视为重叠 (各占 BODY_RADIUS)
+pub const ENTITY_CLEARANCE: f64 = BODY_RADIUS * 2.0;
+
+/// 地形 + 实体一起解算的位移
+///
+/// 与 [`WalkGrid::try_move`] 同样是「整体 → 只走 x → 只走 y」三段回退, 只是每个
+/// 候选位置还要再过一遍实体判定。两端共用这一个函数, 免得客户端预测与服务端
+/// 权威判定用不同规则而互相打架。
+///
+/// **已经重叠的实体不算数**: 只拒绝"新压上去"的重叠。否则怪刷在人身上、或
+/// 两者因延迟短暂重合时, 人就再也动不了了 —— 允许原地脱出比严格无重叠重要。
+pub fn resolve_move(
+    grid: &WalkGrid,
+    from: (f64, f64),
+    delta: (f64, f64),
+    radius: f64,
+    blockers: &[(f64, f64)],
+) -> (f64, f64) {
+    // 出发时就压着的, 后面一律放行
+    let overlapping_now = |b: &(f64, f64)| {
+        let (dx, dy) = (b.0 - from.0, b.1 - from.1);
+        dx * dx + dy * dy < ENTITY_CLEARANCE * ENTITY_CLEARANCE
+    };
+    let free = |p: (f64, f64)| {
+        blockers.iter().all(|b| {
+            if overlapping_now(b) {
+                return true;
+            }
+            let (dx, dy) = (b.0 - p.0, b.1 - p.1);
+            dx * dx + dy * dy >= ENTITY_CLEARANCE * ENTITY_CLEARANCE
+        })
+    };
+    let (x, y) = from;
+    let (dx, dy) = delta;
+    for cand in [(x + dx, y + dy), (x + dx, y), (x, y + dy)] {
+        if (cand.0 - x).abs() < 1e-12 && (cand.1 - y).abs() < 1e-12 {
+            continue; // 该轴本来就没位移, 跳过
+        }
+        if grid.is_walkable_circle(cand.0, cand.1, radius) && free(cand) {
+            return cand;
+        }
+    }
+    (x, y)
+}
+
 // ─────────── 网格寻路 (A*) ───────────
 
 /// 单次寻路允许展开的最大节点数
@@ -330,6 +377,55 @@ mod tests {
     /// 空旷 20×20; 便于构造带墙的用例
     fn open(w: u32, h: u32, blocked: &[(u32, u32)]) -> WalkGrid {
         WalkGrid::from_cells(w, h, |x, y| blocked.contains(&(x, y)))
+    }
+
+    #[test]
+    fn collide_blocks_moving_into_entity() {
+        let g = open(20, 20, &[]);
+        // 正东 0.8 处站着一个实体 (>ENTITY_CLEARANCE, 出发时并未重叠)
+        let b = [(6.3, 5.5)];
+        let r = resolve_move(&g, (5.5, 5.5), (0.4, 0.0), BODY_RADIUS, &b);
+        assert_eq!(r, (5.5, 5.5), "撞上实体不应位移");
+        // 换个方向走开则放行
+        let r2 = resolve_move(&g, (5.5, 5.5), (-0.4, 0.0), BODY_RADIUS, &b);
+        assert!(r2.0 < 5.5);
+    }
+
+    #[test]
+    fn collide_slides_along_entity() {
+        let g = open(20, 20, &[]);
+        let b = [(6.3, 5.5)];
+        // 斜着撞: x 分量被挡, 但应能沿 y 滑过去
+        let r = resolve_move(&g, (5.5, 5.5), (0.4, 0.4), BODY_RADIUS, &b);
+        assert!((r.0 - 5.5).abs() < 1e-9, "x 不该推进: {r:?}");
+        assert!(r.1 > 5.5, "应沿 y 滑动: {r:?}");
+    }
+
+    #[test]
+    fn collide_allows_escaping_existing_overlap() {
+        let g = open(20, 20, &[]);
+        // 已经压在一起 (怪刷在人身上): 任何方向都不该被锁死
+        let b = [(5.5, 5.5)];
+        for (dx, dy) in [(0.3, 0.0), (-0.3, 0.0), (0.0, 0.3), (0.0, -0.3)] {
+            let r = resolve_move(&g, (5.5, 5.5), (dx, dy), BODY_RADIUS, &b);
+            assert_ne!(r, (5.5, 5.5), "重叠时应能脱出 ({dx},{dy})");
+        }
+    }
+
+    #[test]
+    fn collide_still_respects_terrain() {
+        let g = open(20, 20, &[(6, 5)]);
+        // 没有实体时也要照常被墙挡
+        let r = resolve_move(&g, (5.5, 5.5), (0.6, 0.0), BODY_RADIUS, &[]);
+        assert_eq!(r, (5.5, 5.5));
+    }
+
+    #[test]
+    fn collide_ignores_far_entities() {
+        let g = open(20, 20, &[]);
+        let b = [(12.0, 12.0)];
+        let r = resolve_move(&g, (5.5, 5.5), (0.4, 0.0), BODY_RADIUS, &b);
+        assert!((r.0 - 5.9).abs() < 1e-9, "远处实体不该影响: {r:?}");
     }
 
     #[test]

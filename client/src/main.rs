@@ -1051,7 +1051,14 @@ fn player_move(
                 if auto.active() {
                     let dir = dir8_from(d.x, d.y);
                     let v = DVec2::new(sim::DIR8[dir].0, sim::DIR8[dir].1) * RUN_SPEED * dt;
-                    let (nx, ny) = world.walk.try_move(p.pos.x, p.pos.y, v.x, v.y, BODY_RADIUS);
+                    let hits = collide_points(&remotes, &net);
+                    let (nx, ny) = sim::resolve_move(
+                        &world.walk,
+                        (p.pos.x, p.pos.y),
+                        (v.x, v.y),
+                        BODY_RADIUS,
+                        &hits,
+                    );
                     let moved = (nx - p.pos.x).abs() > 1e-9 || (ny - p.pos.y).abs() > 1e-9;
                     if moved {
                         p.dir = dir8_from(nx - p.pos.x, ny - p.pos.y);
@@ -1204,7 +1211,14 @@ fn player_move(
     }
     let speed = if run { RUN_SPEED } else { WALK_SPEED };
     let v = v * speed * dt;
-    let (nx, ny) = world.walk.try_move(p.pos.x, p.pos.y, v.x, v.y, BODY_RADIUS);
+    let hits = collide_points(&remotes, &net);
+    let (nx, ny) = sim::resolve_move(
+        &world.walk,
+        (p.pos.x, p.pos.y),
+        (v.x, v.y),
+        BODY_RADIUS,
+        &hits,
+    );
     let moved = (nx - p.pos.x).abs() > 1e-9 || (ny - p.pos.y).abs() > 1e-9;
     if moved {
         p.dir = dir8_from(nx - p.pos.x, ny - p.pos.y);
@@ -2314,6 +2328,18 @@ fn remote_step(
     for id in gone {
         remotes.0.remove(&id);
     }
+}
+
+/// 当前挡路的实体圆心 (与服务端 blockers_for 同一套规则: 活着的怪 / NPC /
+/// 其他玩家; 尸体不挡)。客户端预测必须和权威判定用同一规则, 否则会回弹。
+pub(crate) fn collide_points(remotes: &Remotes, net: &Net) -> Vec<(f64, f64)> {
+    remotes
+        .0
+        .values()
+        .filter(|r| r.anim != 4)
+        .map(|r| (r.pos.x, r.pos.y))
+        .chain(net.npcs.iter().map(|n| (n.x, n.y)))
+        .collect()
 }
 
 /// 收集当前该避开的实体位置 (怪物 / NPC / 其他玩家)
