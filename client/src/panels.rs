@@ -24,28 +24,44 @@ pub struct WoodTex {
     pub frame: Handle<Image>,
 }
 
-/// 生成 128×128 可平铺木纹: 整块木料的缓波纹理 + 细噪声, 不分板不留缝
+/// 生成 128×128 可平铺木纹: 云雾状木理 (分形值噪声) + 细噪声
 ///
-/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。波形频率取整周期,
-/// 横竖平铺都无缝; 幅度压得很低, 只求"有质感"而不抢内容的注意力。
+/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。无方向的柔和明暗,
+/// 像深色胡桃木大板; 噪声格点按 tile 尺寸取周期, 平铺无缝。
 pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::Image>>) {
     const W: u32 = 128;
     const H: u32 = 128;
-    fn hash(x: u32, y: u32) -> f32 {
-        let mut h = x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263);
+    fn hash(x: u32, y: u32, s: u32) -> f32 {
+        let mut h = x.wrapping_mul(374_761_393)
+            ^ y.wrapping_mul(668_265_263)
+            ^ s.wrapping_mul(2_246_822_519);
         h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
         ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
     }
+    // 周期格点值噪声: u/v ∈ [0,1), 格点取模所以平铺无缝
+    fn vnoise(u: f32, v: f32, cells: u32, s: u32) -> f32 {
+        let (gx, gy) = (u * cells as f32, v * cells as f32);
+        let (x0, y0) = (gx.floor() as u32, gy.floor() as u32);
+        let (tx, ty) = (gx - gx.floor(), gy - gy.floor());
+        let (tx, ty) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+        let c = |dx: u32, dy: u32| hash((x0 + dx) % cells, (y0 + dy) % cells, s);
+        let a = c(0, 0) * (1.0 - tx) + c(1, 0) * tx;
+        let b = c(0, 1) * (1.0 - tx) + c(1, 1) * tx;
+        a * (1.0 - ty) + b * ty
+    }
     let mut rgba = Vec::with_capacity((W * H * 4) as usize);
     for y in 0..H {
-        let fy = y as f32 / H as f32 * std::f32::consts::TAU;
+        let v = y as f32 / H as f32;
         for x in 0..W {
-            let fx = x as f32 / W as f32 * std::f32::consts::TAU;
-            // 主纹理沿横向, 相位被纵向缓波轻微扭动, 像整块木料的年轮
-            let wobble = fy.sin() * 1.3 + (fy * 2.0).cos() * 0.6;
-            let grain = (fx * 3.0 + wobble).sin() * 0.05
-                + (fx * 8.0 + wobble * 2.0).sin() * 0.03
-                + (hash(x, y) - 0.5) * 0.07;
+            let u = x as f32 / W as f32;
+            // 5 层八度叠加, 低频云雾 + 高频细节, 逐层减半
+            let (mut n, mut amp, mut tot) = (0.0f32, 1.0f32, 0.0f32);
+            for o in 0..5u32 {
+                n += amp * vnoise(u, v, 2 << o, 40 + o);
+                tot += amp;
+                amp *= 0.5;
+            }
+            let grain = (n / tot - 0.5) * 0.16 + (hash(x, y, 99) - 0.5) * 0.04;
             let k = 0.92 + grain;
             for base in [0.212f32, 0.149, 0.090] {
                 rgba.push(((base * k).clamp(0.0, 1.0) * 255.0) as u8);
