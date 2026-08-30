@@ -210,12 +210,16 @@
       <div class="toolbar">
         <button onclick="saveCfg('quests')">保存任务</button>
         <button class="ghost" onclick="loadCfg('quests')">重新载入</button>
-        <span class="hint">objectives: [[怪物模板, 数量]] · prereq 为前置任务 id 或 null</span>
+        <button class="ghost" onclick="addQuestRow()">+ 新增任务</button>
+        <span class="hint">「目标」行内展开配置击杀目标 · 前置任务达成后本任务才可接取</span>
         <span id="msg-quests" class="ok-msg"></span>
       </div>
       <div id="err-quests" class="err-msg"></div>
       <div class="card-box">
-        <textarea id="quests-json" spellcheck="false"></textarea>
+        <table id="quest-table">
+          <thead><tr><th>id</th><th>名称</th><th>击杀目标</th><th>经验奖励</th><th>前置任务</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 
@@ -1090,6 +1094,128 @@ async function bossPickOnMap(btn) {
   tr.classList.add('editing');
 }
 
+// ── 任务设置 ──
+/// 可作为击杀目标的怪: 各区刷新点模板 + 所有 BOSS (BOSS 的 template 就是它的 id)
+function monsterOptions(sel) {
+  const seen = new Map();
+  Object.values(zoneData).forEach(z =>
+    (z.sidecar?.monsters || []).forEach(m => {
+      if (m.template) seen.set(m.template, `${m.template} (${z.name} 刷新点)`);
+    }));
+  document.querySelectorAll('#boss-table > tbody > tr:not(.boss-dlg)').forEach(tr => {
+    const id = tr.querySelector('[data-b="id"]').value;
+    const nm = tr.querySelector('[data-b="name"]').value;
+    if (id) seen.set(id, `${id} (BOSS ${nm})`);
+  });
+  if (sel && !seen.has(sel)) seen.set(sel, `${sel} (未知, 保留原值)`);
+  return [...seen].map(([v, label]) =>
+    `<option value="${v}"${v === sel ? ' selected' : ''}>${label}</option>`).join('');
+}
+
+/// 前置任务下拉 (排除自己, 免得配成自环)
+function prereqOptions(sel, selfId) {
+  const rows = [...document.querySelectorAll('#quest-table > tbody > tr:not(.quest-dlg)')]
+    .map(tr => tr.querySelector('[data-q="id"]').value)
+    .filter(id => id && id !== selfId);
+  if (sel && !rows.includes(sel)) rows.push(sel);
+  return '<option value="">无</option>' + rows.map(id =>
+    `<option value="${id}"${id === sel ? ' selected' : ''}>${id}</option>`).join('');
+}
+
+function questRow(q) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="wide" data-q="id" value="${q.id ?? ''}"></td>
+    <td><input class="wide" data-q="name" value="${q.name ?? ''}"></td>
+    <td class="quest-sum hint"></td>
+    <td><input style="width:80px" data-q="exp_reward" value="${q.exp_reward ?? 0}"></td>
+    <td><select data-q="prereq">${prereqOptions(q.prereq || '', q.id || '')}</select></td>
+    <td><button class="ghost" onclick="toggleQuestObjs(this)">目标</button>
+        <button class="ghost" onclick="const t=this.closest('tr'),n=t.nextElementSibling;if(n&&n.classList.contains('quest-dlg'))n.remove();t.remove()">删</button></td>`;
+  tr._objs = (q.objectives || []).map(o => ({ target: o[0], need: o[1] }));
+  refreshQuestSummary(tr);
+  return tr;
+}
+
+function refreshQuestSummary(tr) {
+  const el = tr.querySelector('.quest-sum');
+  if (!el) return;
+  const o = tr._objs || [];
+  el.textContent = o.length ? o.map(x => `${x.target} ×${x.need}`).join(' · ') : '（未配目标）';
+}
+
+function addQuestRow() {
+  document.querySelector('#quest-table tbody').appendChild(
+    questRow({ id: 'new_quest', name: '新任务', objectives: [], exp_reward: 100, prereq: null }));
+}
+
+function collectQuests() {
+  return [...document.querySelectorAll('#quest-table > tbody > tr:not(.quest-dlg)')].map(tr => {
+    const g = c => tr.querySelector(`[data-q="${c}"]`);
+    const pre = g('prereq').value;
+    return {
+      id: g('id').value.trim(),
+      name: g('name').value.trim(),
+      objectives: (tr._objs || []).map(o => [o.target, Number(o.need) || 0]),
+      exp_reward: Number(g('exp_reward').value) || 0,
+      prereq: pre || null,
+    };
+  });
+}
+
+// ── 目标表 (行内展开) ──
+function objRowEl(o) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><select data-o2="target">${monsterOptions(o.target)}</select></td>
+    <td><input data-o2="need" style="width:90px" value="${o.need ?? 1}"></td>
+    <td><button class="ghost" onclick="const t=this.closest('tr'),h=t.closest('.dlg-box');t.remove();syncQuestObjs(h)">删</button></td>`;
+  return tr;
+}
+
+function syncQuestObjs(boxEl) {
+  const tr = boxEl._owner;
+  if (!tr) return;
+  tr._objs = [...boxEl.querySelectorAll('.obj-tbl tbody tr')].map(r => ({
+    target: r.querySelector('[data-o2="target"]').value,
+    need: Number(r.querySelector('[data-o2="need"]').value) || 0,
+  }));
+  queueMicrotask(() => refreshQuestSummary(tr));
+}
+
+function toggleQuestObjs(btn) {
+  const tr = btn.closest('tr');
+  const open = tr.nextElementSibling;
+  if (open && open.classList.contains('quest-dlg')) { open.remove(); return; }
+  document.querySelectorAll('#quest-table > tbody > tr.quest-dlg').forEach(r => r.remove());
+  const row = document.createElement('tr');
+  row.className = 'quest-dlg npc-dlg';
+  const td = document.createElement('td');
+  td.colSpan = 6;
+  const box = document.createElement('div');
+  box.className = 'dlg-box';
+  box._owner = tr;
+  box.addEventListener('input', () => syncQuestObjs(box));
+  box.addEventListener('change', () => syncQuestObjs(box));
+  const sec = document.createElement('div');
+  sec.className = 'dlg-loc';
+  sec.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">击杀目标</b>
+    <span class="hint">下拉列出各区刷新点与 BOSS · 全部达成才可交付</span></div>`;
+  const tbl = document.createElement('table');
+  tbl.className = 'obj-tbl shop-tbl';
+  tbl.innerHTML = '<thead><tr><th>目标</th><th>数量</th><th></th></tr></thead><tbody></tbody>';
+  (tr._objs || []).forEach(o => tbl.querySelector('tbody').appendChild(objRowEl(o)));
+  const add = document.createElement('button');
+  add.className = 'ghost';
+  add.textContent = '+ 目标';
+  add.onclick = () => { tbl.querySelector('tbody').appendChild(objRowEl({ need: 1 })); syncQuestObjs(box); };
+  sec.append(tbl, add);
+  box.appendChild(sec);
+  td.appendChild(box);
+  row.appendChild(td);
+  tr.after(row);
+}
+
 // ── 配置读写 ──
 /// 载入配置并重建表格。传 kind 只重建那一页 —— 整表重建会冲掉别页未保存的编辑
 async function loadCfg(kind) {
@@ -1122,7 +1248,17 @@ async function loadCfg(kind) {
     bossLoaded = true;
     refreshBossFilter();
   }
-  if (want('quests')) document.getElementById('quests-json').value = JSON.stringify(d.quests, null, 2);
+  if (want('quests')) {
+    const qb = document.querySelector('#quest-table tbody');
+    qb.innerHTML = '';
+    (d.quests || []).forEach(q => qb.appendChild(questRow(q)));
+    // 前置下拉依赖同表其它行, 全部建完再补一次选项
+    qb.querySelectorAll('tr').forEach(tr => {
+      const sel = tr.querySelector('[data-q="prereq"]');
+      const cur = sel.value;
+      sel.innerHTML = prereqOptions(cur, tr.querySelector('[data-q="id"]').value);
+    });
+  }
   showErr('');
 }
 async function saveCfg(kind) {
@@ -1132,9 +1268,10 @@ async function saveCfg(kind) {
           : kind === 'skills' ? collectSkills()
           : kind === 'npcs' ? collectNpcs()
           : kind === 'bosses' ? collectBosses()
-          : JSON.parse(document.getElementById(kind + '-json').value);
+          : kind === 'quests' ? collectQuests()
+          : (() => { throw new Error('未知配置类别: ' + kind); })();
   } catch (e) {
-    showErr('JSON 语法错误: ' + e.message); return;
+    showErr(e.message); return;
   }
   const r = await fetch('/api/config', { method: 'PUT',
     headers: { ...hdr, 'content-type': 'application/json' },

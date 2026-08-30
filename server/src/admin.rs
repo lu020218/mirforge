@@ -33,6 +33,7 @@ pub enum AdminCmd {
     CheckPlacement {
         npcs: Vec<crate::game::NpcDef>,
         bosses: Vec<crate::game::BossDef>,
+        quests: Vec<crate::game::QuestDef>,
         done: oneshot::Sender<Vec<String>>,
     },
     /// 边车更新 (校验/写回/热重载该区怪物)
@@ -280,7 +281,7 @@ async fn api_config_put(
         return Ok(fail(e));
     }
     let mut errors = next.validate();
-    if matches!(req.kind.as_str(), "npcs" | "bosses") && errors.is_empty() {
+    if matches!(req.kind.as_str(), "npcs" | "bosses" | "quests") && errors.is_empty() {
         // 地图/走格只有游戏循环有, 单独问一次
         let (tx, rx) = oneshot::channel();
         if st
@@ -288,6 +289,7 @@ async fn api_config_put(
             .send(AdminCmd::CheckPlacement {
                 npcs: next.npcs.clone(),
                 bosses: next.bosses.clone(),
+                quests: next.quests.clone(),
                 done: tx,
             })
             .is_ok()

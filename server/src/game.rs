@@ -1587,6 +1587,35 @@ impl Game {
         }
     }
 
+    /// 任务目标校验: 击杀目标必须是某区的刷新点模板或某个 BOSS
+    ///
+    /// 目标写错不会报错, 只会让任务永远推不动 —— 与商店没有入口是同一类
+    /// 静默失败, 所以在保存时拦下。刷新点在区域表里, 故与走格校验放一起。
+    fn check_quest_targets(&self, quests: &[QuestDef]) -> Vec<String> {
+        let d = data();
+        let mut known: std::collections::HashSet<&str> = self
+            .zones
+            .values()
+            .flat_map(|z| z.monster_spawns.iter().map(|s| s.template.as_str()))
+            .collect();
+        known.extend(d.bosses.iter().map(|b| b.id.as_str()));
+        let mut errs = Vec::new();
+        for q in quests {
+            for (target, need) in &q.objectives {
+                if !known.contains(target.as_str()) {
+                    errs.push(format!(
+                        "任务 {} 的击杀目标不存在于任何刷新点或 BOSS: {target}",
+                        q.id
+                    ));
+                }
+                if *need == 0 {
+                    errs.push(format!("任务 {} 的目标 {target} 数量不能为 0", q.id));
+                }
+            }
+        }
+        errs
+    }
+
     /// BOSS 落位校验: 地图已接入 / 坐标可走
     fn check_boss_placement(&self, bosses: &[BossDef]) -> Vec<String> {
         let mut errs = Vec::new();
@@ -1715,9 +1744,15 @@ impl Game {
                 self.save_all().await;
                 let _ = done.send(());
             }
-            AdminCmd::CheckPlacement { npcs, bosses, done } => {
+            AdminCmd::CheckPlacement {
+                npcs,
+                bosses,
+                quests,
+                done,
+            } => {
                 let mut errs = self.check_npc_placement(&npcs);
                 errs.extend(self.check_boss_placement(&bosses));
+                errs.extend(self.check_quest_targets(&quests));
                 let _ = done.send(errs);
             }
             AdminCmd::ZonesInfo(reply) => {
