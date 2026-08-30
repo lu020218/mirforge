@@ -2057,12 +2057,12 @@ fn build_character(
             ("攻击".into(), format!("+{atk}")),
             ("防御".into(), format!("+{def}")),
             ("魔法".into(), format!("+{mag}")),
-            ("道术".into(), format!("+{spi}")),
             (
                 "生命".into(),
                 stat.map(|s| format!("{}/{}", s.hp, s.max_hp))
                     .unwrap_or_default(),
             ),
+            ("道术".into(), format!("+{spi}")),
             (
                 "魔力".into(),
                 stat.map(|s| format!("{}/{}", s.mp, s.max_mp))
