@@ -791,7 +791,7 @@ fn spawn_create_panel(commands: &mut Commands, skin: &Skin, wood: &crate::panels
                 ))
                 .with_children(|card| {
                     crate::panels::wood_bg(card, wood);
-                    crate::panels::metal_frame(card, &wood);
+                    crate::panels::metal_frame(card, wood);
                     card.spawn(text(&skin.font, "创 建 角 色", 20.0, TEXT_MAIN));
                     card.spawn(Node {
                         flex_direction: FlexDirection::Column,
