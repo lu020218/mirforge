@@ -20,7 +20,7 @@ use protocol::ClientMessage;
 pub struct WoodTex {
     /// 平铺木纹
     pub wood: Handle<Image>,
-    /// 金属边框 (9-slice, 3px 金色渐变环 + 透明中心)
+    /// 金属边框 (9-slice, 2px 金色环 + 透明中心)
     pub frame: Handle<Image>,
 }
 
@@ -73,14 +73,13 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
     };
     let wood = mk(W, H, rgba, &mut images);
 
-    // 金属边框: 12×12, 外圈 3px 由深金→金→亮金渐变, 中心透明。
+    // 金属边框: 12×12, 外圈 2px 金+亮金, 中心透明。
     // 9-slice 由 GPU 采样缩放, 四边共用同一套几何 —— 逐节点画边在分数缩放下
     // 四边各自取整, 左/上与右/下会差 1-2px, 这里从机制上避开。
     const F: u32 = 12;
     let ring = [
-        (143, 116, 64u8), // 最外: 深金收边
-        (201, 165, 92),   // 主金
-        (255, 216, 118),  // 最内: 亮金高光
+        (201, 165, 92u8), // 主金
+        (255, 216, 118),  // 内侧亮金高光
     ];
     let mut fr = Vec::with_capacity((F * F * 4) as usize);
     for y in 0..F {
@@ -249,7 +248,7 @@ pub fn teardown(mut commands: Commands, q: Query<Entity, With<Panel>>) {
     }
 }
 
-/// 金属质感金边: 一张 9-slice 边框贴图铺满窗口 (3px 渐变环, 中心透明)。
+/// 金属质感金边: 一张 9-slice 边框贴图铺满窗口 (2px 金+亮金环, 中心透明)。
 ///
 /// 深金→金→亮金的渐变烙在贴图里, 内亮外沉的浮雕感由像素承载;
 /// GPU 采样保证四边等厚 (逐节点画边在分数缩放下会左右不对称)。
@@ -265,7 +264,7 @@ pub fn metal_frame(panel: &mut ChildBuilder, wood: &WoodTex) {
         },
         ImageNode {
             image: wood.frame.clone(),
-            image_mode: crate::hud::sliced(3.0),
+            image_mode: crate::hud::sliced(2.0),
             ..default()
         },
     ));
@@ -290,7 +289,7 @@ fn spawn_panel(
                 width: Val::Px(width),
                 flex_direction: FlexDirection::Column,
                 display: Display::None,
-                padding: UiRect::all(Val::Px(3.0)),
+                padding: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
@@ -608,7 +607,7 @@ pub fn dialog(
                 margin: UiRect::left(Val::Px(-210.0)), // 宽 420 的一半, 居中
                 width: Val::Px(420.0),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(3.0)),
+                padding: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
@@ -751,7 +750,7 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>)
                 top: Val::Percent(50.0),
                 width: Val::Px(BIGMAP_FALLBACK),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(3.0)),
+                padding: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
@@ -996,14 +995,14 @@ pub fn bigmap(
                 node.width = Val::Px(aw);
                 node.height = Val::Px(ah);
             }
-            // 窗口宽度随图走 (+6 是左右金属边框环), 并重算居中偏移
-            let root_w = aw + 6.0;
+            // 窗口宽度随图走 (+4 是左右金属边框环), 并重算居中偏移
+            let root_w = aw + 4.0;
             for mut node in q_root.iter_mut() {
                 node.width = Val::Px(root_w);
                 node.margin = UiRect::new(
                     Val::Px(-root_w / 2.0),
                     Val::Px(0.0),
-                    Val::Px(-(ah + BIGMAP_CHROME + 6.0) / 2.0),
+                    Val::Px(-(ah + BIGMAP_CHROME + 4.0) / 2.0),
                     Val::Px(0.0),
                 );
             }
@@ -1150,7 +1149,7 @@ pub fn shop(
                 margin: UiRect::left(Val::Px(-235.0)),
                 width: Val::Px(470.0),
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(3.0)),
+                padding: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
@@ -1608,10 +1607,10 @@ const BAG_GAP: f32 = 5.0;
 const BAG_PAD: f32 = 8.0;
 /// 面板宽度 = 格区 + 内边距 + 1px 边框×2 (Bevy UI 按 border-box 量)
 /// —— 由格数算出, 改列数不用再手调宽度, 也不会留下一圈空白
-/// +6 是金属边框环 (3px×2, 见 metal_frame), 末尾 +2 是抗舍入余量: 缩放后各段
+/// +4 是金属边框环 (2px×2, 见 metal_frame), 末尾 +2 是抗舍入余量: 缩放后各段
 /// 取整可能多出一两像素, 留一点免得最后一列的边框被裁掉 (列数由 grid 钉死)
 const BAG_PANEL_W: f32 =
-    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 6.0 + 2.0;
+    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 4.0 + 2.0;
 
 /// 图标句柄 + 原始像素尺寸
 type Icon = Option<(Handle<Image>, Vec2)>;
