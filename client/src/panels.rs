@@ -126,6 +126,17 @@ pub fn wood_bg(parent: &mut ChildBuilder, wood: &WoodTex) {
     ));
 }
 
+/// 人物面板: 装备槽边长 (侧列与底排统一)
+const CHAR_SLOT: f32 = 52.0;
+/// 槽间距
+const CHAR_GAP: f32 = 12.0;
+/// 内容区横向内边距
+const CHAR_PAD: f32 = 14.0;
+/// 内容区宽 = 底排 5 槽 + 4 间隙; 侧列与底排都以它对齐
+const CHAR_INNER: f32 = CHAR_SLOT * 5.0 + CHAR_GAP * 4.0;
+/// 面板宽 = 内容区 + 内边距 + 1px 金线×2
+const CHAR_PANEL_W: f32 = CHAR_INNER + CHAR_PAD * 2.0 + 2.0;
+
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
 const PANEL_BG: Color = Color::srgb(0.137, 0.098, 0.059); // #231910 深木色, 不透明
@@ -228,7 +239,7 @@ pub fn setup(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>) {
         PanelKind::Character,
         "角 色",
         (1010.0, 180.0),
-        440.0,
+        CHAR_PANEL_W,
     );
     spawn_panel(
         &mut commands,
@@ -1839,11 +1850,16 @@ fn build_character(
         equipment.values().map(|i| i.defense).sum(),
     );
     e.with_children(|body| {
-        // 主区: 左列 4 槽 | 中央立绘+名字 | 右列 4 槽
+        // 主区: 左列 4 槽 | 中央立绘+名字 (flex_grow 撑满) | 右列 4 槽
+        // 横向 padding 与底排/属性区一致, 三段的左右边界天然对齐
         body.spawn(Node {
-            padding: UiRect::new(Val::Px(20.0), Val::Px(20.0), Val::Px(18.0), Val::Px(0.0)),
-            justify_content: JustifyContent::SpaceBetween,
-            column_gap: Val::Px(12.0),
+            padding: UiRect::new(
+                Val::Px(CHAR_PAD),
+                Val::Px(CHAR_PAD),
+                Val::Px(16.0),
+                Val::Px(0.0),
+            ),
+            column_gap: Val::Px(CHAR_GAP),
             ..default()
         })
         .with_children(|row| {
@@ -1860,7 +1876,7 @@ fn build_character(
                     icons,
                     Some("weapon"),
                     "武器",
-                    56.0,
+                    CHAR_SLOT,
                     ui,
                     grab,
                 );
@@ -1871,11 +1887,13 @@ fn build_character(
                     icons,
                     Some("armor"),
                     "衣服",
-                    56.0,
+                    CHAR_SLOT,
                     ui,
                     grab,
                 );
-                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui, grab);
+                equip_slot(
+                    col, &font, &equipment, icons, None, "护腕", CHAR_SLOT, ui, grab,
+                );
                 equip_slot(
                     col,
                     &font,
@@ -1883,7 +1901,7 @@ fn build_character(
                     icons,
                     Some("ring"),
                     "戒指",
-                    56.0,
+                    CHAR_SLOT,
                     ui,
                     grab,
                 );
@@ -1899,8 +1917,8 @@ fn build_character(
             .with_children(|mid| {
                 mid.spawn((
                     Node {
-                        width: Val::Px(150.0),
-                        height: Val::Px(240.0),
+                        width: Val::Px(CHAR_INNER - CHAR_SLOT * 2.0 - CHAR_GAP * 2.0 - 24.0),
+                        height: Val::Px(230.0),
                         border: UiRect::all(Val::Px(1.0)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -1963,7 +1981,7 @@ fn build_character(
                     icons,
                     Some("helmet"),
                     "头盔",
-                    56.0,
+                    CHAR_SLOT,
                     ui,
                     grab,
                 );
@@ -1974,24 +1992,35 @@ fn build_character(
                     icons,
                     Some("necklace"),
                     "项链",
-                    56.0,
+                    CHAR_SLOT,
                     ui,
                     grab,
                 );
-                equip_slot(col, &font, &equipment, icons, None, "护腕", 56.0, ui, grab);
-                equip_slot(col, &font, &equipment, icons, None, "戒指", 56.0, ui, grab);
+                equip_slot(
+                    col, &font, &equipment, icons, None, "护腕", CHAR_SLOT, ui, grab,
+                );
+                equip_slot(
+                    col, &font, &equipment, icons, None, "戒指", CHAR_SLOT, ui, grab,
+                );
             });
         });
-        // 底排 5 槽 52px 居中
+        // 底排 5 槽: 与侧列同 padding, SpaceBetween 让首末槽的外缘
+        // 与左右两列的外边界精确对齐 (内容区宽度就是按 5 槽推导的)
         body.spawn(Node {
-            padding: UiRect::new(Val::Px(20.0), Val::Px(20.0), Val::Px(10.0), Val::Px(14.0)),
-            justify_content: JustifyContent::Center,
-            column_gap: Val::Px(10.0),
+            padding: UiRect::new(
+                Val::Px(CHAR_PAD),
+                Val::Px(CHAR_PAD),
+                Val::Px(CHAR_GAP),
+                Val::Px(14.0),
+            ),
+            justify_content: JustifyContent::SpaceBetween,
             ..default()
         })
         .with_children(|row| {
             for label in ["腰带", "鞋子", "宝石", "生肖", "星座"] {
-                equip_slot(row, &font, &equipment, icons, None, label, 52.0, ui, grab);
+                equip_slot(
+                    row, &font, &equipment, icons, None, label, CHAR_SLOT, ui, grab,
+                );
             }
         });
         // 属性: 两列 grid, 顶分隔线
@@ -2021,10 +2050,15 @@ fn build_character(
         body.spawn((
             Node {
                 border: UiRect::top(Val::Px(1.0)),
-                padding: UiRect::new(Val::Px(20.0), Val::Px(20.0), Val::Px(14.0), Val::Px(18.0)),
+                padding: UiRect::new(
+                    Val::Px(CHAR_PAD),
+                    Val::Px(CHAR_PAD),
+                    Val::Px(14.0),
+                    Val::Px(18.0),
+                ),
                 flex_direction: FlexDirection::Row,
                 flex_wrap: FlexWrap::Wrap,
-                column_gap: Val::Px(24.0),
+                justify_content: JustifyContent::SpaceBetween,
                 row_gap: Val::Px(8.0),
                 ..default()
             },
@@ -2033,7 +2067,8 @@ fn build_character(
         .with_children(|grid| {
             for (label, value) in pairs {
                 grid.spawn(Node {
-                    width: Val::Px(180.0),
+                    // 两列: 各占内容区一半减半个列距
+                    width: Val::Px((CHAR_INNER - CHAR_GAP) / 2.0),
                     justify_content: JustifyContent::SpaceBetween,
                     ..default()
                 })
