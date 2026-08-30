@@ -605,8 +605,12 @@ pub fn dialog_clicks(
 
 // ─────────── 大地图 (M) ───────────
 
-/// 大地图显示区边长上限 (逻辑 px), 图按比例塞进这个方框
-const BIGMAP_BOX: f32 = 560.0;
+/// 大地图窗口四周留给屏幕的余量 (逻辑 px)
+const BIGMAP_INSET: f32 = 40.0;
+/// 标题栏 + 底栏高度 (逻辑 px), 算可用空间时要扣掉
+const BIGMAP_CHROME: f32 = 46.0 + 38.0;
+/// 没有小地图帧时的占位尺寸
+const BIGMAP_FALLBACK: f32 = 420.0;
 /// 点阵容量: 怪物与 NPC 各自的上限, 超出不画
 const BIGMAP_DOTS: usize = 64;
 
@@ -639,9 +643,8 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
                 display: Display::None,
                 position_type: PositionType::Absolute,
                 left: Val::Percent(50.0),
-                top: Val::Px(70.0),
-                margin: UiRect::left(Val::Px(-(BIGMAP_BOX + 36.0) / 2.0)),
-                width: Val::Px(BIGMAP_BOX + 36.0),
+                top: Val::Percent(50.0),
+                width: Val::Px(BIGMAP_FALLBACK),
                 flex_direction: FlexDirection::Column,
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
@@ -673,11 +676,9 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>) {
             root.spawn((
                 BigMapArea,
                 Node {
-                    width: Val::Px(BIGMAP_BOX),
-                    height: Val::Px(BIGMAP_BOX),
-                    margin: UiRect::all(Val::Px(17.0)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
+                    // 尺寸每帧按图算; 不留内外边距, 图直接贴住窗口内沿
+                    width: Val::Px(BIGMAP_FALLBACK),
+                    height: Val::Px(BIGMAP_FALLBACK),
                     overflow: Overflow::clip(),
                     ..default()
                 },
@@ -786,7 +787,9 @@ pub fn bigmap(
     world: Res<crate::World>,
     minimap: Res<crate::MiniMap>,
     remotes: Res<crate::Remotes>,
-    q_root: Query<&Node, With<BigMapRoot>>,
+    windows: Query<&Window>,
+    ui_scale: Res<UiScale>,
+    mut q_root: Query<&mut Node, With<BigMapRoot>>,
     q_player: Query<&crate::Player>,
     mut q_img: Query<
         (&mut ImageNode, &mut Node, &mut Visibility),
@@ -818,6 +821,15 @@ pub fn bigmap(
     if q_root.iter().all(|n| n.display == Display::None) {
         return;
     }
+    // 可用空间 = 窗口逻辑尺寸 减去四周余量与上下栏
+    let s = ui_scale.0.max(0.01);
+    let (max_w, max_h) = match windows.get_single() {
+        Ok(w) => (
+            (w.width() / s - BIGMAP_INSET * 2.0).max(200.0),
+            (w.height() / s - BIGMAP_INSET * 2.0 - BIGMAP_CHROME).max(160.0),
+        ),
+        Err(_) => (BIGMAP_FALLBACK, BIGMAP_FALLBACK),
+    };
     let player = q_player.get_single().ok();
     for mut t in q_title.iter_mut() {
         t.0 = if net.zone_name.is_empty() {
@@ -835,30 +847,57 @@ pub fn bigmap(
     // 图: 等比缩放塞进方框; 没有小地图帧时整个区域留空
     let fit = match &minimap.image {
         Some((handle, size)) => {
-            let k = (BIGMAP_BOX / size.x.max(1.0)).min(BIGMAP_BOX / size.y.max(1.0));
+            // 能放多大放多大, 但放大只取整数倍 —— 小地图是像素图, 非整数
+            // 倍率放大会发糊 (与背包图标同一条规矩)。缩小则只能按需取小数。
+            let raw = (max_w / size.x.max(1.0)).min(max_h / size.y.max(1.0));
+            let k = if raw >= 1.0 { raw.floor() } else { raw };
             let (dw, dh) = (size.x * k, size.y * k);
-            // 显示区收紧到图的实际高度, 只在横向留居中余量
+            // 显示区正好等于图, 四周不留空白
             for mut node in q_area.iter_mut() {
+                node.width = Val::Px(dw);
                 node.height = Val::Px(dh);
             }
-            let ox = (BIGMAP_BOX - dw) / 2.0;
+            // 窗口宽度随图走, 并重新算居中偏移 (左移半个宽, 上移半个总高)
+            for mut node in q_root.iter_mut() {
+                node.width = Val::Px(dw);
+                node.margin = UiRect::new(
+                    Val::Px(-dw / 2.0),
+                    Val::Px(0.0),
+                    Val::Px(-(dh + BIGMAP_CHROME) / 2.0),
+                    Val::Px(0.0),
+                );
+            }
             for (mut img, mut node, mut vis) in q_img.iter_mut() {
                 img.image = handle.clone();
                 img.rect = None;
                 node.width = Val::Px(dw);
                 node.height = Val::Px(dh);
-                node.left = Val::Px(ox);
+                node.left = Val::Px(0.0);
                 node.top = Val::Px(0.0);
                 *vis = Visibility::Inherited;
             }
             // 格坐标 → 区域内像素
             let sx = size.x / world.map.width.max(1) as f32 * k;
             let sy = size.y / world.map.height.max(1) as f32 * k;
-            Some((sx, sy, ox, 0.0))
+            Some((sx, sy, 0.0, 0.0))
         }
         None => {
+            // 该区没配小地图帧: 收回占位尺寸, 免得沿用上一张图的宽度
             for (_, _, mut vis) in q_img.iter_mut() {
                 *vis = Visibility::Hidden;
+            }
+            for mut node in q_area.iter_mut() {
+                node.width = Val::Px(BIGMAP_FALLBACK);
+                node.height = Val::Px(BIGMAP_FALLBACK / 2.0);
+            }
+            for mut node in q_root.iter_mut() {
+                node.width = Val::Px(BIGMAP_FALLBACK);
+                node.margin = UiRect::new(
+                    Val::Px(-BIGMAP_FALLBACK / 2.0),
+                    Val::Px(0.0),
+                    Val::Px(-(BIGMAP_FALLBACK / 2.0 + BIGMAP_CHROME) / 2.0),
+                    Val::Px(0.0),
+                );
             }
             None
         }
