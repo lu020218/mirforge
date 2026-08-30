@@ -780,6 +780,37 @@ fn parse_teleport(arg: &str) -> Option<(String, f64, f64)> {
     (!map.is_empty() && it.next().is_none()).then(|| (map.to_string(), x, y))
 }
 
+/// 就近找一个既可站立、又不压在 `blockers` 上的位置
+///
+/// 用于刷怪/重生: 怪不该刷在玩家身上。找不到 (被围满了) 就退回可站立的位置 ——
+/// 宁可短暂重叠也不能不刷, 反正 resolve_move 允许从重叠里脱出。
+pub fn nearest_free(walk: &WalkGrid, x: f64, y: f64, blockers: &[(f64, f64)]) -> (f64, f64) {
+    let clear = |px: f64, py: f64| {
+        blockers.iter().all(|b| {
+            let (dx, dy) = (b.0 - px, b.1 - py);
+            dx * dx + dy * dy >= sim::ENTITY_CLEARANCE * sim::ENTITY_CLEARANCE
+        })
+    };
+    if walk.is_walkable_circle(x, y, BODY_RADIUS) && clear(x, y) {
+        return (x, y);
+    }
+    let (cx, cy) = (x.floor() as i64, y.floor() as i64);
+    for r in 1..=12i64 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let (tx, ty) = ((cx + dx) as f64 + 0.5, (cy + dy) as f64 + 0.5);
+                if walk.is_walkable_circle(tx, ty, BODY_RADIUS) && clear(tx, ty) {
+                    return (tx, ty);
+                }
+            }
+        }
+    }
+    nearest_walkable(walk, x, y)
+}
+
 pub fn nearest_walkable(walk: &WalkGrid, x: f64, y: f64) -> (f64, f64) {
     if walk.is_walkable_circle(x, y, BODY_RADIUS) {
         return (x, y);
@@ -802,7 +833,8 @@ pub fn nearest_walkable(walk: &WalkGrid, x: f64, y: f64) -> (f64, f64) {
 }
 
 /// 按刷新点物化一个区域的怪物 (出生位置吸附可走格)
-fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
+/// `avoid` 是要让开的位置 (在场玩家); 开服时为空
+fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec<Monster> {
     let mut next = |limit: f64| {
         *rng ^= *rng << 13;
         *rng ^= *rng >> 7;
@@ -817,7 +849,7 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
                 sp.x + next(sp.radius * 2.0) - sp.radius,
                 sp.y + next(sp.radius * 2.0) - sp.radius,
             );
-            let (x, y) = nearest_walkable(&zone.walk, want.0, want.1);
+            let (x, y) = nearest_free(&zone.walk, want.0, want.1, avoid);
             out.push(Monster {
                 id: format!("mon_{}_{}_{}_{}", zone.id, sp.image, si, i),
                 template: sp.template.clone(),
@@ -854,14 +886,14 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64) -> Vec<Monster> {
 }
 
 /// 把本区的 BOSS 配置落成 Monster (与普通刷新点走同一套 AI/生命周期)
-fn materialize_bosses(zone: &Zone) -> Vec<Monster> {
+fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monster> {
     let now = Instant::now();
     data()
         .bosses
         .iter()
         .filter(|b| b.enabled && b.map == zone.id)
         .map(|b| {
-            let (x, y) = nearest_walkable(&zone.walk, b.x, b.y);
+            let (x, y) = nearest_free(&zone.walk, b.x, b.y, avoid);
             Monster {
                 id: format!("boss_{}_{}", zone.id, b.id),
                 template: b.id.clone(),
@@ -990,8 +1022,9 @@ impl Game {
         let mut rng: u64 = 0x9E3779B97F4A7C15;
         let mut monsters = Vec::new();
         for zone in zones.values() {
-            monsters.extend(materialize_monsters(zone, &mut rng));
-            monsters.extend(materialize_bosses(zone));
+            // 开服时还没有人在线
+            monsters.extend(materialize_monsters(zone, &mut rng, &[]));
+            monsters.extend(materialize_bosses(zone, &[]));
         }
         info!("怪物已刷新: {} 只", monsters.len());
         Game {
@@ -1113,8 +1146,9 @@ impl Game {
         }
         self.monsters.retain(|m| m.zone != map);
         let mut rng = self.rng | 1;
-        let mut fresh = materialize_monsters(&zone, &mut rng);
-        fresh.extend(materialize_bosses(&zone));
+        let here = Self::player_positions(&self.players, &zone.id);
+        let mut fresh = materialize_monsters(&zone, &mut rng, &here);
+        fresh.extend(materialize_bosses(&zone, &here));
         info!("区域 {map} 热重载: 怪物 {} 只", fresh.len());
         self.monsters.extend(fresh);
         self.zones.insert(map.to_string(), zone);
@@ -1360,6 +1394,15 @@ impl Game {
             },
         )
         .await;
+    }
+
+    /// 某区在线玩家的位置 (刷怪时让开用)
+    fn player_positions(players: &HashMap<String, PlayerState>, zone: &str) -> Vec<(f64, f64)> {
+        players
+            .values()
+            .filter(|p| p.connected && p.zone == zone)
+            .map(|p| (p.x, p.y))
+            .collect()
     }
 
     /// 某区里会挡路的实体圆心 (可排除自己)
@@ -1632,7 +1675,8 @@ impl Game {
             .collect();
         self.monsters.retain(|m| !m.boss);
         for zone in self.zones.values() {
-            let fresh = materialize_bosses(zone);
+            let here = Self::player_positions(&self.players, &zone.id);
+            let fresh = materialize_bosses(zone, &here);
             self.monsters.extend(fresh);
         }
         if !removed.is_empty() {
@@ -3231,6 +3275,14 @@ impl Game {
             let hits = self.monster_ai(now);
             self.apply_monster_hits(hits).await;
         }
+        // 重生落点要避开玩家, 先抄一份位置快照 (下面 monsters 是可变借用)
+        let alive_players: Vec<(String, f64, f64)> = self
+            .players
+            .values()
+            .filter(|p| p.connected)
+            .map(|p| (p.zone.clone(), p.x, p.y))
+            .collect();
+        let zones = &self.zones;
         // 怪物生命周期: 死亡动画到点 → 等重生; 重生到点 → 回家满血复活
         for m in self.monsters.iter_mut() {
             if m.dying_until.is_some_and(|t| now >= t) {
@@ -3240,8 +3292,18 @@ impl Game {
             if m.respawn_at.is_some_and(|t| now >= t) {
                 m.respawn_at = None;
                 m.hp = m.max_hp;
-                m.x = m.home.0;
-                m.y = m.home.1;
+                // 老家被人占着就挪开一点刷, 免得一出生就和玩家重叠
+                let here: Vec<(f64, f64)> = alive_players
+                    .iter()
+                    .filter(|(z, _, _)| z == &m.zone)
+                    .map(|(_, x, y)| (*x, *y))
+                    .collect();
+                let (hx, hy) = match zones.get(&m.zone) {
+                    Some(z) => nearest_free(&z.walk, m.home.0, m.home.1, &here),
+                    None => m.home,
+                };
+                m.x = hx;
+                m.y = hy;
                 m.dir = 4;
                 m.removed_sent = false;
             }
@@ -3691,6 +3753,47 @@ mod tests {
         for bad in ["2.map:300", "2.map:300:300:1", "2.map:a:b", ":1:2", ""] {
             assert!(super::parse_teleport(bad).is_none(), "应拒绝: {bad}");
         }
+    }
+
+    #[test]
+    fn nearest_free_dodges_players() {
+        let walk = WalkGrid::from_cells(20, 20, |_, _| false);
+        // 老家上正站着人 → 该挪开, 且挪到的位置与人保持碰撞间距
+        let here = [(5.5, 5.5)];
+        let (x, y) = nearest_free(&walk, 5.5, 5.5, &here);
+        let d = ((x - 5.5f64).powi(2) + (y - 5.5f64).powi(2)).sqrt();
+        assert!(d >= sim::ENTITY_CLEARANCE, "刷点应让开玩家, 实际距离 {d}");
+        assert!(walk.is_walkable_circle(x, y, BODY_RADIUS));
+        // 没人时原样返回
+        assert_eq!(nearest_free(&walk, 5.5, 5.5, &[]), (5.5, 5.5));
+    }
+
+    #[test]
+    fn nearest_free_falls_back_when_surrounded() {
+        let walk = WalkGrid::from_cells(20, 20, |_, _| false);
+        // 周围 12 圈全被占满: 退回"可站立"的原位, 宁可重叠也要刷出来
+        let mut here = Vec::new();
+        for dy in -13..=13 {
+            for dx in -13..=13 {
+                here.push((5.5 + dx as f64, 5.5 + dy as f64));
+            }
+        }
+        let (x, y) = nearest_free(&walk, 5.5, 5.5, &here);
+        assert!(
+            walk.is_walkable_circle(x, y, BODY_RADIUS),
+            "兜底也必须站得住"
+        );
+    }
+
+    #[test]
+    fn nearest_free_still_avoids_walls() {
+        // 目标格是墙且旁边站着人: 两个条件都要满足
+        let walk = WalkGrid::from_cells(10, 10, |x, y| x == 5 && y == 5);
+        let here = [(4.5, 5.5)];
+        let (x, y) = nearest_free(&walk, 5.5, 5.5, &here);
+        assert!(walk.is_walkable_circle(x, y, BODY_RADIUS), "不能落在墙里");
+        let d = ((x - 4.5f64).powi(2) + (y - 5.5f64).powi(2)).sqrt();
+        assert!(d >= sim::ENTITY_CLEARANCE, "也不能压着人");
     }
 
     #[test]
