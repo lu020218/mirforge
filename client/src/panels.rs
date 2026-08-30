@@ -1991,12 +1991,12 @@ fn build_character(
                             },
                             ImageNode::new(img),
                         ));
-                        if let Some((gimg, gsize)) = portrait.gear.clone() {
+                        if let Some((gimg, gsize, goff)) = portrait.gear.clone() {
                             frame.spawn((
                                 Node {
                                     position_type: PositionType::Absolute,
-                                    left: Val::Px((box_w - gsize.x * k) / 2.0),
-                                    top: Val::Px((box_h - gsize.y * k) / 2.0),
+                                    left: Val::Px((box_w - gsize.x * k) / 2.0 + goff.x * k),
+                                    top: Val::Px((box_h - gsize.y * k) / 2.0 + goff.y * k),
                                     width: Val::Px(gsize.x * k),
                                     height: Val::Px(gsize.y * k),
                                     ..default()

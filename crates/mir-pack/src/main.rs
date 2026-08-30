@@ -121,18 +121,30 @@ fn pack(src: &Path, out: &Path) -> Result<(), AnyErr> {
     Ok(())
 }
 
-/// 散图打包: 帧号 = 参数顺序, 锚点 (0,0)。立绘/图标这类不吃帧表的素材用
+/// 散图打包: 帧号 = 参数顺序。立绘/图标这类不吃帧表的素材用。
+/// 路径可带 `@dx,dy` 后缀写入帧偏移 (立绘叠加层的对位微调数据)
 fn pack_list(out: &Path, srcs: &[PathBuf]) -> Result<(), AnyErr> {
     let mut frames = Vec::new();
     for p in srcs {
-        let img = image::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let raw = p.to_string_lossy();
+        let (path_s, ox, oy) = match raw.rsplit_once('@') {
+            Some((head, tail)) => {
+                let mut it = tail.split(',').filter_map(|t| t.trim().parse::<i16>().ok());
+                match (it.next(), it.next()) {
+                    (Some(x), Some(y)) => (head.to_string(), x, y),
+                    _ => (raw.to_string(), 0, 0), // @ 是路径一部分 (无合法偏移)
+                }
+            }
+            None => (raw.to_string(), 0, 0),
+        };
+        let img = image::open(&path_s).map_err(|e| format!("{path_s}: {e}"))?;
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
         frames.push(Some(MflFrame {
             width: w as u16,
             height: h as u16,
-            offset_x: 0,
-            offset_y: 0,
+            offset_x: ox,
+            offset_y: oy,
             rgba: rgba.into_raw(),
         }));
     }

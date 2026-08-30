@@ -510,8 +510,9 @@ impl World {
 pub struct Portrait {
     /// 底层: 裸模 (packs/portrait/naked.mfl), 缺失时退 Crystal 站立帧
     pub base: Option<(Handle<Image>, Vec2)>,
-    /// 叠加层: 已穿衣甲的展示图 (packs/portrait/{shape:03}.mfl)
-    pub gear: Option<(Handle<Image>, Vec2)>,
+    /// 叠加层: 已穿衣甲的展示图 (packs/portrait/{shape:03}.mfl);
+    /// 第三项是帧偏移 (相对共享中心的对位微调, 打包时写入)
+    pub gear: Option<(Handle<Image>, Vec2, Vec2)>,
 }
 
 /// 物品图标 (Items.Lib 帧 → 独立 Image, 惰性缓存)
@@ -743,7 +744,11 @@ fn make_portrait(
                     .open_lib(&format!("portrait/{s:03}"))
                     .and_then(|l| l.image(gender_frame).ok().flatten())
             })
-            .map(&mut mk)
+            .map(|img| {
+                let off = Vec2::new(img.offset_x as f32, img.offset_y as f32);
+                let (h, size) = mk(img);
+                (h, size, off)
+            })
     } else {
         None
     };
