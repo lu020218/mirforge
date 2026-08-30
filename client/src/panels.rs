@@ -24,14 +24,13 @@ pub struct WoodTex {
     pub frame: Handle<Image>,
 }
 
-/// 生成 128×128 可平铺木纹: 横向木板 + 板缝 + 波形木纹 + 细噪声
+/// 生成 128×128 可平铺木纹: 整块木料的缓波纹理 + 细噪声, 不分板不留缝
 ///
-/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。波形用整周期所以水平
-/// 无缝; 噪声在接缝处有 ±5% 亮度差, 平铺后肉眼难辨。
+/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。波形频率取整周期,
+/// 横竖平铺都无缝; 幅度压得很低, 只求"有质感"而不抢内容的注意力。
 pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::Image>>) {
     const W: u32 = 128;
     const H: u32 = 128;
-    const PLANK: u32 = 32;
     fn hash(x: u32, y: u32) -> f32 {
         let mut h = x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263);
         h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
@@ -39,19 +38,15 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
     }
     let mut rgba = Vec::with_capacity((W * H * 4) as usize);
     for y in 0..H {
-        let plank = y / PLANK;
-        let seam = y % PLANK == 0;
-        // 每块板整体深浅略有差, 像不同木料
-        let plank_k = (hash(plank, 7) - 0.5) * 0.16;
+        let fy = y as f32 / H as f32 * std::f32::consts::TAU;
         for x in 0..W {
             let fx = x as f32 / W as f32 * std::f32::consts::TAU;
-            let grain = (fx * 3.0 + plank as f32 * 2.1).sin() * 0.09
-                + (fx * 11.0 + plank as f32 * 5.7).sin() * 0.05
-                + (hash(x, y) - 0.5) * 0.10;
-            let mut k = 0.9 + grain + plank_k;
-            if seam {
-                k *= 0.45; // 板缝压暗
-            }
+            // 主纹理沿横向, 相位被纵向缓波轻微扭动, 像整块木料的年轮
+            let wobble = fy.sin() * 1.3 + (fy * 2.0).cos() * 0.6;
+            let grain = (fx * 3.0 + wobble).sin() * 0.05
+                + (fx * 8.0 + wobble * 2.0).sin() * 0.03
+                + (hash(x, y) - 0.5) * 0.07;
+            let k = 0.92 + grain;
             for base in [0.212f32, 0.149, 0.090] {
                 rgba.push(((base * k).clamp(0.0, 1.0) * 255.0) as u8);
             }
