@@ -159,7 +159,7 @@
       <div id="err-items" class="err-msg"></div>
       <div class="card-box">
         <table id="item-table">
-          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>防御</th><th>HP</th><th title="商店基准价; 回收价 = 基准价 × 50%">价格</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
+          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>魔法</th><th>道术</th><th>防御</th><th>HP</th><th title="商店基准价; 回收价 = 基准价 × 50%">价格</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -499,8 +499,8 @@ async function saveAll() {
 }
 
 // ── 物品 ──
-const ITEM_COLS = ['template','name','slot','attack','defense','hp','price','image','shape'];
-const NUM_COLS = new Set(['attack','defense','hp','price','image','shape']);
+const ITEM_COLS = ['template','name','slot','attack','magic','spirit','defense','hp','price','image','shape'];
+const NUM_COLS = new Set(['attack','magic','spirit','defense','hp','price','image','shape']);
 function itemRow(it) {
   const tr = document.createElement('tr');
   tr.innerHTML = ITEM_COLS.map(c => {
@@ -515,7 +515,7 @@ function itemRow(it) {
 }
 function addItemRow() {
   document.querySelector('#item-table tbody').appendChild(itemRow(
-    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, defense: 0, hp: 0, price: 0, image: 0, shape: 0 }));
+    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, magic: 0, spirit: 0, defense: 0, hp: 0, price: 0, image: 0, shape: 0 }));
 }
 function collectItems() {
   return [...document.querySelectorAll('#item-table tbody tr')].map(tr => {

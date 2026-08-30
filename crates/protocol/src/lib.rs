@@ -288,8 +288,12 @@ pub struct ShopItemInfo {
     pub price: u32,
     /// -1 = 无限
     pub stock: i32,
-    /// 属性摘要 (攻/防/血), 供 Tips 显示
+    /// 属性摘要 (攻/魔/道/防/血), 供 Tips 显示
     pub attack: i32,
+    #[serde(default)]
+    pub magic: i32,
+    #[serde(default)]
+    pub spirit: i32,
     pub defense: i32,
     pub hp: i32,
     pub slot: String,
@@ -321,6 +325,12 @@ pub struct ItemInfo {
     pub slot: String,
     #[serde(default)]
     pub attack: i32,
+    /// 魔法攻击 (法师系)
+    #[serde(default)]
+    pub magic: i32,
+    /// 道术攻击 (道士系)
+    #[serde(default)]
+    pub spirit: i32,
     #[serde(default)]
     pub defense: i32,
     #[serde(default)]

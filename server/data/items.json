@@ -55,7 +55,9 @@
     "price": 150
   },
   {
-    "attack": 2,
+    "attack": 0,
+    "magic": 1,
+    "spirit": 2,
     "defense": 0,
     "hp": 0,
     "image": 196,

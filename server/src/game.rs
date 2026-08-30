@@ -614,6 +614,12 @@ pub struct ItemDef {
     pub name: String,
     pub slot: String,
     pub attack: i32,
+    /// 魔法攻击 (法师系)
+    #[serde(default)]
+    pub magic: i32,
+    /// 道术攻击 (道士系)
+    #[serde(default)]
+    pub spirit: i32,
     pub defense: i32,
     pub hp: i32,
     /// Items.Lib 图标帧号
@@ -641,6 +647,8 @@ fn make_item(template: &str) -> Option<protocol::ItemInfo> {
         name: d.name.clone(),
         slot: d.slot.clone(),
         attack: d.attack,
+        magic: d.magic,
+        spirit: d.spirit,
         defense: d.defense,
         hp: d.hp,
         image: d.image,
@@ -966,6 +974,12 @@ struct PlayerState {
 impl PlayerState {
     fn equip_attack(&self) -> i32 {
         self.equipment.values().map(|i| i.attack).sum()
+    }
+    fn equip_magic(&self) -> i32 {
+        self.equipment.values().map(|i| i.magic).sum()
+    }
+    fn equip_spirit(&self) -> i32 {
+        self.equipment.values().map(|i| i.spirit).sum()
     }
     fn equip_defense(&self) -> i32 {
         self.equipment.values().map(|i| i.defense).sum()
@@ -1377,6 +1391,8 @@ impl Game {
                     price: Self::shop_price(e),
                     stock: e.stock,
                     attack: d.attack,
+                    magic: d.magic,
+                    spirit: d.spirit,
                     defense: d.defense,
                     hp: d.hp,
                     slot: d.slot,
@@ -3083,8 +3099,14 @@ impl Game {
             p.mp -= def.mp;
             p.cooldowns.insert(def.id.clone(), now + def.cd());
         }
-        // 结算
-        let dmg_base = attack_for(level) + self.players[&char_id].equip_attack();
+        // 结算: 技能按职业吃对应攻击系 —— 战士=物理, 法师=魔法, 道士=道术
+        // (skills_for 已按职业过滤, 技能职业即角色职业)
+        let equip_bonus = match class {
+            protocol::CharacterClass::Warrior => self.players[&char_id].equip_attack(),
+            protocol::CharacterClass::Mage => self.players[&char_id].equip_magic(),
+            protocol::CharacterClass::Taoist => self.players[&char_id].equip_spirit(),
+        };
+        let dmg_base = attack_for(level) + equip_bonus;
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
         match def.kind {
             SkillKind::Damage(mult) => {

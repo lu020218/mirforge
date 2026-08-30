@@ -22,6 +22,8 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             name TEXT NOT NULL,
             slot TEXT NOT NULL,
             attack INTEGER NOT NULL DEFAULT 0,
+            magic INTEGER NOT NULL DEFAULT 0,
+            spirit INTEGER NOT NULL DEFAULT 0,
             defense INTEGER NOT NULL DEFAULT 0,
             hp INTEGER NOT NULL DEFAULT 0,
             image INTEGER NOT NULL DEFAULT 0,
@@ -166,6 +168,12 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN minimap INTEGER")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN magic INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN spirit INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -182,7 +190,7 @@ pub async fn is_empty(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 
 pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> {
     let items = sqlx::query(
-        "SELECT template, name, slot, attack, defense, hp, image, shape, price
+        "SELECT template, name, slot, attack, magic, spirit, defense, hp, image, shape, price
          FROM cfg_items ORDER BY ord, template",
     )
     .fetch_all(pool)
@@ -193,6 +201,8 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         name: r.get("name"),
         slot: r.get("slot"),
         attack: r.get::<i64, _>("attack") as i32,
+        magic: r.get::<i64, _>("magic") as i32,
+        spirit: r.get::<i64, _>("spirit") as i32,
         defense: r.get::<i64, _>("defense") as i32,
         hp: r.get::<i64, _>("hp") as i32,
         image: r.get::<i64, _>("image") as u16,
@@ -610,13 +620,15 @@ pub async fn save_items(pool: &SqlitePool, items: &[ItemDef]) -> Result<(), sqlx
         .await?;
     for (i, d) in items.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO cfg_items (template, name, slot, attack, defense, hp, image, shape, price, ord)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cfg_items (template, name, slot, attack, magic, spirit, defense, hp, image, shape, price, ord)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&d.template)
         .bind(&d.name)
         .bind(&d.slot)
         .bind(d.attack as i64)
+        .bind(d.magic as i64)
+        .bind(d.spirit as i64)
         .bind(d.defense as i64)
         .bind(d.hp as i64)
         .bind(d.image as i64)

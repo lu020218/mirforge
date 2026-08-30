@@ -24,10 +24,11 @@ pub struct WoodTex {
     pub frame: Handle<Image>,
 }
 
-/// 生成 128×128 可平铺皮革压纹: 分形值噪声取脊线 + 细噪声
+/// 生成 128×128 可平铺竖向拉丝纹: 一维噪声竖条 + 低幅云雾 + 细噪声
 ///
-/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。对分形噪声的中值取
-/// 绝对值得到脊线状纹理, 像鞣制皮面; 噪声格点按 tile 尺寸取周期, 平铺无缝。
+/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。主纹是只随 x 变化、
+/// 整列同值的细密竖条, 像拉丝硬木; 再叠一层低幅分形噪声打破死板。
+/// 噪声格点按 tile 尺寸取周期, 平铺无缝。
 pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::Image>>) {
     const W: u32 = 128;
     const H: u32 = 128;
@@ -54,17 +55,19 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
         let v = y as f32 / H as f32;
         for x in 0..W {
             let u = x as f32 / W as f32;
-            // 4 层八度叠加, 逐层减半; 对中值取绝对值折出脊线
+            // 竖条主纹: 一维噪声, 同列同值
+            let streak = vnoise(u, 0.0, 48, 66) - 0.5;
+            // 低幅云雾: 3 层八度, 防止竖条过于机械
             let (mut n, mut amp, mut tot) = (0.0f32, 1.0f32, 0.0f32);
-            for o in 0..4u32 {
-                n += amp * vnoise(u, v, 3 << o, 90 + o);
+            for o in 0..3u32 {
+                n += amp * vnoise(u, v, 4 << o, 70 + o);
                 tot += amp;
                 amp *= 0.5;
             }
-            let ridge = (n / tot - 0.5).abs() * 2.0 - 0.5;
-            let grain = ridge * 0.13 + (hash(x, y, 99) - 0.5) * 0.05;
+            let grain =
+                streak * 0.14 + (n / tot - 0.5) * 0.05 + (hash(x, y, 99) - 0.5) * 0.05;
             let k = 0.92 + grain;
-            for base in [0.212f32, 0.149, 0.090] {
+            for base in [0.165f32, 0.105, 0.075] {
                 rgba.push(((base * k).clamp(0.0, 1.0) * 255.0) as u8);
             }
             rgba.push(255);
@@ -151,7 +154,7 @@ const CHAR_PANEL_W: f32 = CHAR_INNER + CHAR_PAD * 2.0 + 2.0;
 
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
-const PANEL_BG: Color = Color::srgb(0.137, 0.098, 0.059); // #231910 深木色, 不透明
+const PANEL_BG: Color = Color::srgb(0.152, 0.097, 0.069); // 深栗色, 不透明, 与皮革贴图同调
 const SLOT_BG: Color = Color::srgb(0.055, 0.063, 0.090); // #0e1017
 /// 标题栏: 半透明压暗层叠在木纹上, 分出题区又不盖掉纹理
 const TITLE_BG: Color = Color::srgba(0.0, 0.0, 0.0, 0.38);
@@ -1215,6 +1218,12 @@ pub fn shop(
                     if it.attack > 0 {
                         st.push(format!("攻+{}", it.attack));
                     }
+                    if it.magic > 0 {
+                        st.push(format!("魔+{}", it.magic));
+                    }
+                    if it.spirit > 0 {
+                        st.push(format!("道+{}", it.spirit));
+                    }
                     if it.defense > 0 {
                         st.push(format!("防+{}", it.defense));
                     }
@@ -1369,6 +1378,12 @@ fn tooltip_lines(i: &protocol::ItemInfo) -> Vec<(String, Color)> {
     ];
     if i.attack > 0 {
         v.push((format!("攻击 +{}", i.attack), TEXT_MAIN));
+    }
+    if i.magic > 0 {
+        v.push((format!("魔法 +{}", i.magic), TEXT_MAIN));
+    }
+    if i.spirit > 0 {
+        v.push((format!("道术 +{}", i.spirit), TEXT_MAIN));
     }
     if i.defense > 0 {
         v.push((format!("防御 +{}", i.defense), TEXT_MAIN));
@@ -1857,8 +1872,10 @@ fn build_character(
         .find(|c| Some(&c.id) == net.character_id.as_ref())
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "冒险者".into());
-    let (atk, def): (i32, i32) = (
+    let (atk, mag, spi, def): (i32, i32, i32, i32) = (
         equipment.values().map(|i| i.attack).sum(),
+        equipment.values().map(|i| i.magic).sum(),
+        equipment.values().map(|i| i.spirit).sum(),
         equipment.values().map(|i| i.defense).sum(),
     );
     e.with_children(|body| {
@@ -2039,13 +2056,15 @@ fn build_character(
         let pairs: Vec<(String, String)> = vec![
             ("攻击".into(), format!("+{atk}")),
             ("防御".into(), format!("+{def}")),
+            ("魔法".into(), format!("+{mag}")),
+            ("道术".into(), format!("+{spi}")),
             (
                 "生命".into(),
                 stat.map(|s| format!("{}/{}", s.hp, s.max_hp))
                     .unwrap_or_default(),
             ),
             (
-                "魔法".into(),
+                "魔力".into(),
                 stat.map(|s| format!("{}/{}", s.mp, s.max_mp))
                     .unwrap_or_default(),
             ),

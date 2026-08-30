@@ -10,7 +10,7 @@ use crate::hud::{
 };
 use crate::{ClientMessage, Net};
 
-const CARD_BG: Color = Color::srgb(0.137, 0.098, 0.059); // #231910 深木色, 不透明
+const CARD_BG: Color = Color::srgb(0.152, 0.097, 0.069); // 深栗色, 不透明, 与皮革贴图同调
 const INPUT_BG: Color = Color::srgb(0.055, 0.063, 0.090); // #0e1017
 const BTN_GOLD_BG: Color = Color::srgb(0.216, 0.176, 0.098); // #372d19 (渐变中值)
 /// rgba(201,165,92,.07) 的 sRGB 预合成值 (Bevy 在 linear 空间混合会偏亮)
