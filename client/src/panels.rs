@@ -98,8 +98,6 @@ pub fn wood_bg(parent: &mut ChildBuilder, wood: &WoodTex) {
 
 /// 金属边高光 (亮金半透明, 叠在主边内侧)
 const GOLD_HIGHLIGHT: Color = Color::srgba(1.0, 0.847, 0.463, 0.55);
-/// 金属边外描边 (深褐, 把金边从场景里勾出来)
-const GOLD_SHADOW: Color = Color::srgba(0.16, 0.11, 0.04, 0.9);
 
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
@@ -222,9 +220,9 @@ pub fn teardown(mut commands: Commands, q: Query<Entity, With<Panel>>) {
     }
 }
 
-/// 金属质感金边: 根节点自身为 2px 金色主边 (GOLD), 这里再叠两圈同心线 ——
-/// 亮金内圈作高光、暗色外圈作描边, 三层叠出金属浮雕感。
-/// (Bevy 的 BorderColor 是单色, 层叠是做出质感的唯一办法)
+/// 金属质感金边: 根节点自身为 2px 金色主边 (GOLD), 内侧再叠一圈亮金高光,
+/// 内亮外沉叠出金属浮雕感。(Bevy 的 BorderColor 是单色, 层叠是做出质感的
+/// 唯一办法。曾有第三层外描边, 亮色地面上像一圈黑框, 按反馈去掉了)
 pub fn metal_frame(panel: &mut ChildBuilder) {
     // 内圈高光: 贴着主边内侧 (绝对子节点原点在边框内侧, inset 0 正好)
     panel.spawn((
@@ -239,20 +237,6 @@ pub fn metal_frame(panel: &mut ChildBuilder) {
         },
         BorderColor(GOLD_HIGHLIGHT),
         BorderRadius::all(Val::Px(3.0)),
-    ));
-    // 外圈描边: 主边外侧 1px, 把金边从场景里勾出来
-    panel.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(-3.0),
-            right: Val::Px(-3.0),
-            top: Val::Px(-3.0),
-            bottom: Val::Px(-3.0),
-            border: UiRect::all(Val::Px(1.0)),
-            ..default()
-        },
-        BorderColor(GOLD_SHADOW),
-        BorderRadius::all(Val::Px(6.0)),
     ));
 }
 
