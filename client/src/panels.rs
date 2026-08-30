@@ -15,9 +15,14 @@ use crate::hud::{
 use crate::Net;
 use protocol::ClientMessage;
 
-/// 程序生成的木板纹理 (启动时一次, 各窗口平铺共用)
+/// 程序生成的 UI 皮肤贴图 (启动时一次, 各窗口共用)
 #[derive(Resource)]
-pub struct WoodTex(pub Handle<Image>);
+pub struct WoodTex {
+    /// 平铺木纹
+    pub wood: Handle<Image>,
+    /// 金属边框 (9-slice, 4px 金色渐变环 + 透明中心)
+    pub frame: Handle<Image>,
+}
 
 /// 生成 128×128 可平铺木纹: 横向木板 + 板缝 + 波形木纹 + 细噪声
 ///
@@ -53,18 +58,45 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
             rgba.push(255);
         }
     }
-    let handle = images.add(bevy::image::Image::new(
-        bevy::render::render_resource::Extent3d {
-            width: W,
-            height: H,
-            depth_or_array_layers: 1,
-        },
-        bevy::render::render_resource::TextureDimension::D2,
-        rgba,
-        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-        bevy::asset::RenderAssetUsages::RENDER_WORLD,
-    ));
-    commands.insert_resource(WoodTex(handle));
+    let mk = |w: u32, h: u32, rgba: Vec<u8>, images: &mut Assets<bevy::image::Image>| {
+        images.add(bevy::image::Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            rgba,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        ))
+    };
+    let wood = mk(W, H, rgba, &mut images);
+
+    // 金属边框: 12×12, 外圈 4px 由深金→金→亮金渐变, 中心透明。
+    // 9-slice 由 GPU 采样缩放, 四边共用同一套几何 —— 逐节点画边在分数缩放下
+    // 四边各自取整, 左/上与右/下会差 1-2px, 这里从机制上避开。
+    const F: u32 = 12;
+    let ring = [
+        (143, 116, 64u8), // 最外: 深金收边
+        (201, 165, 92),   // 主金
+        (217, 180, 106),  // 过渡
+        (255, 216, 118),  // 最内: 亮金高光
+    ];
+    let mut fr = Vec::with_capacity((F * F * 4) as usize);
+    for y in 0..F {
+        for x in 0..F {
+            let d = x.min(y).min(F - 1 - x).min(F - 1 - y);
+            if (d as usize) < ring.len() {
+                let (r, g, b) = ring[d as usize];
+                fr.extend_from_slice(&[r, g, b, 255]);
+            } else {
+                fr.extend_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    let frame = mk(F, F, fr, &mut images);
+    commands.insert_resource(WoodTex { wood, frame });
 }
 
 /// 木板底: 铺满窗口内区。必须在其它子节点之前生成 (先画者在下层)
@@ -85,7 +117,7 @@ pub fn wood_bg(parent: &mut ChildBuilder, wood: &WoodTex) {
             ..default()
         },
         ImageNode {
-            image: wood.0.clone(),
+            image: wood.wood.clone(),
             image_mode: NodeImageMode::Tiled {
                 tile_x: true,
                 tile_y: true,
@@ -96,9 +128,6 @@ pub fn wood_bg(parent: &mut ChildBuilder, wood: &WoodTex) {
         BackgroundColor(PANEL_BG),
     ));
 }
-
-/// 金属边高光 (亮金半透明, 叠在主边内侧)
-const GOLD_HIGHLIGHT: Color = Color::srgba(1.0, 0.847, 0.463, 0.55);
 
 /// 品质·白 (物品品质字段接入前统一用)
 const QUALITY_COMMON: Color = Color::srgb(0.812, 0.784, 0.706); // #cfc8b4
@@ -221,11 +250,11 @@ pub fn teardown(mut commands: Commands, q: Query<Entity, With<Panel>>) {
     }
 }
 
-/// 金属质感金边: 根节点自身为 2px 金色主边 (GOLD), 内侧再叠一圈亮金高光,
-/// 内亮外沉叠出金属浮雕感。(Bevy 的 BorderColor 是单色, 层叠是做出质感的
-/// 唯一办法。曾有第三层外描边, 亮色地面上像一圈黑框, 按反馈去掉了)
-pub fn metal_frame(panel: &mut ChildBuilder) {
-    // 内圈高光: 贴着主边内侧 (绝对子节点原点在边框内侧, inset 0 正好)
+/// 金属质感金边: 一张 9-slice 边框贴图铺满窗口 (4px 渐变环, 中心透明)。
+///
+/// 深金→金→亮金的渐变烙在贴图里, 内亮外沉的浮雕感由像素承载;
+/// GPU 采样保证四边等厚 (逐节点画边在分数缩放下会左右不对称)。
+pub fn metal_frame(panel: &mut ChildBuilder, wood: &WoodTex) {
     panel.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -233,11 +262,13 @@ pub fn metal_frame(panel: &mut ChildBuilder) {
             right: Val::Px(0.0),
             top: Val::Px(0.0),
             bottom: Val::Px(0.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BorderColor(GOLD_HIGHLIGHT),
-        BorderRadius::all(Val::Px(3.0)),
+        ImageNode {
+            image: wood.frame.clone(),
+            image_mode: crate::hud::sliced(4.0),
+            ..default()
+        },
     ));
 }
 
@@ -260,18 +291,17 @@ fn spawn_panel(
                 width: Val::Px(width),
                 flex_direction: FlexDirection::Column,
                 display: Display::None,
-                border: UiRect::all(Val::Px(2.0)),
+                padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(GOLD),
             GlobalZIndex(10),
             UiBlock,
             RelativeCursorPosition::default(),
         ))
         .with_children(|panel| {
             wood_bg(panel, wood);
-            metal_frame(panel);
+            metal_frame(panel, wood);
             // 标题栏 48px (拖拽区): 微金渐变近似底 + 底分隔线
             panel
                 .spawn((
@@ -579,17 +609,16 @@ pub fn dialog(
                 margin: UiRect::left(Val::Px(-210.0)), // 宽 420 的一半, 居中
                 width: Val::Px(420.0),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(Val::Px(2.0)),
+                padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(GOLD),
             BorderRadius::all(Val::Px(4.0)),
             GlobalZIndex(20),
         ))
         .with_children(|root| {
             wood_bg(root, &wood);
-            metal_frame(root);
+            metal_frame(root, &wood);
             // 标题栏: NPC 名 + 关闭
             root.spawn((
                 Node {
@@ -723,17 +752,16 @@ pub fn setup_bigmap(mut commands: Commands, skin: Res<Skin>, wood: Res<WoodTex>)
                 top: Val::Percent(50.0),
                 width: Val::Px(BIGMAP_FALLBACK),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(Val::Px(2.0)),
+                padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(GOLD),
             BorderRadius::all(Val::Px(4.0)),
             GlobalZIndex(30),
         ))
         .with_children(|root| {
             wood_bg(root, &wood);
-            metal_frame(root);
+            metal_frame(root, &wood);
             root.spawn((
                 Node {
                     height: Val::Px(46.0),
@@ -969,14 +997,14 @@ pub fn bigmap(
                 node.width = Val::Px(aw);
                 node.height = Val::Px(ah);
             }
-            // 窗口宽度随图走 (+4 是左右金属边, Bevy UI 按 border-box 量), 并重算居中偏移
-            let root_w = aw + 4.0;
+            // 窗口宽度随图走 (+8 是左右金属边框环), 并重算居中偏移
+            let root_w = aw + 8.0;
             for mut node in q_root.iter_mut() {
                 node.width = Val::Px(root_w);
                 node.margin = UiRect::new(
                     Val::Px(-root_w / 2.0),
                     Val::Px(0.0),
-                    Val::Px(-(ah + BIGMAP_CHROME + 4.0) / 2.0),
+                    Val::Px(-(ah + BIGMAP_CHROME + 8.0) / 2.0),
                     Val::Px(0.0),
                 );
             }
@@ -1123,17 +1151,16 @@ pub fn shop(
                 margin: UiRect::left(Val::Px(-235.0)),
                 width: Val::Px(470.0),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(Val::Px(2.0)),
+                padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
             BackgroundColor(PANEL_BG),
-            BorderColor(GOLD),
             BorderRadius::all(Val::Px(4.0)),
             GlobalZIndex(20),
         ))
         .with_children(|root| {
             wood_bg(root, &wood);
-            metal_frame(root);
+            metal_frame(root, &wood);
             root.spawn((
                 Node {
                     height: Val::Px(44.0),
@@ -1582,10 +1609,10 @@ const BAG_GAP: f32 = 5.0;
 const BAG_PAD: f32 = 8.0;
 /// 面板宽度 = 格区 + 内边距 + 1px 边框×2 (Bevy UI 按 border-box 量)
 /// —— 由格数算出, 改列数不用再手调宽度, 也不会留下一圈空白
-/// +4 是金属边 (2px×2), 末尾 +2 是抗舍入余量: 缩放后各段取整可能多出一两
-/// 像素, 留一点免得最后一列的边框被裁掉 (列数本身由 grid 钉死, 不会换行)
+/// +8 是金属边框环 (4px×2, 见 metal_frame), 末尾 +2 是抗舍入余量: 缩放后各段
+/// 取整可能多出一两像素, 留一点免得最后一列的边框被裁掉 (列数由 grid 钉死)
 const BAG_PANEL_W: f32 =
-    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 4.0 + 2.0;
+    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 8.0 + 2.0;
 
 /// 图标句柄 + 原始像素尺寸
 type Icon = Option<(Handle<Image>, Vec2)>;
