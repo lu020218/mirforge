@@ -71,6 +71,9 @@ MIRFORGE_RES=... tools/run-smokes.sh  # 五套协议级端到端冒烟 (需要�
 `MIRFORGE_DB`(SQLite 路径)、`MIRFORGE_LIBSET`(默认 WemadeMir2)。
 区域/刷怪/掉落/传送门由 `server/zones/*.json` 边车配置驱动。
 
+服务端自带 Web 管理台 (默认 <http://127.0.0.1:4001>)，物品/技能/NPC/任务/地图/BOSS
+均可视化维护、保存即热重载。操作手册见 [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)。
+
 客户端还有三个开发钩子，配合起来可以无人值守地截图自查界面：
 
 | 变量 | 作用 |
