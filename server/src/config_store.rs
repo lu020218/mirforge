@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::game::{
     BossDef, DropSidecar, GameData, ItemDef, MonsterSidecar, NpcDef, NpcDialogPage, NpcOptionDef,
-    PortalSidecar, QuestDef, ShopEntry, SkillDef, SkillKind, SkillsCfg, ZoneSidecar,
+    PortalSidecar, QuestDef, QuestReward, ShopEntry, SkillDef, SkillKind, SkillsCfg, ZoneSidecar,
 };
 
 /// 建表（幂等）
@@ -47,6 +47,12 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             name TEXT NOT NULL,
             exp_reward INTEGER NOT NULL DEFAULT 0,
             prereq TEXT,
+            ord INTEGER NOT NULL DEFAULT 0
+        )",
+        "CREATE TABLE IF NOT EXISTS cfg_quest_rewards (
+            quest_id TEXT NOT NULL,
+            item TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
             ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_quest_objectives (
@@ -151,6 +157,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(ddl).execute(pool).await?;
     }
     // 旧库升级 (列已存在则忽略)
+    let _ = sqlx::query("ALTER TABLE cfg_quests ADD COLUMN gold_reward INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN price INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
@@ -229,19 +238,36 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         }
     }
 
-    let mut quests: Vec<QuestDef> =
-        sqlx::query("SELECT id, name, exp_reward, prereq FROM cfg_quests ORDER BY ord, id")
+    let mut quests: Vec<QuestDef> = sqlx::query(
+        "SELECT id, name, exp_reward, gold_reward, prereq FROM cfg_quests ORDER BY ord, id",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| QuestDef {
+        id: r.get("id"),
+        name: r.get("name"),
+        objectives: Vec::new(),
+        exp_reward: r.get::<i64, _>("exp_reward") as u64,
+        gold_reward: r.get::<i64, _>("gold_reward").max(0) as u64,
+        rewards: Vec::new(),
+        prereq: r.get("prereq"),
+    })
+    .collect();
+    let mut qrewards: HashMap<String, Vec<QuestReward>> = HashMap::new();
+    for r in
+        sqlx::query("SELECT quest_id, item, count FROM cfg_quest_rewards ORDER BY quest_id, ord")
             .fetch_all(pool)
             .await?
-            .into_iter()
-            .map(|r| QuestDef {
-                id: r.get("id"),
-                name: r.get("name"),
-                objectives: Vec::new(),
-                exp_reward: r.get::<i64, _>("exp_reward") as u64,
-                prereq: r.get("prereq"),
-            })
-            .collect();
+    {
+        qrewards
+            .entry(r.get("quest_id"))
+            .or_default()
+            .push(QuestReward {
+                item: r.get("item"),
+                count: r.get::<i64, _>("count").max(0) as u32,
+            });
+    }
     for r in sqlx::query(
         "SELECT quest_id, target, count FROM cfg_quest_objectives ORDER BY quest_id, idx",
     )
@@ -252,6 +278,11 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         if let Some(q) = quests.iter_mut().find(|q| q.id == qid) {
             q.objectives
                 .push((r.get("target"), r.get::<i64, _>("count") as u32));
+        }
+    }
+    for q in quests.iter_mut() {
+        if let Some(rw) = qrewards.remove(&q.id) {
+            q.rewards = rw;
         }
     }
 
@@ -640,19 +671,20 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
 
 pub async fn save_quests(pool: &SqlitePool, quests: &[QuestDef]) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM cfg_quest_objectives")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM cfg_quests")
-        .execute(&mut *tx)
-        .await?;
+    for t in ["cfg_quest_objectives", "cfg_quest_rewards", "cfg_quests"] {
+        sqlx::query(&format!("DELETE FROM {t}"))
+            .execute(&mut *tx)
+            .await?;
+    }
     for (i, q) in quests.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO cfg_quests (id, name, exp_reward, prereq, ord) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO cfg_quests (id, name, exp_reward, gold_reward, prereq, ord)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&q.id)
         .bind(&q.name)
         .bind(q.exp_reward as i64)
+        .bind(q.gold_reward as i64)
         .bind(q.prereq.as_deref())
         .bind(i as i64)
         .execute(&mut *tx)
@@ -666,6 +698,17 @@ pub async fn save_quests(pool: &SqlitePool, quests: &[QuestDef]) -> Result<(), s
             .bind(j as i64)
             .bind(target)
             .bind(*count as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for (j, rw) in q.rewards.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO cfg_quest_rewards (quest_id, item, count, ord) VALUES (?, ?, ?, ?)",
+            )
+            .bind(&q.id)
+            .bind(&rw.item)
+            .bind(rw.count as i64)
+            .bind(j as i64)
             .execute(&mut *tx)
             .await?;
         }

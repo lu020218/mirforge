@@ -1,5 +1,59 @@
 [
-  { "id": "hunt_chicken", "name": "新手试炼·猎鸡", "objectives": [["chicken", 3]], "exp_reward": 50, "prereq": null },
-  { "id": "hunt_deer", "name": "猎鹿行动", "objectives": [["deer", 2]], "exp_reward": 80, "prereq": "hunt_chicken" },
-  { "id": "scarecrow_menace", "name": "稻田除害", "objectives": [["scarecrow", 2]], "exp_reward": 150, "prereq": "hunt_deer" }
+  {
+    "id": "hunt_chicken",
+    "name": "新手试炼·猎鸡",
+    "objectives": [
+      [
+        "chicken",
+        3
+      ]
+    ],
+    "exp_reward": 50,
+    "prereq": null,
+    "gold_reward": 200,
+    "rewards": [
+      {
+        "item": "wooden_sword",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "id": "hunt_deer",
+    "name": "猎鹿行动",
+    "objectives": [
+      [
+        "deer",
+        2
+      ]
+    ],
+    "exp_reward": 80,
+    "prereq": "hunt_chicken",
+    "gold_reward": 400,
+    "rewards": [
+      {
+        "item": "cloth_armor",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "id": "scarecrow_menace",
+    "name": "稻田除害",
+    "objectives": [
+      [
+        "scarecrow",
+        2
+      ]
+    ],
+    "exp_reward": 150,
+    "prereq": "hunt_deer",
+    "gold_reward": 800,
+    "rewards": [
+      {
+        "item": "leather_helmet",
+        "count": 1
+      }
+    ]
+  }
 ]

@@ -378,6 +378,20 @@ pub struct QuestInfo {
     pub state: String,
     pub objectives: Vec<QuestObjectiveInfo>,
     pub exp_reward: u64,
+    /// 金币奖励
+    #[serde(default)]
+    pub gold_reward: u64,
+    /// 物品奖励 (名称已由服务端解析好, 客户端直接显示)
+    #[serde(default)]
+    pub item_rewards: Vec<QuestRewardInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestRewardInfo {
+    pub name: String,
+    pub count: u32,
+    /// Items.Lib 图标帧号
+    pub image: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

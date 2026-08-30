@@ -464,6 +464,22 @@ impl GameData {
                     errs.push(format!("任务 {} 前置不存在: {pr}", q.id));
                 }
             }
+            for rw in &q.rewards {
+                if !self.items.iter().any(|i| i.template == rw.item) {
+                    errs.push(format!("任务 {} 奖励引用的物品不存在: {}", q.id, rw.item));
+                }
+                if rw.count == 0 {
+                    errs.push(format!("任务 {} 奖励 {} 的数量不能为 0", q.id, rw.item));
+                }
+            }
+            // 一次发不下的奖励等于永远交不了任务
+            let total: u32 = q.rewards.iter().map(|r| r.count).sum();
+            if total as usize > MAX_INVENTORY {
+                errs.push(format!(
+                    "任务 {} 的物品奖励共 {total} 件, 超过背包上限 {MAX_INVENTORY}",
+                    q.id
+                ));
+            }
         }
         let mut bid = std::collections::HashSet::new();
         for b in &self.bosses {
@@ -663,7 +679,25 @@ pub struct QuestDef {
     /// (怪物模板, 数量)
     pub objectives: Vec<(String, u32)>,
     pub exp_reward: u64,
+    /// 金币奖励
+    #[serde(default)]
+    pub gold_reward: u64,
+    /// 物品奖励
+    #[serde(default)]
+    pub rewards: Vec<QuestReward>,
     pub prereq: Option<String>,
+}
+
+/// 任务的物品奖励一项
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuestReward {
+    pub item: String,
+    #[serde(default = "one_u32")]
+    pub count: u32,
+}
+
+fn one_u32() -> u32 {
+    1
 }
 
 fn quest_def(id: &str) -> Option<QuestDef> {
@@ -2526,6 +2560,23 @@ impl Game {
                         })
                         .collect(),
                     exp_reward: def.exp_reward,
+                    gold_reward: def.gold_reward,
+                    // 名称/图标在服务端解析好, 客户端不必再查物品表
+                    item_rewards: def
+                        .rewards
+                        .iter()
+                        .map(|rw| {
+                            let d = item_def(&rw.item);
+                            protocol::QuestRewardInfo {
+                                name: d
+                                    .as_ref()
+                                    .map(|d| d.name.clone())
+                                    .unwrap_or_else(|| rw.item.clone()),
+                                count: rw.count,
+                                image: d.map(|d| d.image).unwrap_or(0),
+                            }
+                        })
+                        .collect(),
                 })
             })
             .collect();
@@ -2590,9 +2641,32 @@ impl Game {
             if !done {
                 return;
             }
-            prog.state = 2;
         }
         let conn = self.players[&char_id].conn_id.clone();
+        // 物品奖励先备好并占位检查 —— 位置不够就整单不发, 否则奖励会凭空消失
+        let payout: Vec<protocol::ItemInfo> = def
+            .rewards
+            .iter()
+            .flat_map(|rw| (0..rw.count).filter_map(|_| make_item(&rw.item)))
+            .collect();
+        {
+            let p = self.players.get(&char_id).unwrap();
+            if p.inventory.len() + payout.len() > MAX_INVENTORY {
+                self.notify(
+                    &conn,
+                    &format!("背包空位不足 ({} 件奖励), 整理后再来交任务", payout.len()),
+                )
+                .await;
+                return;
+            }
+        }
+        let gold = {
+            let p = self.players.get_mut(&char_id).unwrap();
+            p.quests.get_mut(quest_id).unwrap().state = 2;
+            p.inventory.extend(payout.iter().cloned());
+            p.gold = p.gold.saturating_add(def.gold_reward);
+            p.gold
+        };
         send_to(
             &self.sessions,
             &conn,
@@ -2603,6 +2677,18 @@ impl Game {
         )
         .await;
         self.award_exp(&char_id, def.exp_reward).await;
+        if def.gold_reward > 0 {
+            let _ = self.db.save_gold(&char_id, gold).await;
+            self.send_gold(&conn, gold).await;
+            self.notify(&conn, &format!("获得金币 {}", def.gold_reward))
+                .await;
+        }
+        if !payout.is_empty() {
+            let names: Vec<String> = payout.iter().map(|i| i.name.clone()).collect();
+            self.notify(&conn, &format!("获得物品: {}", names.join("、")))
+                .await;
+            self.send_inventory(&char_id).await;
+        }
         self.send_quests(&char_id).await;
     }
 

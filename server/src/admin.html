@@ -217,7 +217,7 @@
       <div id="err-quests" class="err-msg"></div>
       <div class="card-box">
         <table id="quest-table">
-          <thead><tr><th>id</th><th>名称</th><th>击杀目标</th><th>经验奖励</th><th>前置任务</th><th></th></tr></thead>
+          <thead><tr><th>id</th><th>名称</th><th>击杀目标</th><th>经验</th><th>金币</th><th>物品奖励</th><th>前置任务</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -1128,25 +1128,35 @@ function questRow(q) {
     <td><input class="wide" data-q="id" value="${q.id ?? ''}"></td>
     <td><input class="wide" data-q="name" value="${q.name ?? ''}"></td>
     <td class="quest-sum hint"></td>
-    <td><input style="width:80px" data-q="exp_reward" value="${q.exp_reward ?? 0}"></td>
+    <td><input style="width:70px" data-q="exp_reward" value="${q.exp_reward ?? 0}"></td>
+    <td><input style="width:70px" data-q="gold_reward" value="${q.gold_reward ?? 0}"></td>
+    <td class="quest-rw hint"></td>
     <td><select data-q="prereq">${prereqOptions(q.prereq || '', q.id || '')}</select></td>
-    <td><button class="ghost" onclick="toggleQuestObjs(this)">目标</button>
+    <td><button class="ghost" onclick="toggleQuestObjs(this)">目标/奖励</button>
         <button class="ghost" onclick="const t=this.closest('tr'),n=t.nextElementSibling;if(n&&n.classList.contains('quest-dlg'))n.remove();t.remove()">删</button></td>`;
   tr._objs = (q.objectives || []).map(o => ({ target: o[0], need: o[1] }));
+  tr._rewards = (q.rewards || []).map(r => ({ item: r.item, count: r.count }));
   refreshQuestSummary(tr);
   return tr;
 }
 
 function refreshQuestSummary(tr) {
   const el = tr.querySelector('.quest-sum');
-  if (!el) return;
-  const o = tr._objs || [];
-  el.textContent = o.length ? o.map(x => `${x.target} ×${x.need}`).join(' · ') : '（未配目标）';
+  if (el) {
+    const o = tr._objs || [];
+    el.textContent = o.length ? o.map(x => `${x.target} ×${x.need}`).join(' · ') : '（未配目标）';
+  }
+  const rw = tr.querySelector('.quest-rw');
+  if (rw) {
+    const r = tr._rewards || [];
+    rw.textContent = r.length ? r.map(x => `${x.item}×${x.count}`).join(' · ') : '—';
+  }
 }
 
 function addQuestRow() {
   document.querySelector('#quest-table tbody').appendChild(
-    questRow({ id: 'new_quest', name: '新任务', objectives: [], exp_reward: 100, prereq: null }));
+    questRow({ id: 'new_quest', name: '新任务', objectives: [], exp_reward: 100,
+               gold_reward: 0, rewards: [], prereq: null }));
 }
 
 function collectQuests() {
@@ -1158,9 +1168,51 @@ function collectQuests() {
       name: g('name').value.trim(),
       objectives: (tr._objs || []).map(o => [o.target, Number(o.need) || 0]),
       exp_reward: Number(g('exp_reward').value) || 0,
+      gold_reward: Number(g('gold_reward').value) || 0,
+      rewards: (tr._rewards || []).map(r => ({ item: r.item, count: Number(r.count) || 0 })),
       prereq: pre || null,
     };
   });
+}
+
+// ── 物品奖励表 (与目标同在行内展开区) ──
+function rewardRowEl(r) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><select data-rw="item">${itemOptions(r.item)}</select></td>
+    <td><input data-rw="count" style="width:90px" value="${r.count ?? 1}"></td>
+    <td><button class="ghost" onclick="const t=this.closest('tr'),h=t.closest('.dlg-box');t.remove();syncQuestRewards(h)">删</button></td>`;
+  return tr;
+}
+
+function syncQuestRewards(boxEl) {
+  const tr = boxEl._owner;
+  if (!tr) return;
+  tr._rewards = [...boxEl.querySelectorAll('.rw-tbl tbody tr')].map(r => ({
+    item: r.querySelector('[data-rw="item"]').value,
+    count: Number(r.querySelector('[data-rw="count"]').value) || 0,
+  }));
+  queueMicrotask(() => refreshQuestSummary(tr));
+}
+
+function questRewardSection(tr) {
+  const sec = document.createElement('div');
+  sec.className = 'dlg-loc';
+  sec.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">物品奖励</b>
+    <span class="hint">交付时一并发放; 背包空位不足会拒绝交付, 所以别配太多</span></div>`;
+  const tbl = document.createElement('table');
+  tbl.className = 'rw-tbl shop-tbl';
+  tbl.innerHTML = '<thead><tr><th>物品</th><th>数量</th><th></th></tr></thead><tbody></tbody>';
+  (tr._rewards || []).forEach(r => tbl.querySelector('tbody').appendChild(rewardRowEl(r)));
+  const add = document.createElement('button');
+  add.className = 'ghost';
+  add.textContent = '+ 奖励';
+  add.onclick = () => {
+    tbl.querySelector('tbody').appendChild(rewardRowEl({ count: 1 }));
+    syncQuestRewards(tbl.closest('.dlg-box'));
+  };
+  sec.append(tbl, add);
+  return sec;
 }
 
 // ── 目标表 (行内展开) ──
@@ -1191,12 +1243,13 @@ function toggleQuestObjs(btn) {
   const row = document.createElement('tr');
   row.className = 'quest-dlg npc-dlg';
   const td = document.createElement('td');
-  td.colSpan = 6;
+  td.colSpan = 8;
   const box = document.createElement('div');
   box.className = 'dlg-box';
   box._owner = tr;
-  box.addEventListener('input', () => syncQuestObjs(box));
-  box.addEventListener('change', () => syncQuestObjs(box));
+  const sync = () => { syncQuestObjs(box); syncQuestRewards(box); };
+  box.addEventListener('input', sync);
+  box.addEventListener('change', sync);
   const sec = document.createElement('div');
   sec.className = 'dlg-loc';
   sec.innerHTML = `<div class="dlg-head"><b style="color:var(--gold)">击杀目标</b>
@@ -1211,6 +1264,7 @@ function toggleQuestObjs(btn) {
   add.onclick = () => { tbl.querySelector('tbody').appendChild(objRowEl({ need: 1 })); syncQuestObjs(box); };
   sec.append(tbl, add);
   box.appendChild(sec);
+  box.appendChild(questRewardSection(tr));
   td.appendChild(box);
   row.appendChild(td);
   tr.after(row);

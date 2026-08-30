@@ -1613,12 +1613,19 @@ fn build_quest(e: &mut bevy::ecs::system::EntityCommands, net: &Net, skin: &Skin
                         .with_children(|t| {
                             t.spawn(text(&font, tag, 11.0, tag_color));
                         });
-                        row.spawn(text(
-                            &font,
-                            format!("经验 {}", q.exp_reward),
-                            11.0,
-                            EXP_GOLD,
-                        ));
+                        // 奖励摘要: 经验 · 金币 · 物品
+                        let mut rw = vec![format!("经验 {}", q.exp_reward)];
+                        if q.gold_reward > 0 {
+                            rw.push(format!("金币 {}", q.gold_reward));
+                        }
+                        for r in &q.item_rewards {
+                            rw.push(if r.count > 1 {
+                                format!("{}×{}", r.name, r.count)
+                            } else {
+                                r.name.clone()
+                            });
+                        }
+                        row.spawn(text(&font, rw.join(" · "), 11.0, EXP_GOLD));
                     });
                     if q.state == "active" {
                         for o in &q.objectives {
