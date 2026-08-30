@@ -42,6 +42,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             kind_type TEXT NOT NULL DEFAULT 'damage',
             p1 REAL NOT NULL DEFAULT 0,
             p2 REAL NOT NULL DEFAULT 0,
+            max_level INTEGER NOT NULL DEFAULT 3,
+            train_base INTEGER NOT NULL DEFAULT 30,
+            level_bonus REAL NOT NULL DEFAULT 0.3,
             ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_quests (
@@ -174,6 +177,15 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN spirit INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE cfg_skills ADD COLUMN max_level INTEGER NOT NULL DEFAULT 3")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_skills ADD COLUMN train_base INTEGER NOT NULL DEFAULT 30")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_skills ADD COLUMN level_bonus REAL NOT NULL DEFAULT 0.3")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -217,7 +229,8 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         taoist: Vec::new(),
     };
     for r in sqlx::query(
-        "SELECT id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2
+        "SELECT id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
+                max_level, train_base, level_bonus
          FROM cfg_skills ORDER BY class, ord, level",
     )
     .fetch_all(pool)
@@ -240,6 +253,9 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
                 },
                 _ => SkillKind::Damage(p1),
             },
+            max_level: r.get::<i64, _>("max_level").max(0) as u32,
+            train_base: r.get::<i64, _>("train_base").max(1) as u32,
+            level_bonus: r.get("level_bonus"),
         };
         match r.get::<String, _>("class").as_str() {
             "mage" => skills.mage.push(def),
@@ -659,8 +675,9 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             };
             sqlx::query(
                 "INSERT INTO cfg_skills
-                 (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2, ord)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
+                  max_level, train_base, level_bonus, ord)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(class)
@@ -673,6 +690,9 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             .bind(kind_type)
             .bind(p1)
             .bind(p2)
+            .bind(s.max_level as i64)
+            .bind(s.train_base as i64)
+            .bind(s.level_bonus)
             .bind(i as i64)
             .execute(&mut *tx)
             .await?;

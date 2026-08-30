@@ -237,12 +237,42 @@ pub struct SkillDef {
     pub range: f64,
     pub self_cast: bool,
     pub kind: SkillKind,
+    /// 修炼满级 (官设 3; 调成 4/5 可做高级特效玩法)
+    #[serde(default = "default_max_level")]
+    pub max_level: u32,
+    /// 修炼基数: 从 L 升到 L+1 需施放 train_base × (L+1) 次
+    #[serde(default = "default_train_base")]
+    pub train_base: u32,
+    /// 每修炼级的伤害/治疗加成比例 (0.3 = 每级 +30%)
+    #[serde(default = "default_level_bonus")]
+    pub level_bonus: f64,
+}
+
+fn default_max_level() -> u32 {
+    3
+}
+fn default_train_base() -> u32 {
+    30
+}
+fn default_level_bonus() -> f64 {
+    0.3
 }
 
 impl SkillDef {
     fn cd(&self) -> Duration {
         Duration::from_millis(self.cd_ms)
     }
+    /// 从 lvl 升到 lvl+1 所需熟练度
+    fn train_need(&self, lvl: u32) -> u32 {
+        self.train_base.max(1) * (lvl + 1)
+    }
+}
+
+/// 单技能修炼进度 (随角色存档)
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct SkillProgress {
+    pub level: u32,
+    pub train: u32,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -969,6 +999,8 @@ struct PlayerState {
     inventory: Vec<protocol::ItemInfo>,
     equipment: HashMap<String, protocol::ItemInfo>,
     quests: HashMap<String, QuestProgress>,
+    /// 技能 id → 修炼进度
+    skills: HashMap<String, SkillProgress>,
 }
 
 impl PlayerState {
@@ -2292,8 +2324,12 @@ impl Game {
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
         let (level, exp, gold) = (c.level, c.exp, c.gold);
-        let (c_inventory, c_equipment, c_quests) =
-            (c.inventory.clone(), c.equipment.clone(), c.quests.clone());
+        let (c_inventory, c_equipment, c_quests, c_skills) = (
+            c.inventory.clone(),
+            c.equipment.clone(),
+            c.quests.clone(),
+            c.skills.clone(),
+        );
         self.players.insert(
             character_id.clone(),
             PlayerState {
@@ -2320,6 +2356,7 @@ impl Game {
                 inventory: c_inventory,
                 equipment: c_equipment,
                 quests: c_quests,
+                skills: c_skills,
             },
         );
         self.players.get_mut(&character_id).unwrap().recalc();
@@ -2366,14 +2403,25 @@ impl Game {
         };
         let skills = skills_for(p.character.class)
             .iter()
-            .map(|s| protocol::SkillInfo {
-                id: s.id.to_string(),
-                name: s.name.to_string(),
-                mp_cost: s.mp,
-                cooldown_ms: s.cd().as_millis() as u64,
-                required_level: s.level,
-                range: s.range,
-                self_cast: s.self_cast,
+            .map(|s| {
+                let sp = p.skills.get(&s.id).copied().unwrap_or_default();
+                protocol::SkillInfo {
+                    id: s.id.to_string(),
+                    name: s.name.to_string(),
+                    mp_cost: s.mp,
+                    cooldown_ms: s.cd().as_millis() as u64,
+                    required_level: s.level,
+                    range: s.range,
+                    self_cast: s.self_cast,
+                    level: sp.level,
+                    max_level: s.max_level,
+                    train: sp.train,
+                    train_need: if sp.level >= s.max_level {
+                        0
+                    } else {
+                        s.train_need(sp.level)
+                    },
+                }
             })
             .collect();
         send_to(
@@ -3093,12 +3141,23 @@ impl Game {
             }
             (m.x, m.y)
         };
-        // 校验全过 → 扣蓝 + 进冷却
-        {
+        // 校验全过 → 扣蓝 + 进冷却; 顺带积累修炼度 (每次施放 +1, 到量升级)
+        let (skill_level, leveled_to) = {
             let p = self.players.get_mut(&char_id).unwrap();
             p.mp -= def.mp;
             p.cooldowns.insert(def.id.clone(), now + def.cd());
-        }
+            let sp = p.skills.entry(def.id.clone()).or_default();
+            let mut leveled = None;
+            if sp.level < def.max_level {
+                sp.train += 1;
+                if sp.train >= def.train_need(sp.level) {
+                    sp.train = 0;
+                    sp.level += 1;
+                    leveled = Some(sp.level);
+                }
+            }
+            (sp.level, leveled)
+        };
         // 结算: 技能按职业吃对应攻击系 —— 战士=物理, 法师=魔法, 道士=道术
         // (skills_for 已按职业过滤, 技能职业即角色职业)
         let equip_bonus = match class {
@@ -3107,11 +3166,13 @@ impl Game {
             protocol::CharacterClass::Taoist => self.players[&char_id].equip_spirit(),
         };
         let dmg_base = attack_for(level) + equip_bonus;
+        // 修炼加成: 每级 +level_bonus (烈火 3 级 ×1.9, 私服 4/5 级更凶)
+        let train_mult = 1.0 + def.level_bonus * skill_level as f64;
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
         match def.kind {
             SkillKind::Damage(mult) => {
                 if let Some(tid) = &target_id {
-                    hit_ids.push((tid.clone(), (dmg_base as f64 * mult) as i32));
+                    hit_ids.push((tid.clone(), (dmg_base as f64 * mult * train_mult) as i32));
                 }
             }
             SkillKind::Aoe { radius, mult } => {
@@ -3123,12 +3184,12 @@ impl Game {
                         ((m.x - center.0).powi(2) + (m.y - center.1).powi(2)).sqrt() <= radius
                     })
                 {
-                    hit_ids.push((m.id.clone(), (dmg_base as f64 * mult) as i32));
+                    hit_ids.push((m.id.clone(), (dmg_base as f64 * mult * train_mult) as i32));
                 }
             }
             SkillKind::Heal => {
                 let p = self.players.get_mut(&char_id).unwrap();
-                let amount = 30 + level as i32 * 5;
+                let amount = ((30 + level as i32 * 5) as f64 * train_mult) as i32;
                 p.hp = (p.hp + amount).min(p.max_hp);
             }
         }
@@ -3145,11 +3206,29 @@ impl Game {
                     y: center.1,
                 },
                 targets: hit_ids.iter().map(|(id, _)| id.clone()).collect(),
+                level: skill_level,
             },
         )
         .await;
         for (mon_id, dmg) in hit_ids {
             self.hit_monster(&char_id, &mon_id, dmg).await;
+        }
+        // 升级: 通知 + 重发技能表; 修炼度落库 (每次施放都存, 掉线不丢练度)
+        if let Some(new_lv) = leveled_to {
+            let conn = self.players[&char_id].conn_id.clone();
+            send_to(
+                &self.sessions,
+                &conn,
+                ServerMessage::Notification {
+                    message: format!("《{}》修炼至 {} 级!", def.name, new_lv),
+                    notification_type: "levelup".into(),
+                },
+            )
+            .await;
+        }
+        self.send_skill_list(&char_id).await;
+        if let Some(p) = self.players.get(&char_id) {
+            let _ = self.db.save_skill_progress(&char_id, &p.skills).await;
         }
         self.send_player_status(&char_id).await;
     }
@@ -3687,6 +3766,7 @@ mod tests {
                 inventory: Vec::new(),
                 equipment: HashMap::new(),
                 quests: HashMap::new(),
+                skills: HashMap::new(),
                 x,
                 y,
             },
@@ -3710,6 +3790,7 @@ mod tests {
             inventory: Vec::new(),
             equipment: HashMap::new(),
             quests: HashMap::new(),
+            skills: HashMap::new(),
         }
     }
 

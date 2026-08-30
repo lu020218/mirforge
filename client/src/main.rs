@@ -1956,9 +1956,12 @@ fn net_pump(
                     skill_id,
                     position,
                     targets,
+                    level,
                     ..
                 } => {
                     let color = skill_color(&skill_id);
+                    // 4 级起 (超官设满级的私服玩法) 叠一圈金色冲击环, 一眼认出高修炼
+                    let empowered = level >= 4;
                     let mut points = vec![DVec2::new(position.x, position.y)];
                     for t in &targets {
                         if let Some(r) = remotes.0.get(t) {
@@ -1969,6 +1972,19 @@ fn net_pump(
                     for pt in points {
                         let px = pt.x as f32 * CELL_W - CELL_W / 2.0;
                         let py = pt.y as f32 * CELL_H - CELL_H / 2.0;
+                        if empowered {
+                            commands.spawn((
+                                Sprite {
+                                    color: Color::srgb(1.0, 0.85, 0.35),
+                                    custom_size: Some(Vec2::splat(40.0)),
+                                    ..default()
+                                },
+                                Transform::from_xyz(px, -py, 699.0),
+                                Fx {
+                                    born: time.elapsed_secs_f64(),
+                                },
+                            ));
+                        }
                         match fx {
                             // 原版 Magic 库帧动画特效
                             Some((lib, base, frames)) => {

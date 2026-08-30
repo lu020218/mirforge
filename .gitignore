@@ -5,6 +5,7 @@ Cargo.lock.bak
 # 用户游戏资源 (一律不入库: 版权归权利方, 使用者自备; 引擎自有原创 UI 资产在 client/assets/ 入库)
 /assets/
 /resources/
+/new_res/
 *.map
 *.wil
 *.wix

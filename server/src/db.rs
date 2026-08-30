@@ -30,6 +30,7 @@ pub struct CharacterRow {
     pub inventory: Vec<protocol::ItemInfo>,
     pub equipment: std::collections::HashMap<String, protocol::ItemInfo>,
     pub quests: std::collections::HashMap<String, crate::game::QuestProgress>,
+    pub skills: std::collections::HashMap<String, crate::game::SkillProgress>,
     pub x: f64,
     pub y: f64,
 }
@@ -117,6 +118,9 @@ impl Db {
             .execute(&pool)
             .await;
         let _ = sqlx::query("ALTER TABLE characters ADD COLUMN zone TEXT NOT NULL DEFAULT '0.map'")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE characters ADD COLUMN skills TEXT NOT NULL DEFAULT '{}'")
             .execute(&pool)
             .await;
         Ok(Db { pool })
@@ -217,7 +221,7 @@ impl Db {
         character_id: &str,
     ) -> Result<Option<CharacterRow>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, name, class, gender, level, exp, gold, zone, x, y, inventory, equipment, quests FROM characters WHERE id = ? AND account_id = ?",
+            "SELECT id, name, class, gender, level, exp, gold, zone, x, y, inventory, equipment, quests, skills FROM characters WHERE id = ? AND account_id = ?",
         )
         .bind(character_id)
         .bind(account_id)
@@ -235,6 +239,7 @@ impl Db {
             inventory: serde_json::from_str(&r.get::<String, _>("inventory")).unwrap_or_default(),
             equipment: serde_json::from_str(&r.get::<String, _>("equipment")).unwrap_or_default(),
             quests: serde_json::from_str(&r.get::<String, _>("quests")).unwrap_or_default(),
+            skills: serde_json::from_str(&r.get::<String, _>("skills")).unwrap_or_default(),
             x: r.get("x"),
             y: r.get("y"),
         }))
@@ -279,6 +284,19 @@ impl Db {
     ) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE characters SET quests = ? WHERE id = ?")
             .bind(serde_json::to_string(quests).unwrap_or_else(|_| "{}".into()))
+            .bind(character_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn save_skill_progress(
+        &self,
+        character_id: &str,
+        skills: &std::collections::HashMap<String, crate::game::SkillProgress>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE characters SET skills = ? WHERE id = ?")
+            .bind(serde_json::to_string(skills).unwrap_or_else(|_| "{}".into()))
             .bind(character_id)
             .execute(&self.pool)
             .await?;

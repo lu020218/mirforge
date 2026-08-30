@@ -243,6 +243,9 @@ pub enum ServerMessage {
         skill_id: String,
         position: Position,
         targets: Vec<String>,
+        /// 施放者的技能修炼等级 (4 级起客户端播强化特效)
+        #[serde(default)]
+        level: u32,
     },
     /// 本区 NPC 全量快照 (进区/切区/配置热重载时下发)
     /// 对话页 (点击 NPC 或选了跳页选项后下发)
@@ -377,6 +380,18 @@ pub struct SkillInfo {
     pub range: f64,
     /// 免目标施放（治疗/自身为圆心的 AoE）
     pub self_cast: bool,
+    /// 修炼等级 (0 起步)
+    #[serde(default)]
+    pub level: u32,
+    /// 修炼满级 (官设 3, 私服玩法可调 4/5)
+    #[serde(default)]
+    pub max_level: u32,
+    /// 当前级已积累熟练度
+    #[serde(default)]
+    pub train: u32,
+    /// 升下一级所需熟练度 (已满级为 0)
+    #[serde(default)]
+    pub train_need: u32,
 }
 
 /// 任务面板的单任务条目

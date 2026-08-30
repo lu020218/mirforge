@@ -2378,6 +2378,21 @@ fn build_skill(
                                 14.0,
                                 if unlocked { TEXT_MAIN } else { DISABLED },
                             ));
+                            // 修炼等级: 超官设 3 级的用亮金标出 (私服玩法)
+                            if unlocked && s.max_level > 0 {
+                                row.spawn(text(
+                                    &font,
+                                    format!("Lv {}/{}", s.level, s.max_level),
+                                    11.0,
+                                    if s.level >= 4 {
+                                        GOLD_BRIGHT
+                                    } else if s.level >= s.max_level {
+                                        EXP_GOLD
+                                    } else {
+                                        TEXT_DIM
+                                    },
+                                ));
+                            }
                             if !unlocked {
                                 row.spawn(text(
                                     &font,
@@ -2399,6 +2414,13 @@ fn build_skill(
                         } else {
                             format!("射程 {:.0}", s.range)
                         });
+                        if unlocked {
+                            d.push(if s.level >= s.max_level {
+                                "修炼已满".into()
+                            } else {
+                                format!("修炼 {}/{}", s.train, s.train_need)
+                            });
+                        }
                         col.spawn(text(&font, d.join(" · "), 11.0, TEXT_DIM));
                     });
                     // 快捷键胶囊 (与 HUD 动作条 1-5 对应)
