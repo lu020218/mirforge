@@ -1510,8 +1510,10 @@ const BAG_GAP: f32 = 5.0;
 const BAG_PAD: f32 = 8.0;
 /// 面板宽度 = 格区 + 内边距 + 1px 边框×2 (Bevy UI 按 border-box 量)
 /// —— 由格数算出, 改列数不用再手调宽度, 也不会留下一圈空白
+/// 末尾 +2 是抗舍入余量: 缩放后各段取整可能多出一两像素, 留一点免得最后一列
+/// 的边框被裁掉 (列数本身由 grid 钉死, 不会因此换行)
 const BAG_PANEL_W: f32 =
-    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 2.0;
+    BAG_COLS as f32 * BAG_CELL + (BAG_COLS as f32 - 1.0) * BAG_GAP + BAG_PAD * 2.0 + 2.0 + 2.0;
 
 /// 图标句柄 + 原始像素尺寸
 type Icon = Option<(Handle<Image>, Vec2)>;
@@ -1578,11 +1580,13 @@ fn build_bag(
         _ => None,
     };
     e.with_children(|body| {
-        // 格区: 面板宽度就是按它算的, 所以这里正好铺满, 只留 BAG_PAD 一圈
+        // 格区用真正的网格而非 flex_wrap: 列数必须钉死。
+        // Bevy 会把每个节点按物理像素取整, UiScale ≠ 1 时子项之和可能比容器
+        // 多出一两像素, flex_wrap 一旦没有余量就会少排一列, 整个背包错位。
         body.spawn(Node {
+            display: Display::Grid,
+            grid_template_columns: RepeatedGridTrack::px(BAG_COLS as u16, BAG_CELL),
             padding: UiRect::all(Val::Px(BAG_PAD)),
-            flex_direction: FlexDirection::Row,
-            flex_wrap: FlexWrap::Wrap,
             justify_content: JustifyContent::Center,
             column_gap: Val::Px(BAG_GAP),
             row_gap: Val::Px(BAG_GAP),
