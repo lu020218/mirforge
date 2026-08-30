@@ -24,10 +24,10 @@ pub struct WoodTex {
     pub frame: Handle<Image>,
 }
 
-/// 生成 128×128 可平铺木纹: 云雾状木理 (分形值噪声) + 细噪声
+/// 生成 128×128 可平铺皮革压纹: 分形值噪声取脊线 + 细噪声
 ///
-/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。无方向的柔和明暗,
-/// 像深色胡桃木大板; 噪声格点按 tile 尺寸取周期, 平铺无缝。
+/// 没有外部素材可用 (仓库不收商业资源), 只能程序造。对分形噪声的中值取
+/// 绝对值得到脊线状纹理, 像鞣制皮面; 噪声格点按 tile 尺寸取周期, 平铺无缝。
 pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::Image>>) {
     const W: u32 = 128;
     const H: u32 = 128;
@@ -54,14 +54,15 @@ pub fn make_wood(mut commands: Commands, mut images: ResMut<Assets<bevy::image::
         let v = y as f32 / H as f32;
         for x in 0..W {
             let u = x as f32 / W as f32;
-            // 5 层八度叠加, 低频云雾 + 高频细节, 逐层减半
+            // 4 层八度叠加, 逐层减半; 对中值取绝对值折出脊线
             let (mut n, mut amp, mut tot) = (0.0f32, 1.0f32, 0.0f32);
-            for o in 0..5u32 {
-                n += amp * vnoise(u, v, 2 << o, 40 + o);
+            for o in 0..4u32 {
+                n += amp * vnoise(u, v, 3 << o, 90 + o);
                 tot += amp;
                 amp *= 0.5;
             }
-            let grain = (n / tot - 0.5) * 0.16 + (hash(x, y, 99) - 0.5) * 0.04;
+            let ridge = (n / tot - 0.5).abs() * 2.0 - 0.5;
+            let grain = ridge * 0.13 + (hash(x, y, 99) - 0.5) * 0.05;
             let k = 0.92 + grain;
             for base in [0.212f32, 0.149, 0.090] {
                 rgba.push(((base * k).clamp(0.0, 1.0) * 255.0) as u8);
