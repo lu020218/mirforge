@@ -62,6 +62,18 @@ impl CrystalLib {
         self.offsets.is_empty()
     }
 
+    /// 只读帧头尺寸, 不解压像素 (帧表探测用)。空帧/越界返回 None。
+    pub fn dims(&self, index: usize) -> Option<(u16, u16)> {
+        let &off = self.offsets.get(index)?;
+        if off <= 0 || (off as usize) + 17 > self.data.len() {
+            return None;
+        }
+        let o = off as usize;
+        let w = i16::from_le_bytes(self.data[o..o + 2].try_into().unwrap());
+        let h = i16::from_le_bytes(self.data[o + 2..o + 4].try_into().unwrap());
+        (w > 0 && h > 0).then_some((w as u16, h as u16))
+    }
+
     /// 解码第 `index` 帧。
     ///
     /// 空帧、越界、帧头非法、解压失败一律返回 Ok(None)（与传奇图库实况一致：

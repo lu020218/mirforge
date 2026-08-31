@@ -337,6 +337,10 @@ struct World {
     atlas: AtlasCpu,
     pages: Vec<Handle<Image>>,
     frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
+    /// 方向块实帧数缓存 ((层, 块基址) → 连续实帧数)
+    blens: HashMap<(Layer, i32), u8>,
+    /// 怪物库元信息缓存 (库号 → (首实帧基址, 方向块跨度))
+    mon_metas: HashMap<u16, Option<(i32, i32)>>,
     chunks: HashMap<(i32, i32), Entity>,
     walk: WalkGrid,
 }
@@ -427,6 +431,57 @@ impl World {
     /// 取帧（按需解码进图集）
     fn frame(&mut self, layer: Layer, front_lib: i16, idx: i32) -> Option<FrameRef> {
         self.frame_ex(layer, front_lib, idx, false)
+    }
+
+    /// 帧头尺寸 (不解压像素); ≥5px 才算实帧 (市售包大量 1×1 占位)
+    fn frame_dims(&mut self, layer: Layer, idx: i32) -> Option<(u16, u16)> {
+        if idx < 0 {
+            return None;
+        }
+        let name = Self::lib_name(layer, 0)?;
+        let lib = self.open_lib(&name)?;
+        lib.dims(idx as usize).filter(|&(w, h)| w >= 5 && h >= 5)
+    }
+
+    /// 方向块内连续实帧数 (≤stride), 缓存。市售库各动作实帧数不一
+    /// (站 4/6、走 6、死 10 等), 动画相位按它取模才不会踩到空帧位闪烁
+    fn block_len(&mut self, layer: Layer, base: i32, stride: i32) -> u8 {
+        if let Some(&k) = self.blens.get(&(layer, base)) {
+            return k;
+        }
+        let mut k = 0u8;
+        for i in 0..stride {
+            if self.frame_dims(layer, base + i).is_some() {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        self.blens.insert((layer, base), k);
+        k
+    }
+
+    /// 怪物库自适应元信息: (首实帧基址, 方向块跨度)。
+    /// 市售库每库基址/跨度不一 (Mon7 从 440 起, Mon2 跨度 10), 布局按
+    /// 「基址 + 动作序号×跨度×8 + 方向×跨度」寻址 (动作序: 站/走/攻/被击/死)
+    fn mon_meta(&mut self, n: u16) -> Option<(i32, i32)> {
+        if let Some(m) = self.mon_metas.get(&n) {
+            return *m;
+        }
+        let layer = Layer::Mon(n);
+        let meta = (|| {
+            let base = (0..4000).find(|&i| self.frame_dims(layer, i).is_some())?;
+            let run = (1..64)
+                .find(|&d| self.frame_dims(layer, base + d).is_none())
+                .unwrap_or(64);
+            let stride = (run..64)
+                .find(|&d| self.frame_dims(layer, base + d).is_some())
+                .unwrap_or(10)
+                .clamp(run, 32);
+            Some((base, stride))
+        })();
+        self.mon_metas.insert(n, meta);
+        meta
     }
 
     /// blend=true: 加色混合帧 (灯光/法阵光晕)。Bevy Sprite 无逐精灵混合
@@ -698,15 +753,15 @@ fn make_portrait(
     let naked = world
         .open_lib("portrait/naked")
         .and_then(|l| l.image(gender_frame).ok().flatten());
-    // 站立帧表 0+dir*4, dir4=南(面向镜头); 女装基址 +808 (1200 帧的自有
-    // 库没有女装段, 取不到就退男装帧)
-    let idx = if female { 808 + 16 } else { 16 };
+    // packs 衣甲布局: 站立 0+dir*8, dir4=南(面向镜头) → 帧 32; 女版 +600。
+    // 女装帧取不到就退男装帧
+    let idx = if female { 600 + 32 } else { 32 };
     let stand = |world: &mut World, lib: &str| {
         world.open_lib(lib).and_then(|l| {
             l.image(idx)
                 .ok()
                 .flatten()
-                .or_else(|| l.image(16).ok().flatten())
+                .or_else(|| l.image(32).ok().flatten())
         })
     };
     // 有衣甲且有展示图 → 裸模打底 + 展示图叠加;
@@ -838,6 +893,8 @@ fn setup(
         atlas: AtlasCpu::default(),
         pages,
         frames: HashMap::new(),
+        blens: HashMap::new(),
+        mon_metas: HashMap::new(),
         chunks: HashMap::new(),
         walk,
     });
@@ -1367,16 +1424,25 @@ fn player_sprite(
         )
     });
     let now_t = time.elapsed_secs_f64();
-    // 帧表 (Crystal FrameSet.Player 权威定义): 站 0+dir*4; 走 32+dir*6;
-    // 跑 80+dir*6; 战斗站架 128+dir*1; 攻击 136+dir*6 (Attack1)
+    // 帧表 (自有 packs 衣甲/武器布局, 对裸模全库分段实measured):
+    // 每方向 8 帧位; 站 0+dir*8 (4帧); 走 64+dir*8 (6帧); 跑 128+dir*8 (6帧);
+    // 攻击 192+dir*8 (6帧); 女版整段 +600
+    let female = net
+        .characters
+        .iter()
+        .find(|c| Some(&c.id) == net.character_id.as_ref())
+        .map(|c| c.gender == "female")
+        .unwrap_or(false);
+    let sex = if female { 600 } else { 0 };
+    let dirb = sex + p.dir * 8;
     let frame_idx = if let Some(t) = p.attack_start.filter(|t| now_t - t < ATTACK_ANIM_SECS) {
-        136 + p.dir * 6 + (((now_t - t) / 0.09) as usize).min(5)
+        192 + dirb + (((now_t - t) / 0.09) as usize).min(5)
     } else if p.moving && p.running {
-        80 + p.dir * 6 + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
+        128 + dirb + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
     } else if p.moving {
-        32 + p.dir * 6 + ((p.anim_t / WALK_FRAME_DT) as usize % 6)
+        64 + dirb + ((p.anim_t / WALK_FRAME_DT) as usize % 6)
     } else {
-        p.dir * 4 + ((p.anim_t / 0.2) as usize % 4)
+        dirb + ((p.anim_t / 0.2) as usize % 4)
     };
     // 该外观号缺库时退 0 号裸模 — 旧存档引用已淘汰的外观号也不至于隐身
     let Some(f) = world
@@ -2257,22 +2323,46 @@ fn remote_step(
         let walking = r.anim < 3 && now - r.last_move_t < 0.25;
         // 脚步帧 = 位移相位 × 6 (走一格一轮), 与地面锁定不受插值快慢影响
         let foot = (r.walk_phase * 6.0) as usize % 6;
-        // 帧表: 玩家=CArmour (站/走/跑), 怪物=Mon 库 (站/走/攻/死)
+        // 帧表: 玩家 = packs 衣甲布局 (站0/走64/跑128, 每向8帧位);
+        // 怪物 = 每库自适应 (基址/跨度探测 + 块内实帧数取模, 防踩空帧闪烁)
         let (layer, frame_idx) = if let Some(n) = r.image {
-            let idx = match r.anim {
-                4 => 144 + r.dir * 10 + (((r.anim_t / 0.13) as usize).min(9)), // 死亡一次性, 停在末帧
-                3 => 80 + r.dir * 6 + ((r.anim_t / 0.15) as usize % 6),
-                _ if walking => 32 + r.dir * 6 + foot,
-                _ => r.dir * 4 + ((r.anim_t / 0.25) as usize % 4),
+            let layer = Layer::Mon(n);
+            let Some((base, stride)) = world.mon_meta(n) else {
+                continue;
             };
-            (Layer::Mon(n), idx)
+            // 动作序号: 站0 走1 攻2 被击3 死4; (相位, 一次性)
+            let (act, phase, oneshot) = match r.anim {
+                4 => (4, (r.anim_t / 0.13) as usize, true),
+                3 => (2, (r.anim_t / 0.15) as usize, false),
+                _ if walking => (1, (r.walk_phase * 6.0) as usize, false),
+                _ => (0, (r.anim_t / 0.25) as usize, false),
+            };
+            let mut block = base + act * stride * 8 + r.dir as i32 * stride;
+            let mut k = world.block_len(layer, block, stride) as usize;
+            if k == 0 {
+                // 该动作段缺帧 → 退站立段; 站立也缺 → 退库首块
+                block = base + r.dir as i32 * stride;
+                k = world.block_len(layer, block, stride) as usize;
+            }
+            if k == 0 {
+                block = base;
+                k = world.block_len(layer, base, stride).max(1) as usize;
+            }
+            let idx = block
+                + if oneshot {
+                    phase.min(k.saturating_sub(1))
+                } else {
+                    phase % k.max(1)
+                } as i32;
+            (layer, idx as usize)
         } else {
+            let dirb = r.dir * 8;
             let idx = if walking && r.anim == 2 {
-                80 + r.dir * 6 + foot
+                128 + dirb + foot
             } else if walking {
-                32 + r.dir * 6 + foot
+                64 + dirb + foot
             } else {
-                r.dir * 4 + ((r.anim_t / 0.2) as usize % 4)
+                dirb + ((r.anim_t / 0.2) as usize % 4)
             };
             (Layer::Hum(r.armour), idx)
         };

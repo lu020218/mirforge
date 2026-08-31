@@ -64,6 +64,18 @@ impl MflLib {
         self.offsets.is_empty()
     }
 
+    /// 只读帧头尺寸, 不解压像素 (帧表探测用, 零成本)。空帧/越界返回 None。
+    pub fn dims(&self, index: usize) -> Option<(u16, u16)> {
+        let &off = self.offsets.get(index)?;
+        let o = off as usize;
+        if o == 0 || o + 12 > self.data.len() {
+            return None;
+        }
+        let w = u16::from_le_bytes(self.data[o..o + 2].try_into().unwrap());
+        let h = u16::from_le_bytes(self.data[o + 2..o + 4].try_into().unwrap());
+        (w > 0 && h > 0).then_some((w, h))
+    }
+
     /// 解码第 `index` 帧。空帧/越界/坏条目返回 Ok(None), 与 CrystalLib 同约定。
     pub fn image(&self, index: usize) -> Result<Option<DecodedImage>> {
         let Some(&off) = self.offsets.get(index) else {
@@ -131,6 +143,14 @@ impl AnyLib {
         match self {
             AnyLib::Mfl(l) => l.image(index),
             AnyLib::Crystal(l) => l.image(index),
+        }
+    }
+
+    /// 只读帧头尺寸, 不解压像素 (帧表探测用)
+    pub fn dims(&self, index: usize) -> Option<(u16, u16)> {
+        match self {
+            AnyLib::Mfl(l) => l.dims(index),
+            AnyLib::Crystal(l) => l.dims(index),
         }
     }
 

@@ -578,10 +578,10 @@ async fn api_sprite_grid(
     let (cols, cw, ch) = (8usize, 96u32, 120u32);
     let rows = count.div_ceil(cols).max(1);
     let start = q.start;
-    // 武器/衣甲按 Player 帧表取朝南站立帧 16; npc/monster 库首帧常是
-    // 占位小图 (市售包大量 1×1), 取不到像样的就向后扫第一个实帧
+    // 武器/衣甲按 packs 布局取朝南站立帧 32 (站 0+dir*8, dir4=南);
+    // npc/monster 库首帧常是占位小图, 取不到像样的就向后扫第一个实帧
     let frame_idx = if matches!(kind.as_str(), "weapon" | "armour") {
-        16
+        32
     } else {
         0
     };
@@ -658,10 +658,10 @@ async fn api_frame_png(
     let png = tokio::task::spawn_blocking(move || {
         let (lib_n, frame) = match kind.as_str() {
             "items" => (0u16, n as usize),
-            // 外观预览: 该库朝南站立首帧
-            "weapon" | "armour" => (n, 16usize),
-            // 怪物: 朝南站立首帧
-            "monster" => (n, 16usize),
+            // 外观预览: 该库朝南站立首帧 (packs 布局 0+dir*8, dir4=南)
+            "weapon" | "armour" => (n, 32usize),
+            // 怪物: 取不到就靠下面的扫描回退
+            "monster" => (n, 32usize),
             // 小地图: 库内第 n 帧
             "minimap" => (0u16, n as usize),
             // NPC: 站立首帧
