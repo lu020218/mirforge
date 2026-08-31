@@ -79,7 +79,8 @@ pub struct DropSidecar {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MonsterSidecar {
     pub template: String,
-    /// 客户端怪物图库号 (Data/Monster/{image:03}.Lib)
+    /// 客户端怪物图库号; 模板化后由怪物模板提供, 此列仅旧数据兜底
+    #[serde(default)]
     pub image: u16,
     pub x: f64,
     pub y: f64,
@@ -97,6 +98,25 @@ pub struct MonsterSidecar {
     pub drops: Vec<DropSidecar>,
     #[serde(default = "default_radius")]
     pub radius: f64,
+}
+
+/// 怪物模板 (全局一次定义, 刷新点按 id 引用; 管理台「怪物设置」页)
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct MonsterDef {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub image: u16,
+    #[serde(default = "default_hp")]
+    pub hp: i32,
+    #[serde(default)]
+    pub damage: i32,
+    #[serde(default = "default_exp")]
+    pub exp: u64,
+    #[serde(default)]
+    pub passive: bool,
+    #[serde(default)]
+    pub drops: Vec<DropSidecar>,
 }
 
 fn one() -> u32 {
@@ -290,6 +310,7 @@ pub struct GameData {
     pub quests: Vec<QuestDef>,
     pub npcs: Vec<NpcDef>,
     pub bosses: Vec<BossDef>,
+    pub monsters: Vec<MonsterDef>,
 }
 
 /// BOSS = 定点刷新 + 长重生 + 大属性 + 可选击杀公告的怪物
@@ -413,6 +434,8 @@ impl GameData {
             quests: serde_json::from_str(include_str!("../data/quests.json")).expect("内置 quests"),
             npcs: serde_json::from_str(include_str!("../data/npcs.json")).expect("内置 npcs"),
             bosses: serde_json::from_str(include_str!("../data/bosses.json")).expect("内置 bosses"),
+            monsters: serde_json::from_str(include_str!("../data/monsters.json"))
+                .expect("内置 monsters"),
         }
     }
 
@@ -438,6 +461,7 @@ impl GameData {
             quests: read(dir.join("quests.json"), "任务").unwrap_or(b.quests),
             npcs: read(dir.join("npcs.json"), "NPC").unwrap_or(b.npcs),
             bosses: read(dir.join("bosses.json"), "BOSS").unwrap_or(b.bosses),
+            monsters: read(dir.join("monsters.json"), "怪物").unwrap_or(b.monsters),
         }
     }
 }
@@ -509,6 +533,26 @@ impl GameData {
                     "任务 {} 的物品奖励共 {total} 件, 超过背包上限 {MAX_INVENTORY}",
                     q.id
                 ));
+            }
+        }
+        let mut mid = std::collections::HashSet::new();
+        for m in &self.monsters {
+            if !mid.insert(&m.id) {
+                errs.push(format!("怪物模板 id 重复: {}", m.id));
+            }
+            if m.name.trim().is_empty() {
+                errs.push(format!("怪物 {} 名称为空", m.id));
+            }
+            if m.hp <= 0 {
+                errs.push(format!("怪物 {} 的 HP 必须大于 0", m.id));
+            }
+            for d in &m.drops {
+                if !self.items.iter().any(|i| i.template == d.item) {
+                    errs.push(format!("怪物 {} 掉落引用的物品不存在: {}", m.id, d.item));
+                }
+                if !(0.0..=1.0).contains(&d.chance) {
+                    errs.push(format!("怪物 {} 掉落 {} 的概率应在 0~1 之间", m.id, d.item));
+                }
             }
         }
         let mut bid = std::collections::HashSet::new();
@@ -881,7 +925,26 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec
     };
     let now = Instant::now();
     let mut out = Vec::new();
+    let d = data();
     for (si, sp) in zone.monster_spawns.iter().enumerate() {
+        // 数值以怪物模板为准; 旧边车的内联字段仅在模板缺失时兜底
+        let def = d.monsters.iter().find(|m| m.id == sp.template);
+        let image = def.map(|m| m.image).unwrap_or(sp.image);
+        let (hp, damage, exp) = def
+            .map(|m| (m.hp, m.damage, m.exp))
+            .unwrap_or((sp.hp, sp.damage, sp.exp));
+        let passive = def.map(|m| m.passive).unwrap_or(sp.passive);
+        let drops: Vec<DropEntry> = def
+            .map(|m| {
+                m.drops
+                    .iter()
+                    .map(|d| DropEntry {
+                        item: d.item.clone(),
+                        chance: d.chance,
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| sp.drops.clone());
         for i in 0..sp.count {
             let want = (
                 sp.x + next(sp.radius * 2.0) - sp.radius,
@@ -889,13 +952,13 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec
             );
             let (x, y) = nearest_free(&zone.walk, want.0, want.1, avoid);
             out.push(Monster {
-                id: format!("mon_{}_{}_{}_{}", zone.id, sp.image, si, i),
+                id: format!("mon_{}_{}_{}_{}", zone.id, image, si, i),
                 template: sp.template.clone(),
-                name: String::new(),
+                name: def.map(|m| m.name.clone()).unwrap_or_default(),
                 boss: false,
                 respawn: RESPAWN_TIME,
                 announce: false,
-                image: sp.image,
+                image,
                 zone: zone.id.clone(),
                 home: (x, y),
                 roam: sp.radius,
@@ -908,12 +971,12 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec
                 pending_hit: None,
                 next_attack: now,
                 next_decide: now,
-                passive: sp.passive,
-                hp: sp.hp,
-                max_hp: sp.hp,
-                damage: sp.damage,
-                exp: sp.exp,
-                drops: sp.drops.clone(),
+                passive,
+                hp,
+                max_hp: hp,
+                damage,
+                exp,
+                drops: drops.clone(),
                 dying_until: None,
                 respawn_at: None,
                 removed_sent: false,
@@ -1136,6 +1199,12 @@ impl Game {
         // 校验: 掉落物品与传送门目标存在
         let d = data();
         for m in &sidecar.monsters {
+            if !d.monsters.iter().any(|md| md.id == m.template) {
+                return Err(format!(
+                    "刷新点引用不存在的怪物模板: {} (先在「怪物设置」里建)",
+                    m.template
+                ));
+            }
             for dr in &m.drops {
                 if !d.items.iter().any(|i| i.template == dr.item) {
                     return Err(format!("掉落引用不存在的物品: {}", dr.item));
@@ -1704,6 +1773,50 @@ impl Game {
     ///
     /// 代价是在场的 BOSS 会被重置 (满血回原位), 但配置改了本来就该以新配置
     /// 为准; 普通刷新点不受影响。
+    /// 怪物模板配置变更后重刷所有普通刷新点怪 (BOSS 由 refresh_bosses 管)
+    async fn refresh_spawns(&mut self) {
+        let removed: Vec<protocol::EntityUpdate> = self
+            .monsters
+            .iter()
+            .filter(|m| !m.boss)
+            .map(|m| protocol::EntityUpdate {
+                id: m.id.clone(),
+                position: None,
+                hp: None,
+                animation: None,
+                dir: None,
+                removed: Some(true),
+                armour: None,
+                weapon: None,
+                image: None,
+            })
+            .collect();
+        self.monsters.retain(|m| m.boss);
+        let mut rng = self.rng | 1;
+        for zone in self.zones.values() {
+            let here = Self::player_positions(&self.players, &zone.id);
+            let fresh = materialize_monsters(zone, &mut rng, &here);
+            self.monsters.extend(fresh);
+        }
+        if !removed.is_empty() {
+            let conns: Vec<String> = self
+                .players
+                .values()
+                .filter(|p| p.connected)
+                .map(|p| p.conn_id.clone())
+                .collect();
+            broadcast_to(
+                &self.sessions,
+                &conns,
+                ServerMessage::StateUpdate {
+                    entities: removed,
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
+        }
+    }
+
     async fn refresh_bosses(&mut self) {
         let removed: Vec<protocol::EntityUpdate> = self
             .monsters
@@ -1835,8 +1948,11 @@ impl Game {
                     zones: self.zones.values().map(|z| z.name.clone()).collect(),
                 });
             }
-            AdminCmd::ConfigReloaded => {
+            AdminCmd::ConfigReloaded { kind } => {
                 self.refresh_bosses().await;
+                if kind == "monsters" {
+                    self.refresh_spawns().await;
+                }
                 // 在线玩家即时重推技能表 (数值/新技能立即可见)
                 let ids: Vec<String> = self
                     .players

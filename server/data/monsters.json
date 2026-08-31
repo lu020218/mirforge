@@ -1,0 +1,32 @@
+[
+  {
+    "id": "chicken",
+    "name": "鸡",
+    "image": 3,
+    "hp": 12,
+    "damage": 0,
+    "exp": 5,
+    "passive": true,
+    "drops": []
+  },
+  {
+    "id": "deer",
+    "name": "鹿",
+    "image": 4,
+    "hp": 20,
+    "damage": 0,
+    "exp": 8,
+    "passive": true,
+    "drops": []
+  },
+  {
+    "id": "scarecrow",
+    "name": "稻草人",
+    "image": 2,
+    "hp": 30,
+    "damage": 2,
+    "exp": 12,
+    "passive": false,
+    "drops": []
+  }
+]

@@ -153,6 +153,17 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             arg TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (npc_id, page, idx)
         )",
+        "CREATE TABLE IF NOT EXISTS cfg_monsters (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            image INTEGER NOT NULL DEFAULT 0,
+            hp INTEGER NOT NULL DEFAULT 30,
+            damage INTEGER NOT NULL DEFAULT 0,
+            exp INTEGER NOT NULL DEFAULT 10,
+            passive INTEGER NOT NULL DEFAULT 0,
+            drops TEXT NOT NULL DEFAULT '[]',
+            ord INTEGER NOT NULL DEFAULT 0
+        )",
         "CREATE TABLE IF NOT EXISTS cfg_drops (
             spawn_id INTEGER NOT NULL,
             item TEXT NOT NULL,
@@ -434,12 +445,31 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         }
     }
 
+    let monsters = sqlx::query(
+        "SELECT id, name, image, hp, damage, exp, passive, drops FROM cfg_monsters ORDER BY ord, id",
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| crate::game::MonsterDef {
+        id: r.get("id"),
+        name: r.get("name"),
+        image: r.get::<i64, _>("image") as u16,
+        hp: r.get::<i64, _>("hp") as i32,
+        damage: r.get::<i64, _>("damage") as i32,
+        exp: r.get::<i64, _>("exp").max(0) as u64,
+        passive: r.get::<i64, _>("passive") != 0,
+        drops: serde_json::from_str(&r.get::<String, _>("drops")).unwrap_or_default(),
+    })
+    .collect();
+
     Ok(GameData {
         items,
         skills,
         quests,
         npcs,
         bosses,
+        monsters,
     })
 }
 
@@ -836,6 +866,84 @@ pub async fn delete_zone(pool: &SqlitePool, map: &str) -> Result<(), sqlx::Error
     tx.commit().await
 }
 
+pub async fn save_monsters(
+    pool: &SqlitePool,
+    monsters: &[crate::game::MonsterDef],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM cfg_monsters")
+        .execute(&mut *tx)
+        .await?;
+    for (i, m) in monsters.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO cfg_monsters (id, name, image, hp, damage, exp, passive, drops, ord)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&m.id)
+        .bind(&m.name)
+        .bind(m.image as i64)
+        .bind(m.hp as i64)
+        .bind(m.damage as i64)
+        .bind(m.exp as i64)
+        .bind(m.passive as i64)
+        .bind(serde_json::to_string(&m.drops).unwrap_or_else(|_| "[]".into()))
+        .bind(i as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// 旧库迁移: cfg_monsters 为空时, 从既有刷新点行蒸馏出怪物模板
+/// (同名模板取首见的数值与掉落), 幂等 — 蒸馏过一次后不再动
+pub async fn migrate_monsters(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cfg_monsters")
+        .fetch_one(pool)
+        .await?;
+    if n > 0 {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT id, template, image, hp, damage, exp, passive FROM cfg_spawns ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<crate::game::MonsterDef> = Vec::new();
+    for r in rows {
+        let template: String = r.get("template");
+        if template.is_empty() || !seen.insert(template.clone()) {
+            continue;
+        }
+        let spawn_id: i64 = r.get("id");
+        let drops = sqlx::query("SELECT item, chance FROM cfg_drops WHERE spawn_id = ?")
+            .bind(spawn_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|d| crate::game::DropSidecar {
+                item: d.get("item"),
+                chance: d.get("chance"),
+            })
+            .collect();
+        out.push(crate::game::MonsterDef {
+            name: template.clone(),
+            id: template,
+            image: r.get::<i64, _>("image") as u16,
+            hp: r.get::<i64, _>("hp") as i32,
+            damage: r.get::<i64, _>("damage") as i32,
+            exp: r.get::<i64, _>("exp").max(0) as u64,
+            passive: r.get::<i64, _>("passive") != 0,
+            drops,
+        });
+    }
+    if !out.is_empty() {
+        tracing::info!("怪物模板迁移: 从刷新点蒸馏 {} 个模板", out.len());
+        save_monsters(pool, &out).await?;
+    }
+    Ok(())
+}
+
 // ─────────── 首次种子导入（库为空时，从 JSON 文件/内置默认灌入一次） ───────────
 
 pub async fn seed_from_files(
@@ -848,6 +956,7 @@ pub async fn seed_from_files(
     save_quests(pool, &data.quests).await?;
     save_npcs(pool, &data.npcs).await?;
     save_bosses(pool, &data.bosses).await?;
+    save_monsters(pool, &data.monsters).await?;
     for (map, sc) in zones {
         save_zone(pool, map, sc).await?;
     }

@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 pub enum AdminCmd {
     Status(oneshot::Sender<StatusSnapshot>),
     /// 配置已热替换 (通知在线玩家刷新技能表等)
-    ConfigReloaded,
+    ConfigReloaded { kind: String },
     Broadcast(String),
     Kick {
         name: String,
@@ -202,6 +202,7 @@ struct ConfigPayload {
     quests: serde_json::Value,
     npcs: serde_json::Value,
     bosses: serde_json::Value,
+    monsters: serde_json::Value,
 }
 
 async fn api_config_get(
@@ -218,6 +219,7 @@ async fn api_config_get(
         quests: serde_json::to_value(&d.quests).unwrap_or_default(),
         npcs: serde_json::to_value(&d.npcs).unwrap_or_default(),
         bosses: serde_json::to_value(&d.bosses).unwrap_or_default(),
+        monsters: serde_json::to_value(&d.monsters).unwrap_or_default(),
     }))
 }
 
@@ -273,6 +275,10 @@ async fn api_config_put(
                 next.bosses =
                     serde_json::from_value(req.value.clone()).map_err(|e| format!("bosses: {e}"))?
             }
+            "monsters" => {
+                next.monsters = serde_json::from_value(req.value.clone())
+                    .map_err(|e| format!("monsters: {e}"))?
+            }
             k => return Err(format!("未知配置类别: {k}")),
         }
         Ok(())
@@ -307,13 +313,16 @@ async fn api_config_put(
         "skills" => crate::config_store::save_skills(pool, &next.skills).await,
         "npcs" => crate::config_store::save_npcs(pool, &next.npcs).await,
         "bosses" => crate::config_store::save_bosses(pool, &next.bosses).await,
+        "monsters" => crate::config_store::save_monsters(pool, &next.monsters).await,
         _ => crate::config_store::save_quests(pool, &next.quests).await,
     };
     if let Err(e) = saved {
         return Ok(fail(format!("保存失败: {e}")));
     }
     crate::game::set_data(next);
-    let _ = st.tx.send(AdminCmd::ConfigReloaded);
+    let _ = st.tx.send(AdminCmd::ConfigReloaded {
+        kind: req.kind.clone(),
+    });
     audit("put_config", &req.kind);
     Ok(Json(PutConfigResp {
         ok: true,

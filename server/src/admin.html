@@ -116,6 +116,7 @@
       <div class="sec">游戏配置</div>
       <a id="nav-items" onclick="go('items')"><span class="ico">⚔</span>物品设置</a>
       <a id="nav-skills" onclick="go('skills')"><span class="ico">✦</span>技能设置</a>
+      <a id="nav-monsters" onclick="go('monsters')"><span class="ico">☬</span>怪物设置</a>
       <a id="nav-npcs" onclick="go('npcs')"><span class="ico">☗</span>NPC 设置</a>
       <a id="nav-quests" onclick="go('quests')"><span class="ico">✧</span>任务设置</a>
       <a id="nav-maps" onclick="go('maps')"><span class="ico">▦</span>地图设置</a>
@@ -186,6 +187,24 @@
     </section>
 
     <!-- ═══ NPC ═══ -->
+    <section id="page-monsters" class="page">
+      <div class="head"><h2>怪物设置</h2><span class="desc">怪物模板 — 数值一次定义, 刷新点按模板引用</span></div>
+      <div class="toolbar">
+        <button onclick="saveCfg('monsters')">保存怪物</button>
+        <button class="ghost" onclick="loadCfg('monsters')">重新载入</button>
+        <button class="ghost" onclick="addMonRow()">+ 新增怪物</button>
+        <span id="msg-monsters" class="ok-msg"></span>
+      </div>
+      <div class="err-msg" id="err-monsters"></div>
+      <div class="table-wrap">
+        <table id="mon-table">
+          <thead><tr><th>id</th><th>名称</th><th>形象</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="hint" style="margin-top:8px">保存后全部刷新点怪立即按新数值重刷; 刷新点在「地图设置」的区域编辑器里摆放。</div>
+    </section>
+
     <section id="page-npcs" class="page">
       <div class="head"><h2>NPC 设置</h2><span class="desc">城镇与野外的固定 NPC</span></div>
       <div class="toolbar">
@@ -264,7 +283,7 @@
           <div class="toolbar"><button class="ghost" onclick="addPortalRow()">+ 传送门</button></div>
           <h4 style="color:var(--gold);font-size:13px;margin:14px 0 0">怪物刷新点</h4>
           <table id="spawn-table">
-            <thead><tr><th>模板</th><th>图库</th><th>X</th><th>Y</th><th>数量</th><th>半径</th><th>被动</th><th>HP</th><th>伤害</th><th>经验</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
+            <thead><tr><th>怪物模板</th><th>X</th><th>Y</th><th>数量</th><th>半径</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
           <div class="toolbar"><button class="ghost" onclick="addSpawnRow()">+ 刷新点</button></div>
@@ -447,7 +466,7 @@ const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
 
 // ── 页面路由 ──
-const PAGES = ['dashboard', 'items', 'skills', 'npcs', 'quests', 'maps', 'bosses', 'resources', 'server'];
+const PAGES = ['dashboard', 'items', 'skills', 'monsters', 'npcs', 'quests', 'maps', 'bosses', 'resources', 'server'];
 let curPage = 'dashboard';
 /// NPC 表是否已载入 (只首次进页自动载, 见 go)
 let npcLoaded = false;
@@ -465,7 +484,8 @@ function go(p, silent) {
   if (!silent) location.hash = '#' + p;
   const skip = skipReload === p;
   skipReload = null;
-  if (p === 'items' || p === 'skills' || p === 'quests') loadCfg(p);
+  if (p === 'items' || p === 'skills' || p === 'quests' || p === 'monsters') loadCfg(p);
+  if (p === 'maps' && !document.querySelector('#mon-table tbody tr')) loadCfg('monsters');
   if (p === 'resources' && !window._packsLoaded) loadPackList();
   // NPC 页涉及跨页取点, 只在首次进入时载入 —— 每次进页都重载会冲掉未保存的行
   // (含刚取到的坐标和还没保存的新增 NPC); 要放弃编辑请点「重新载入」。
@@ -1266,12 +1286,13 @@ async function bossPickOnMap(btn) {
 }
 
 // ── 任务设置 ──
-/// 可作为击杀目标的怪: 各区刷新点模板 + 所有 BOSS (BOSS 的 template 就是它的 id)
+/// 可作为击杀目标的怪: 怪物模板 + 所有 BOSS (BOSS 的 template 就是它的 id)
 function monsterOptions(sel) {
   const seen = new Map();
+  monstersCfg.forEach(m => { if (m.id) seen.set(m.id, `${m.id} (${m.name})`); });
   Object.values(zoneData).forEach(z =>
     (z.sidecar?.monsters || []).forEach(m => {
-      if (m.template) seen.set(m.template, `${m.template} (${z.name} 刷新点)`);
+      if (m.template && !seen.has(m.template)) seen.set(m.template, `${m.template} (${z.name} 刷新点)`);
     }));
   document.querySelectorAll('#boss-table > tbody > tr:not(.boss-dlg)').forEach(tr => {
     const id = tr.querySelector('[data-b="id"]').value;
@@ -1459,6 +1480,12 @@ async function loadCfg(kind) {
     for (const cls of Object.keys(CLASSES))
       (d.skills[cls] || []).forEach(sk => sb.appendChild(skillRow(cls, sk)));
   }
+  if (want('monsters')) {
+    monstersCfg = d.monsters || [];
+    const mb = document.querySelector('#mon-table tbody');
+    mb.innerHTML = '';
+    monstersCfg.forEach(m => mb.appendChild(monRow(m)));
+  }
   if (want('npcs')) {
     const nb = document.querySelector('#npc-table tbody');
     nb.innerHTML = '';
@@ -1486,6 +1513,54 @@ async function loadCfg(kind) {
   }
   showErr('');
 }
+// ── 怪物模板 ──
+let monstersCfg = [];
+function monRow(m) {
+  const tr = document.createElement('tr');
+  const drops = (m.drops || []).map(d => `${d.item}:${d.chance}`).join(', ');
+  tr.innerHTML = `
+    <td><input class="wide" data-m="id" value="${m.id ?? ''}"></td>
+    <td><input class="wide" data-m="name" value="${m.name ?? ''}"></td>
+    <td><input data-m="image" value="${m.image ?? 0}" style="width:55px">
+        <img class="icon" title="点击从怪物图库选择" src="/api/frame/monster/${m.image ?? 0}" onclick="openMonPicker(this)"></td>
+    <td><input data-m="hp" value="${m.hp ?? 30}" style="width:60px"></td>
+    <td><input data-m="damage" value="${m.damage ?? 0}" style="width:55px"></td>
+    <td><input data-m="exp" value="${m.exp ?? 10}" style="width:55px"></td>
+    <td><input type="checkbox" data-m="passive" ${m.passive ? 'checked' : ''}></td>
+    <td><input data-m="drops" value="${drops}" style="width:200px" title="物品模板:概率, 逗号分隔"></td>
+    <td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
+  tr.querySelector('input[data-m="image"]').addEventListener('change', e =>
+    e.target.closest('td').querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0));
+  return tr;
+}
+function addMonRow() {
+  document.querySelector('#mon-table tbody').appendChild(
+    monRow({ id: 'new_monster', name: '新怪物', image: 1, hp: 30, damage: 2, exp: 10, passive: false, drops: [] }));
+}
+function collectMonsters() {
+  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  return [...document.querySelectorAll('#mon-table tbody tr')].map(tr => {
+    const v = c => { const el = tr.querySelector(`[data-m=${c}]`); return el.type === 'checkbox' ? el.checked : el.value; };
+    return {
+      id: v('id').trim(), name: v('name').trim(),
+      image: num(v('image')), hp: num(v('hp')), damage: num(v('damage')),
+      exp: num(v('exp')), passive: v('passive'),
+      drops: v('drops').split(',').map(x => x.trim()).filter(Boolean).map(x => {
+        const [item, ch] = x.split(':');
+        return { item: (item || '').trim(), chance: num(ch) };
+      }),
+    };
+  });
+}
+/// 刷新点的模板下拉选项 (含未知值保留)
+function monTemplateOptions(sel) {
+  const seen = new Map();
+  monstersCfg.forEach(m => { if (m.id) seen.set(m.id, `${m.id} (${m.name})`); });
+  if (sel && !seen.has(sel)) seen.set(sel, `${sel} (未知, 保留原值)`);
+  return [...seen].map(([v, label]) =>
+    `<option value="${v}"${v === sel ? ' selected' : ''}>${label}</option>`).join('');
+}
+
 async function saveCfg(kind) {
   let value;
   try {
@@ -1494,6 +1569,7 @@ async function saveCfg(kind) {
           : kind === 'npcs' ? collectNpcs()
           : kind === 'bosses' ? collectBosses()
           : kind === 'quests' ? collectQuests()
+          : kind === 'monsters' ? collectMonsters()
           : (() => { throw new Error('未知配置类别: ' + kind); })();
   } catch (e) {
     showErr(e.message); return;
@@ -1503,7 +1579,10 @@ async function saveCfg(kind) {
     body: JSON.stringify({ kind, value }) });
   const resp = await r.json();
   showErr(resp.ok ? '' : resp.errors.join('\n'));
-  if (resp.ok) flash('已保存并热重载');
+  if (resp.ok) {
+    flash('已保存并热重载');
+    if (kind === 'monsters') monstersCfg = value;
+  }
 }
 
 // ── 地图区域 ──
@@ -1554,18 +1633,10 @@ function portalRow(p) {
 }
 function spawnRow(m) {
   const tr = document.createElement('tr');
-  const drops = (m.drops || []).map(d => `${d.item}:${d.chance}`).join(', ');
   tr.innerHTML =
-    `<td><input value="${m.template ?? ''}" style="width:90px"></td>` +
-    `<td><input value="${m.image ?? 0}" style="width:50px"> <img class="icon" src="/api/frame/monster/${m.image ?? 0}"></td>` +
-    numCell(m.x, 55) + numCell(m.y, 55) + numCell(m.count ?? 1, 45) + numCell(m.radius ?? 5, 45) +
-    `<td><input type="checkbox" ${m.passive ? 'checked' : ''}></td>` +
-    numCell(m.hp ?? 30, 50) + numCell(m.damage ?? 0, 45) + numCell(m.exp ?? 10, 45) +
-    `<td><input value="${drops}" style="width:180px" title="物品模板:概率, 逗号分隔"></td>` +
+    `<td><select data-s="template">${monTemplateOptions(m.template)}</select></td>` +
+    numCell(m.x, 60) + numCell(m.y, 60) + numCell(m.count ?? 1, 50) + numCell(m.radius ?? 5, 50) +
     `<td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
-  const imgInput = tr.querySelectorAll('input')[1];
-  imgInput.addEventListener('change', e =>
-    tr.querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0));
   return tr;
 }
 function toggleZone(map) {
@@ -1676,7 +1747,7 @@ function addPortalRow() {
 }
 function addSpawnRow() {
   document.querySelector('#spawn-table tbody').appendChild(
-    spawnRow({ template: 'chicken', image: 3, x: 0, y: 0, count: 1, radius: 4, passive: true, hp: 12, damage: 0, exp: 5, drops: [] }));
+    spawnRow({ template: monstersCfg[0]?.id || 'chicken', x: 0, y: 0, count: 1, radius: 4 }));
 }
 function collectZone() {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -1692,16 +1763,10 @@ function collectZone() {
   });
   const monsters = [...document.querySelectorAll('#spawn-table tbody tr')].map(tr => {
     const i = [...tr.querySelectorAll('input')];
-    const txt = i.filter(x => x.type !== 'checkbox');
     return {
-      template: txt[0].value.trim(), image: num(txt[1].value),
-      x: num(txt[2].value), y: num(txt[3].value), count: num(txt[4].value) || 1,
-      radius: num(txt[5].value) || 1, passive: tr.querySelector('input[type=checkbox]').checked,
-      hp: num(txt[6].value), damage: num(txt[7].value), exp: num(txt[8].value),
-      drops: txt[9].value.split(',').map(s => s.trim()).filter(Boolean).map(s => {
-        const [item, ch] = s.split(':');
-        return { item: (item || '').trim(), chance: num(ch) };
-      }),
+      template: tr.querySelector('[data-s="template"]').value,
+      x: num(i[0].value), y: num(i[1].value),
+      count: num(i[2].value) || 1, radius: num(i[3].value) || 1,
     };
   });
   const mm = document.getElementById('ze-mm').value.trim();
@@ -2048,7 +2113,7 @@ function applyPick(gx, gy) {
       portalRow({ x: gx, y: gy, to: Object.keys(zoneData).find(m => m !== zoneEditing) || zoneEditing }));
   } else {
     document.querySelector('#spawn-table tbody').appendChild(
-      spawnRow({ template: 'chicken', image: 3, x: gx, y: gy, count: 3, radius: 4, passive: true, hp: 12, damage: 0, exp: 5, drops: [] }));
+      spawnRow({ template: monstersCfg[0]?.id || 'chicken', x: gx, y: gy, count: 3, radius: 4 }));
   }
   document.getElementById('pick-hint').textContent = `已取 (${gx}, ${gy}) — 记得保存区域`;
   endPick();

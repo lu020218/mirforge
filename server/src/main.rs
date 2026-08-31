@@ -85,6 +85,10 @@ async fn main() {
     config_store::ensure_schema(db.pool())
         .await
         .expect("建配置表失败");
+    // 旧库迁移: 从既有刷新点蒸馏怪物模板 (幂等)
+    config_store::migrate_monsters(db.pool())
+        .await
+        .expect("怪物模板迁移失败");
 
     // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
     if config_store::is_empty(db.pool()).await.unwrap_or(false) {
