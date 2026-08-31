@@ -28,14 +28,19 @@ packs/
 编号即文件名(三位十进制)。要**替换**某个外观,放同号 .mfl 顶掉即可
 (如重打 `armor/000.mfl` 换掉 0 号布衣的样子),配置无需改动。
 
-## 从原版资源一次性迁移
+## 从购买素材批量打包
 
-```
-cargo run -p mir-pack --release -- convert resources/Data packs
-```
+素材包常见形态与对应命令:
+- LibraryEditor 解包目录 (逐帧 PNG + Placements) → `mir-pack pack`
+- 散图 (立绘/小地图) → `mir-pack pack-list`
+- Crystal .Lib → `mir-pack convert` (整目录) 或逐个 pack
+- WZL/WZX 与 WIL/WIX → 解码器待实现 (roadmap)
 
-多线程转码引擎注册表内的全部库(1000+ 个,几分钟),已存在的目标文件
-跳过 — 所以先打包的自有素材不会被原版转码覆盖。
+地图接入三件套: `.map` 放在 MIRFORGE_RES 下任意位置 (按文件名扫描);
+该图的 Tiles/SmTiles/Objects 套打进 `packs/map/`;
+小地图图片追加进 `mmap.mfl` 并在管理台把区域的小地图帧号指过去。
+`mir-pack mapinfo <xx.map>` 可查看一张图引用的库号
+(盛大格式: 层基址 back=100/mid=110/front=120, 文件后缀 = 值-基址+1)。
 
 ## 工具
 

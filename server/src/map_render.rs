@@ -49,67 +49,38 @@ pub fn tile_cached(
     png
 }
 
-/// 库号 → Data/Map 下的库文件名（Crystal Libraries.MapLibs 注册表）
-fn lib_name(lib: i16) -> Option<String> {
-    const MIR3_NAMES: [&str; 14] = [
-        "Tilesc",
-        "Tiles30c",
-        "Tiles5c",
-        "Smtilesc",
-        "Housesc",
-        "Cliffsc",
-        "Dungeonsc",
-        "Innersc",
-        "Furnituresc",
-        "Wallsc",
-        "smObjectsc",
-        "Animationsc",
-        "Object1c",
-        "Object2c",
-    ];
-    const MIR3_STATE: [&str; 5] = ["", "wood", "sand", "snow", "forest"];
-    let l = lib as i32;
-    Some(match l {
-        0 => "WemadeMir2/Tiles".into(),
-        1 => "WemadeMir2/SmTiles".into(),
-        2 => "WemadeMir2/Objects".into(),
-        3..=28 => format!("WemadeMir2/Objects{}", l - 1),
-        90 => "WemadeMir2/Objects_32bit".into(),
-        100 => "ShandaMir2/Tiles".into(),
-        101..=109 => format!("ShandaMir2/Tiles{}", l - 99),
-        110 => "ShandaMir2/SmTiles".into(),
-        111..=119 => format!("ShandaMir2/SmTiles{}", l - 109),
-        120 => "ShandaMir2/Objects".into(),
-        121..=150 => format!("ShandaMir2/Objects{}", l - 119),
-        190 => "ShandaMir2/AniTiles1".into(),
-        200..=274 => {
-            let o = (l - 200) as usize;
-            let (s, n) = (o / 15, o % 15);
-            if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
-                return None;
-            }
-            let dir = if s == 0 {
-                String::new()
-            } else {
-                format!("{}/", MIR3_STATE[s])
-            };
-            format!("WemadeMir3/{dir}{}", MIR3_NAMES[n])
-        }
-        300..=374 => {
-            let o = (l - 300) as usize;
-            let (s, n) = (o / 15, o % 15);
-            if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
-                return None;
-            }
-            format!("ShandaMir3/{}{}", MIR3_NAMES[n], MIR3_STATE[s])
-        }
-        _ => return None,
+/// 三层各自的库基址 (盛大格式: back=100/mid=110/front=120)
+#[derive(Clone, Copy)]
+pub enum MapLayer {
+    Back,
+    Mid,
+    Front,
+}
+
+/// 库号 → packs/map 下的库文件名。
+/// 盛大格式: 库文件后缀 = 值 - 层基址 + 1 (后缀 1 = 无后缀基础套)。
+/// 与客户端 lib_name 同一套规则 (三张市售图实测验证: 207/187/100 套)。
+fn lib_name(layer: MapLayer, lib: i16) -> Option<String> {
+    let (base, stem) = match layer {
+        MapLayer::Back => (100, "Tiles"),
+        MapLayer::Mid => (110, "SmTiles"),
+        MapLayer::Front => (120, "Objects"),
+    };
+    let suffix = lib as i32 - base + 1;
+    if suffix < 1 {
+        return None;
+    }
+    Some(if suffix == 1 {
+        stem.to_string()
+    } else {
+        format!("{stem}{suffix}")
     })
 }
 
 /// 取一帧图像（进程内缓存已解析的库）
 fn with_frame<R>(
     res_root: &std::path::Path,
+    layer: MapLayer,
     lib: i16,
     idx: i32,
     f: impl FnOnce(&mir_formats::DecodedImage) -> R,
@@ -117,7 +88,7 @@ fn with_frame<R>(
     if idx < 0 {
         return None;
     }
-    let name = lib_name(lib)?;
+    let name = lib_name(layer, lib)?;
     let mut guard = MAP_LIBS.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
     if !cache.contains_key(&name) {
@@ -204,28 +175,28 @@ pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -
             let Some(c) = cell_at(cx, cy) else { continue };
             let (dx, dy) = (cx * CELL_W as i64 - px0, cy * CELL_H as i64 - py0);
             if c.back >= 0 && cx % 2 == 0 && cy % 2 == 0 {
-                with_frame(res_root, c.back_lib, c.back, |img| {
+                with_frame(res_root, MapLayer::Back, c.back_lib, c.back, |img| {
                     blit(&mut canvas, img, dx, dy, false)
                 });
             }
             if c.mid >= 0 {
-                let floor = with_frame(res_root, c.mid_lib, c.mid, |img| {
+                let floor = with_frame(res_root, MapLayer::Mid, c.mid_lib, c.mid, |img| {
                     is_floor_size(img.width, img.height)
                 })
                 .unwrap_or(false);
                 if floor {
-                    with_frame(res_root, c.mid_lib, c.mid, |img| {
+                    with_frame(res_root, MapLayer::Mid, c.mid_lib, c.mid, |img| {
                         blit(&mut canvas, img, dx, dy, false)
                     });
                 }
             }
             if c.front >= 0 {
-                let floor = with_frame(res_root, c.front_lib, c.front, |img| {
+                let floor = with_frame(res_root, MapLayer::Front, c.front_lib, c.front, |img| {
                     is_floor_size(img.width, img.height)
                 })
                 .unwrap_or(false);
                 if floor {
-                    with_frame(res_root, c.front_lib, c.front, |img| {
+                    with_frame(res_root, MapLayer::Front, c.front_lib, c.front, |img| {
                         blit(&mut canvas, img, dx, dy, false)
                     });
                 }
@@ -241,7 +212,7 @@ pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -
             let bottom = (cy + 1) * CELL_H as i64 - py0;
             // mid 非标准尺寸 → 对象
             if c.mid >= 0 {
-                with_frame(res_root, c.mid_lib, c.mid, |img| {
+                with_frame(res_root, MapLayer::Mid, c.mid_lib, c.mid, |img| {
                     if !is_floor_size(img.width, img.height) {
                         blit(&mut canvas, img, base_x, bottom - img.height as i64, false);
                     }
@@ -249,7 +220,7 @@ pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -
             }
             if c.front >= 0 {
                 let blend = c.ani_frame & 0x80 > 0;
-                with_frame(res_root, c.front_lib, c.front, |img| {
+                with_frame(res_root, MapLayer::Front, c.front_lib, c.front, |img| {
                     if is_floor_size(img.width, img.height) && c.ani_frame & 0x7F == 0 {
                         return; // 已在地板层画过
                     }

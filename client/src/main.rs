@@ -353,59 +353,25 @@ impl World {
             Layer::Fx(_) => return Some("Magic2".into()),
             _ => {}
         }
-        const MIR3_NAMES: [&str; 14] = [
-            "Tilesc",
-            "Tiles30c",
-            "Tiles5c",
-            "Smtilesc",
-            "Housesc",
-            "Cliffsc",
-            "Dungeonsc",
-            "Innersc",
-            "Furnituresc",
-            "Wallsc",
-            "smObjectsc",
-            "Animationsc",
-            "Object1c",
-            "Object2c",
-        ];
-        const MIR3_STATE: [&str; 5] = ["", "wood", "sand", "snow", "forest"];
+        // 盛大格式地图 (私服市售图通用): 层基址 back=100/mid=110/front=120,
+        // 库文件后缀 = 值 - 基址 + 1 (后缀 1 = 无后缀基础套)。
+        // 三张实测图验证: 比奇 306/316/326→207 套, 毒蛇 286/296/306→187 套,
+        // 盟重 199/209/219→100 套。
         let l = lib as i32;
-        Some(match l {
-            0 => "Map/WemadeMir2/Tiles".into(),
-            1 => "Map/WemadeMir2/SmTiles".into(),
-            2 => "Map/WemadeMir2/Objects".into(),
-            3..=28 => format!("Map/WemadeMir2/Objects{}", l - 1),
-            90 => "Map/WemadeMir2/Objects_32bit".into(),
-            100 => "Map/ShandaMir2/Tiles".into(),
-            101..=109 => format!("Map/ShandaMir2/Tiles{}", l - 99),
-            110 => "Map/ShandaMir2/SmTiles".into(),
-            111..=119 => format!("Map/ShandaMir2/SmTiles{}", l - 109),
-            120 => "Map/ShandaMir2/Objects".into(),
-            121..=150 => format!("Map/ShandaMir2/Objects{}", l - 119),
-            190 => "Map/ShandaMir2/AniTiles1".into(),
-            200..=274 => {
-                let o = (l - 200) as usize;
-                let (s, n) = (o / 15, o % 15);
-                if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
-                    return None;
-                }
-                let dir = if s == 0 {
-                    String::new()
-                } else {
-                    format!("{}/", MIR3_STATE[s])
-                };
-                format!("Map/WemadeMir3/{dir}{}", MIR3_NAMES[n])
-            }
-            300..=374 => {
-                let o = (l - 300) as usize;
-                let (s, n) = (o / 15, o % 15);
-                if s >= MIR3_STATE.len() || n >= MIR3_NAMES.len() {
-                    return None;
-                }
-                format!("Map/ShandaMir3/{}{}", MIR3_NAMES[n], MIR3_STATE[s])
-            }
+        let (base, stem) = match layer {
+            Layer::Back => (100, "Tiles"),
+            Layer::Mid => (110, "SmTiles"),
+            Layer::Front => (120, "Objects"),
             _ => return None,
+        };
+        let suffix = l - base + 1;
+        if suffix < 1 {
+            return None;
+        }
+        Some(if suffix == 1 {
+            format!("Map/{stem}")
+        } else {
+            format!("Map/{stem}{suffix}")
         })
     }
 
@@ -795,35 +761,8 @@ fn setup(
     };
     let map = mir_formats::map::parse(&std::fs::read(&entry.path).expect("读地图失败"))
         .expect("解析地图失败");
-    // 图库目录 = Tiles.Lib 所在目录
-    let lib_set = std::env::var("MIRFORGE_LIBSET").unwrap_or_else(|_| "WemadeMir2".into());
-    // 资源目录可能含多套图库 (WemadeMir2/ShandaMir2/WemadeMir3), 地图与图库必须同套;
-    // 优先取路径含 MIRFORGE_LIBSET (默认 WemadeMir2) 的 Tiles.Lib, 否则取第一个
-    let tiles: Vec<_> = idx
-        .libs
-        .iter()
-        .filter(|l| {
-            l.path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.eq_ignore_ascii_case("tiles"))
-        })
-        .collect();
-    // 定位到含 Tiles.Lib 的套目录 (Data/Map/<套>), 上溯两级到 Data/ 资源根
-    let data_root = tiles
-        .iter()
-        .find(|l| {
-            l.path
-                .to_string_lossy()
-                .to_lowercase()
-                .contains(&lib_set.to_lowercase())
-        })
-        .or_else(|| tiles.first())
-        .and_then(|l| Some(l.path.parent()?.parent()?.parent()?.to_path_buf()))
-        .unwrap_or_else(|| {
-            error!("资源目录中找不到 Tiles.Lib");
-            std::process::exit(2);
-        });
+    // 图库全部来自 packs/ (.mfl); 资源目录只负责提供 .map 地图文件
+    let data_root = PathBuf::from(&root);
     info!(
         "地图 {map_name}: {:?} {}x{}, 资源根 {:?}",
         map.kind, map.width, map.height, data_root

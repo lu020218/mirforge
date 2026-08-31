@@ -23,6 +23,7 @@ fn main() {
         ),
         Some("info") if args.len() == 2 => info(Path::new(&args[1])),
         Some("convert") if args.len() == 3 => convert(Path::new(&args[1]), Path::new(&args[2])),
+        Some("mapinfo") if args.len() == 2 => mapinfo(Path::new(&args[1])),
         Some("preview") if (3..=5).contains(&args.len()) => {
             let start = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let n = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(16);
@@ -50,8 +51,8 @@ fn main() {
 
 type AnyErr = Box<dyn std::error::Error>;
 
-/// 收集目录下的 NNNNN.PNG (大小写不限), 返回 帧号 → 路径
-fn scan_frames(dir: &Path) -> Result<Vec<(usize, PathBuf)>, AnyErr> {
+/// 收集目录下的 NNNNN.PNG (大小写/位数不限), 返回 (帧号, 原文件名主干, 路径)
+fn scan_frames(dir: &Path) -> Result<Vec<(usize, String, PathBuf)>, AnyErr> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let p = entry?.path();
@@ -66,16 +67,17 @@ fn scan_frames(dir: &Path) -> Result<Vec<(usize, PathBuf)>, AnyErr> {
             continue;
         }
         if let Ok(idx) = stem.parse::<usize>() {
-            out.push((idx, p));
+            out.push((idx, stem.to_string(), p));
         }
     }
-    out.sort_by_key(|(i, _)| *i);
+    out.sort_by_key(|(i, _, _)| *i);
     Ok(out)
 }
 
-/// 读 Placements/NNNNN.txt: 两行整数 = X/Y 偏移; 缺失按 (0,0)
-fn placement(dir: &Path, idx: usize) -> (i16, i16) {
-    let p = dir.join("Placements").join(format!("{idx:05}.txt"));
+/// 读 Placements/<主干>.txt: 两行整数 = X/Y 偏移; 缺失按 (0,0)
+/// (不同素材包文件名位数不同 — 5 位/6 位都有, 按原主干找)
+fn placement(dir: &Path, stem: &str) -> (i16, i16) {
+    let p = dir.join("Placements").join(format!("{stem}.txt"));
     let Ok(s) = std::fs::read_to_string(&p) else {
         return (0, 0);
     };
@@ -91,7 +93,7 @@ fn pack(src: &Path, out: &Path) -> Result<(), AnyErr> {
     let count = files.last().unwrap().0 + 1;
     let mut frames: Vec<Option<MflFrame>> = (0..count).map(|_| None).collect();
     let (mut ok, mut bad) = (0usize, 0usize);
-    for (idx, path) in files {
+    for (idx, stem, path) in files {
         // 素材包里空帧常是 0 字节占位 PNG, 解不开的一律按空帧
         let Ok(img) = image::open(&path) else {
             bad += 1;
@@ -103,7 +105,7 @@ fn pack(src: &Path, out: &Path) -> Result<(), AnyErr> {
             bad += 1;
             continue;
         }
-        let (x, y) = placement(src, idx);
+        let (x, y) = placement(src, &stem);
         frames[idx] = Some(MflFrame {
             width: w as u16,
             height: h as u16,
@@ -313,6 +315,31 @@ fn convert(data: &Path, packs: &Path) -> Result<(), AnyErr> {
     } else {
         Err(format!("{} 个库转码失败", failed.len()).into())
     }
+}
+
+/// 地图诊断: 尺寸 + 三层库号直方图 (接入新地图时先看引用了哪些图库)
+fn mapinfo(path: &Path) -> Result<(), AnyErr> {
+    let map = mir_formats::map::parse(&std::fs::read(path)?)?;
+    println!("{}: {}x{} 格", path.display(), map.width, map.height);
+    let mut hist: std::collections::BTreeMap<(&str, i16), usize> = Default::default();
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let Some(c) = map.cell(x, y) else { continue };
+            if c.back >= 0 {
+                *hist.entry(("back", c.back_lib)).or_default() += 1;
+            }
+            if c.mid >= 0 {
+                *hist.entry(("mid", c.mid_lib)).or_default() += 1;
+            }
+            if c.front >= 0 {
+                *hist.entry(("front", c.front_lib)).or_default() += 1;
+            }
+        }
+    }
+    for ((layer, lib), n) in hist {
+        println!("  {layer} 库 {lib}: {n} 格");
+    }
+    Ok(())
 }
 
 fn info(path: &Path) -> Result<(), AnyErr> {
