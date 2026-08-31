@@ -720,7 +720,9 @@ fn make_portrait(
             if g.is_some() && naked.is_some() {
                 (naked, g)
             } else {
-                (stand(&mut world, &format!("CArmour/{s:02}")), None)
+                // 该外观的站立帧缺库时退裸模, 面板立绘不至于空白
+                let st = stand(&mut world, &format!("CArmour/{s:02}"));
+                (st.or(naked), None)
             }
         }
         None => (naked.or_else(|| stand(&mut world, "CArmour/00")), None),
@@ -1376,7 +1378,11 @@ fn player_sprite(
     } else {
         p.dir * 4 + ((p.anim_t / 0.2) as usize % 4)
     };
-    let Some(f) = world.frame(Layer::Hum(armour), 0, frame_idx as i32) else {
+    // 该外观号缺库时退 0 号裸模 — 旧存档引用已淘汰的外观号也不至于隐身
+    let Some(f) = world
+        .frame(Layer::Hum(armour), 0, frame_idx as i32)
+        .or_else(|| world.frame(Layer::Hum(0), 0, frame_idx as i32))
+    else {
         warn_once!("角色帧 {frame_idx} 不可用");
         return;
     };
@@ -2270,7 +2276,12 @@ fn remote_step(
             };
             (Layer::Hum(r.armour), idx)
         };
-        let Some(f) = world.frame(layer, 0, frame_idx as i32) else {
+        // 玩家外观缺库退 0 号裸模 (怪物缺库仍跳过 — 没有合理的替身)
+        let Some(f) = world.frame(layer, 0, frame_idx as i32).or_else(|| {
+            matches!(layer, Layer::Hum(n) if n != 0)
+                .then(|| world.frame(Layer::Hum(0), 0, frame_idx as i32))
+                .flatten()
+        }) else {
             continue;
         };
         world.ensure_pages(&mut images);

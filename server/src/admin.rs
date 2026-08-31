@@ -578,7 +578,8 @@ async fn api_sprite_grid(
     let (cols, cw, ch) = (8usize, 96u32, 120u32);
     let rows = count.div_ceil(cols).max(1);
     let start = q.start;
-    // npc/monster 首帧即站立; 武器/衣甲按 Player 帧表取朝南站立帧 16
+    // 武器/衣甲按 Player 帧表取朝南站立帧 16; npc/monster 库首帧常是
+    // 占位小图 (市售包大量 1×1), 取不到像样的就向后扫第一个实帧
     let frame_idx = if matches!(kind.as_str(), "weapon" | "armour") {
         16
     } else {
@@ -598,7 +599,20 @@ async fn api_sprite_grid(
             let n = (start + i) as u16;
             let (ox, oy) = (((i % cols) as u32) * cw, ((i / cols) as u32) * ch);
             with_preview_lib(&kind, n, |lib| {
-                let img = lib.image(frame_idx).ok().flatten()?;
+                let img = lib
+                    .image(frame_idx)
+                    .ok()
+                    .flatten()
+                    .filter(|f| f.width >= 12 && f.height >= 12)
+                    .or_else(|| {
+                        (0..lib.len().min(900))
+                            .find_map(|i| {
+                                lib.image(i)
+                                    .ok()
+                                    .flatten()
+                                    .filter(|f| f.width >= 12 && f.height >= 12)
+                            })
+                    })?;
                 let (w, h) = (img.width as u32, img.height as u32);
                 // 水平居中, 垂直贴底 (NPC 立绘基准在脚下)
                 let dx = ox + cw.saturating_sub(w) / 2;
@@ -655,7 +669,26 @@ async fn api_frame_png(
             _ => return None,
         };
         with_preview_lib(&kind, lib_n, |lib| {
-            let img = lib.image(frame).ok().flatten()?;
+            // 首选帧取不到像样的 (市售包大量 1×1 占位) 就向后扫第一个实帧;
+            // items/minimap 帧号即语义, 不做扫描回退
+            let scan_ok = matches!(kind.as_str(), "weapon" | "armour" | "monster" | "npc");
+            let img = lib
+                .image(frame)
+                .ok()
+                .flatten()
+                .filter(|f| !scan_ok || (f.width >= 12 && f.height >= 12))
+                .or_else(|| {
+                    scan_ok
+                        .then(|| {
+                            (0..lib.len().min(900)).find_map(|i| {
+                                lib.image(i)
+                                    .ok()
+                                    .flatten()
+                                    .filter(|f| f.width >= 12 && f.height >= 12)
+                            })
+                        })
+                        .flatten()
+                })?;
             let buf =
                 image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.rgba.clone())?;
             let mut out = std::io::Cursor::new(Vec::new());
