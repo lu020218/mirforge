@@ -107,6 +107,9 @@ pub struct MonsterDef {
     pub name: String,
     #[serde(default)]
     pub image: u16,
+    /// 库内外观基址 (一库多怪时该怪的起始帧; 0 = 库首)
+    #[serde(default)]
+    pub base: u32,
     #[serde(default = "default_hp")]
     pub hp: i32,
     #[serde(default)]
@@ -817,6 +820,8 @@ struct Monster {
     announce: bool,
     /// 客户端图库号 (Data/Monster/{image:03}.Lib)
     image: u16,
+    /// 库内外观基址 (一库多怪时该怪的起始帧)
+    image_base: u32,
     zone: String,
     home: (f64, f64),
     /// 游荡活动半径 (来自刷新点)
@@ -930,6 +935,7 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec
         // 数值以怪物模板为准; 旧边车的内联字段仅在模板缺失时兜底
         let def = d.monsters.iter().find(|m| m.id == sp.template);
         let image = def.map(|m| m.image).unwrap_or(sp.image);
+        let image_base = def.map(|m| m.base).unwrap_or(0);
         let (hp, damage, exp) = def
             .map(|m| (m.hp, m.damage, m.exp))
             .unwrap_or((sp.hp, sp.damage, sp.exp));
@@ -959,6 +965,7 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec
                 respawn: RESPAWN_TIME,
                 announce: false,
                 image,
+                image_base,
                 zone: zone.id.clone(),
                 home: (x, y),
                 roam: sp.radius,
@@ -997,6 +1004,7 @@ fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monster> {
             let (x, y) = nearest_free(&zone.walk, b.x, b.y, avoid);
             Monster {
                 id: format!("boss_{}_{}", zone.id, b.id),
+                image_base: 0,
                 template: b.id.clone(),
                 name: b.name.clone(),
                 boss: true,
@@ -1247,6 +1255,7 @@ impl Game {
                     armour: None,
                     weapon: None,
                     image: None,
+                    image_base: None,
                 })
                 .collect();
             broadcast_to(
@@ -1789,6 +1798,7 @@ impl Game {
                 armour: None,
                 weapon: None,
                 image: None,
+                image_base: None,
             })
             .collect();
         self.monsters.retain(|m| m.boss);
@@ -1832,6 +1842,7 @@ impl Game {
                 armour: None,
                 weapon: None,
                 image: None,
+                image_base: None,
             })
             .collect();
         self.monsters.retain(|m| !m.boss);
@@ -3553,6 +3564,7 @@ impl Game {
                     armour: Some(p.equipment.get("armor").map(|i| i.shape).unwrap_or(0)),
                     weapon: p.equipment.get("weapon").map(|i| i.shape),
                     image: None, // 玩家走 CArmour/CWeapon, 不用怪物图库
+                    image_base: None,
                 })
                 .collect();
             if entities.is_empty() {
@@ -3579,6 +3591,7 @@ impl Game {
                                 armour: None,
                                 weapon: None,
                                 image: None,
+                                image_base: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() {
@@ -3600,6 +3613,7 @@ impl Game {
                             armour: None,
                             weapon: None,
                             image: Some(m.image),
+                            image_base: Some(m.image_base),
                         })
                     }),
             );

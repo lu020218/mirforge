@@ -19,7 +19,9 @@ use tokio::sync::{mpsc, oneshot};
 pub enum AdminCmd {
     Status(oneshot::Sender<StatusSnapshot>),
     /// 配置已热替换 (通知在线玩家刷新技能表等)
-    ConfigReloaded { kind: String },
+    ConfigReloaded {
+        kind: String,
+    },
     Broadcast(String),
     Kick {
         name: String,
@@ -614,13 +616,12 @@ async fn api_sprite_grid(
                     .flatten()
                     .filter(|f| f.width >= 12 && f.height >= 12)
                     .or_else(|| {
-                        (0..lib.len().min(900))
-                            .find_map(|i| {
-                                lib.image(i)
-                                    .ok()
-                                    .flatten()
-                                    .filter(|f| f.width >= 12 && f.height >= 12)
-                            })
+                        (0..lib.len().min(900)).find_map(|i| {
+                            lib.image(i)
+                                .ok()
+                                .flatten()
+                                .filter(|f| f.width >= 12 && f.height >= 12)
+                        })
                     })?;
                 let (w, h) = (img.width as u32, img.height as u32);
                 // 水平居中, 垂直贴底 (NPC 立绘基准在脚下)
@@ -656,10 +657,18 @@ async fn api_sprite_grid(
 }
 
 /// 单帧 PNG: items 图标 / weapon-armour 站立帧 (帧 16 = 朝南)
+#[derive(Deserialize)]
+struct FrameQuery {
+    /// 怪物库内基址 (一库多怪时从该帧起找代表帧)
+    #[serde(default)]
+    base: u32,
+}
+
 async fn api_frame_png(
     State(st): State<AppState>,
     headers: HeaderMap,
     AxPath((kind, n)): AxPath<(String, u16)>,
+    Query(fq): Query<FrameQuery>,
 ) -> Result<axum::response::Response, StatusCode> {
     if !authed(&st, &headers) {
         return Err(StatusCode::UNAUTHORIZED);
@@ -681,15 +690,16 @@ async fn api_frame_png(
             // 首选帧取不到像样的 (市售包大量 1×1 占位) 就向后扫第一个实帧;
             // items/minimap 帧号即语义, 不做扫描回退
             let scan_ok = matches!(kind.as_str(), "weapon" | "armour" | "monster" | "npc");
+            let start = fq.base as usize;
             let img = lib
-                .image(frame)
+                .image(start + frame)
                 .ok()
                 .flatten()
                 .filter(|f| !scan_ok || (f.width >= 12 && f.height >= 12))
                 .or_else(|| {
                     scan_ok
                         .then(|| {
-                            (0..lib.len().min(900)).find_map(|i| {
+                            (start..(start + 900).min(lib.len())).find_map(|i| {
                                 lib.image(i)
                                     .ok()
                                     .flatten()
@@ -713,6 +723,51 @@ async fn api_frame_png(
         .header("cache-control", "max-age=3600")
         .body(axum::body::Body::from(png))
         .unwrap())
+}
+
+/// 怪物库内实体候选段: 首实帧 + 每个"长空洞"(≥2 个方向块) 之后的块起始。
+/// 一库多怪的素材靠它做二级外观选择
+async fn api_mon_bases(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxPath(n): AxPath<u16>,
+) -> Result<Json<Vec<u32>>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let out = tokio::task::spawn_blocking(move || {
+        with_preview_lib("monster", n, |lib| {
+            let real = |i: usize| lib.dims(i).is_some_and(|(w, h)| w >= 8 && h >= 8);
+            let cap = lib.len().min(6000);
+            let base0 = (0..cap).find(|&i| real(i))?;
+            // 跨度: 首块连续实帧后的下一个实帧间隔
+            let run = (1..64).find(|&d| !real(base0 + d)).unwrap_or(64);
+            let stride = (run..64)
+                .find(|&d| real(base0 + d))
+                .unwrap_or(10)
+                .clamp(run, 32);
+            let mut out = vec![base0 as u32];
+            let mut i = base0;
+            let mut gap = 0usize;
+            while i < cap {
+                if real(i) {
+                    if gap >= stride {
+                        out.push(i as u32);
+                    }
+                    gap = 0;
+                } else {
+                    gap += 1;
+                }
+                i += 1;
+            }
+            out.truncate(64);
+            Some(out)
+        })
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(out))
 }
 
 // ── 资源查看器: 浏览 packs/ 下任意 .mfl 的帧 ──
@@ -843,7 +898,13 @@ async fn api_packs_frame(
             image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.rgba.clone())?;
         let mut png = std::io::Cursor::new(Vec::new());
         buf.write_to(&mut png, image::ImageFormat::Png).ok()?;
-        Some((png.into_inner(), img.width, img.height, img.offset_x, img.offset_y))
+        Some((
+            png.into_inner(),
+            img.width,
+            img.height,
+            img.offset_x,
+            img.offset_y,
+        ))
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -1102,6 +1163,7 @@ pub fn spawn(
         .route("/api/spritegrid/:kind", get(api_sprite_grid))
         .route("/api/frame/:kind/:n", get(api_frame_png))
         .route("/api/minimaps", get(api_minimap_grid))
+        .route("/api/monster_bases/:n", get(api_mon_bases))
         .route("/api/packs/list", get(api_packs_list))
         .route("/api/packs/info", get(api_packs_info))
         .route("/api/packs/frame", get(api_packs_frame))

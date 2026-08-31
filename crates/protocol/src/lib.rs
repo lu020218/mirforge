@@ -154,6 +154,9 @@ pub struct EntityUpdate {
     /// 怪物图库号 (Data/Monster/{image:03}.Lib); 玩家 = None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<u16>,
+    /// 怪物库内外观基址 (一库多怪时选中段的起始帧; 0/缺省 = 库首)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_base: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

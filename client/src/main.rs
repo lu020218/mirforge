@@ -272,6 +272,8 @@ struct Remote {
     hp: Option<(i32, i32)>,
     /// Some(n) = 怪物, 用 Data/Monster/{n:03}.Lib; None = 玩家 (CArmour)
     image: Option<u16>,
+    /// 怪物库内外观基址 (一库多怪时该怪的起始帧)
+    image_base: u32,
     pos: DVec2,
     target: DVec2,
     /// 0=站 1=走 2=跑 3=攻击
@@ -339,8 +341,8 @@ struct World {
     frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
     /// 方向块实帧数缓存 ((层, 块基址) → 连续实帧数)
     blens: HashMap<(Layer, i32), u8>,
-    /// 怪物库元信息缓存 (库号 → (首实帧基址, 方向块跨度))
-    mon_metas: HashMap<u16, Option<(i32, i32)>>,
+    /// 怪物库元信息缓存 ((库号, 配置基址) → (首实帧基址, 方向块跨度))
+    mon_metas: HashMap<(u16, u32), Option<(i32, i32)>>,
     chunks: HashMap<(i32, i32), Entity>,
     walk: WalkGrid,
 }
@@ -464,13 +466,15 @@ impl World {
     /// 怪物库自适应元信息: (首实帧基址, 方向块跨度)。
     /// 市售库每库基址/跨度不一 (Mon7 从 440 起, Mon2 跨度 10), 布局按
     /// 「基址 + 动作序号×跨度×8 + 方向×跨度」寻址 (动作序: 站/走/攻/被击/死)
-    fn mon_meta(&mut self, n: u16) -> Option<(i32, i32)> {
-        if let Some(m) = self.mon_metas.get(&n) {
+    fn mon_meta(&mut self, n: u16, cfg_base: u32) -> Option<(i32, i32)> {
+        if let Some(m) = self.mon_metas.get(&(n, cfg_base)) {
             return *m;
         }
         let layer = Layer::Mon(n);
         let meta = (|| {
-            let base = (0..4000).find(|&i| self.frame_dims(layer, i).is_some())?;
+            // 配置基址 = 一库多怪时该怪的段起始; 从这里往后找首实帧
+            let start = cfg_base as i32;
+            let base = (start..start + 4000).find(|&i| self.frame_dims(layer, i).is_some())?;
             let run = (1..64)
                 .find(|&d| self.frame_dims(layer, base + d).is_none())
                 .unwrap_or(64);
@@ -480,7 +484,7 @@ impl World {
                 .clamp(run, 32);
             Some((base, stride))
         })();
-        self.mon_metas.insert(n, meta);
+        self.mon_metas.insert((n, cfg_base), meta);
         meta
     }
 
@@ -2212,6 +2216,9 @@ fn net_pump(
                         if let Some(a) = e.armour {
                             r.armour = a;
                         }
+                        if let Some(b) = e.image_base {
+                            r.image_base = b;
+                        }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;
                         }
@@ -2327,7 +2334,7 @@ fn remote_step(
         // 怪物 = 每库自适应 (基址/跨度探测 + 块内实帧数取模, 防踩空帧闪烁)
         let (layer, frame_idx) = if let Some(n) = r.image {
             let layer = Layer::Mon(n);
-            let Some((base, stride)) = world.mon_meta(n) else {
+            let Some((base, stride)) = world.mon_meta(n, r.image_base) else {
                 continue;
             };
             // 动作序号: 站0 走1 攻2 被击3 死4; (相位, 一次性)

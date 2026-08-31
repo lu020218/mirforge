@@ -86,10 +86,10 @@
   tr.detail > td { padding: 0 0 10px; border-bottom: 1px solid var(--line); }
   tr.editing > td { background: rgba(201,165,92,.07); }
   tr.editing > td:first-child { box-shadow: inset 2px 0 0 var(--gold); }
-  #picker, #mmpicker, #npc-picker, #shape-picker, #pk-modal { display: none; position: fixed; inset: 0;
+  #picker, #mmpicker, #npc-picker, #shape-picker, #pk-modal, #mon-base-picker { display: none; position: fixed; inset: 0;
                        background: rgba(0,0,0,.65); z-index: 20; }
-  #picker.on, #npc-picker.on, #shape-picker.on, #pk-modal.on { display: flex; align-items: center; justify-content: center; }
-  #picker .box, #mmpicker .box, #npc-picker .box, #shape-picker .box, #pk-modal .box { background: var(--panel); border: 1px solid var(--gold-edge);
+  #picker.on, #npc-picker.on, #shape-picker.on, #pk-modal.on, #mon-base-picker.on { display: flex; align-items: center; justify-content: center; }
+  #picker .box, #mmpicker .box, #npc-picker .box, #shape-picker .box, #pk-modal .box, #mon-base-picker .box { background: var(--panel); border: 1px solid var(--gold-edge);
                  border-radius: 5px; padding: 16px; max-height: 86vh; overflow: auto; }
   tr.npc-dlg > td { background: rgba(201,165,92,.05); padding: 0; }
   .dlg-box { padding: 14px 18px; border-left: 2px solid var(--gold); }
@@ -198,7 +198,7 @@
       <div class="err-msg" id="err-monsters"></div>
       <div class="table-wrap">
         <table id="mon-table">
-          <thead><tr><th>id</th><th>名称</th><th>形象</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
+          <thead><tr><th>id</th><th>名称</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -431,6 +431,12 @@
       <span class="hint">每格一个 NPC 形象库, 点击选择</span>
     </div>
     <img id="npc-picker-img" width="768" onclick="pickNpcImage(event)">
+  </div>
+</div>
+<div id="mon-base-picker" onclick="closeMonBasePicker(event)">
+  <div class="box" style="max-width:80vw">
+    <div class="hint" style="margin-bottom:8px">库内实体候选 (按帧段空洞自动切分) — 点选该怪的站立段</div>
+    <div id="mon-base-grid" style="display:flex;flex-wrap:wrap;gap:8px;max-height:70vh;overflow:auto"></div>
   </div>
 </div>
 <div id="pk-modal" onclick="closePkModal(event)">
@@ -1522,17 +1528,52 @@ function monRow(m) {
     <td><input class="wide" data-m="id" value="${m.id ?? ''}"></td>
     <td><input class="wide" data-m="name" value="${m.name ?? ''}"></td>
     <td><input data-m="image" value="${m.image ?? 0}" style="width:55px">
-        <img class="icon" title="点击从怪物图库选择" src="/api/frame/monster/${m.image ?? 0}" onclick="openMonPicker(this)"></td>
+        <img class="icon" title="点击从怪物图库选择" src="/api/frame/monster/${m.image ?? 0}?base=${m.base ?? 0}" onclick="openMonPicker(this)"></td>
+    <td><input data-m="base" value="${m.base ?? 0}" style="width:60px">
+        <button class="ghost" onclick="openMonBasePicker(this)" title="一库多怪时可视化挑段">选段</button></td>
     <td><input data-m="hp" value="${m.hp ?? 30}" style="width:60px"></td>
     <td><input data-m="damage" value="${m.damage ?? 0}" style="width:55px"></td>
     <td><input data-m="exp" value="${m.exp ?? 10}" style="width:55px"></td>
     <td><input type="checkbox" data-m="passive" ${m.passive ? 'checked' : ''}></td>
     <td><input data-m="drops" value="${drops}" style="width:200px" title="物品模板:概率, 逗号分隔"></td>
     <td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
-  tr.querySelector('input[data-m="image"]').addEventListener('change', e =>
-    e.target.closest('td').querySelector('img.icon').src = '/api/frame/monster/' + (Number(e.target.value) || 0));
+  const syncThumb = () => {
+    const lib = Number(tr.querySelector('input[data-m="image"]').value) || 0;
+    const base = Number(tr.querySelector('input[data-m="base"]').value) || 0;
+    tr.querySelector('img.icon').src = `/api/frame/monster/${lib}?base=${base}`;
+  };
+  tr.querySelector('input[data-m="image"]').addEventListener('change', syncThumb);
+  tr.querySelector('input[data-m="base"]').addEventListener('change', syncThumb);
   return tr;
 }
+// 库内实体选段弹层
+let monBaseTarget = null;
+async function openMonBasePicker(btn) {
+  const tr = btn.closest('tr');
+  monBaseTarget = tr;
+  const lib = Number(tr.querySelector('input[data-m="image"]').value) || 0;
+  const r = await fetch('/api/monster_bases/' + lib, { headers: hdr });
+  if (!r.ok) { showErr('该库读不到实体候选'); return; }
+  const bases = await r.json();
+  const grid = document.getElementById('mon-base-grid');
+  grid.innerHTML = bases.map(b => `
+    <div style="width:110px;background:var(--panel);border:1px solid var(--edge);border-radius:6px;
+         padding:6px;text-align:center;cursor:pointer" onclick="pickMonBase(${b})">
+      <div style="height:96px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+        <img loading="lazy" src="/api/frame/monster/${lib}?base=${b}" style="max-width:100px;max-height:94px;image-rendering:pixelated">
+      </div><div class="hint">基址 ${b}</div>
+    </div>`).join('');
+  document.getElementById('mon-base-picker').classList.add('on');
+}
+function pickMonBase(b) {
+  if (monBaseTarget) {
+    const inp = monBaseTarget.querySelector('input[data-m="base"]');
+    inp.value = b;
+    inp.dispatchEvent(new Event('change'));
+  }
+  document.getElementById('mon-base-picker').classList.remove('on');
+}
+function closeMonBasePicker(ev) { if (ev.target.id === 'mon-base-picker') ev.target.classList.remove('on'); }
 function addMonRow() {
   document.querySelector('#mon-table tbody').appendChild(
     monRow({ id: 'new_monster', name: '新怪物', image: 1, hp: 30, damage: 2, exp: 10, passive: false, drops: [] }));
@@ -1543,7 +1584,7 @@ function collectMonsters() {
     const v = c => { const el = tr.querySelector(`[data-m=${c}]`); return el.type === 'checkbox' ? el.checked : el.value; };
     return {
       id: v('id').trim(), name: v('name').trim(),
-      image: num(v('image')), hp: num(v('hp')), damage: num(v('damage')),
+      image: num(v('image')), base: num(v('base')), hp: num(v('hp')), damage: num(v('damage')),
       exp: num(v('exp')), passive: v('passive'),
       drops: v('drops').split(',').map(x => x.trim()).filter(Boolean).map(x => {
         const [item, ch] = x.split(':');

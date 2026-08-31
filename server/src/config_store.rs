@@ -157,6 +157,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             image INTEGER NOT NULL DEFAULT 0,
+            base INTEGER NOT NULL DEFAULT 0,
             hp INTEGER NOT NULL DEFAULT 30,
             damage INTEGER NOT NULL DEFAULT 0,
             exp INTEGER NOT NULL DEFAULT 10,
@@ -195,6 +196,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE cfg_skills ADD COLUMN level_bonus REAL NOT NULL DEFAULT 0.3")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_monsters ADD COLUMN base INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
     Ok(())
@@ -446,7 +450,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
     }
 
     let monsters = sqlx::query(
-        "SELECT id, name, image, hp, damage, exp, passive, drops FROM cfg_monsters ORDER BY ord, id",
+        "SELECT id, name, image, base, hp, damage, exp, passive, drops FROM cfg_monsters ORDER BY ord, id",
     )
     .fetch_all(pool)
     .await?
@@ -455,6 +459,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         id: r.get("id"),
         name: r.get("name"),
         image: r.get::<i64, _>("image") as u16,
+        base: r.get::<i64, _>("base").max(0) as u32,
         hp: r.get::<i64, _>("hp") as i32,
         damage: r.get::<i64, _>("damage") as i32,
         exp: r.get::<i64, _>("exp").max(0) as u64,
@@ -876,12 +881,13 @@ pub async fn save_monsters(
         .await?;
     for (i, m) in monsters.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO cfg_monsters (id, name, image, hp, damage, exp, passive, drops, ord)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cfg_monsters (id, name, image, base, hp, damage, exp, passive, drops, ord)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.name)
         .bind(m.image as i64)
+        .bind(m.base as i64)
         .bind(m.hp as i64)
         .bind(m.damage as i64)
         .bind(m.exp as i64)
@@ -930,6 +936,7 @@ pub async fn migrate_monsters(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             name: template.clone(),
             id: template,
             image: r.get::<i64, _>("image") as u16,
+            base: 0,
             hp: r.get::<i64, _>("hp") as i32,
             damage: r.get::<i64, _>("damage") as i32,
             exp: r.get::<i64, _>("exp").max(0) as u64,
