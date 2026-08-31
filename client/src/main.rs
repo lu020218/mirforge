@@ -341,8 +341,8 @@ struct World {
     frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
     /// 方向块实帧数缓存 ((层, 块基址) → 连续实帧数)
     blens: HashMap<(Layer, i32), u8>,
-    /// 怪物库元信息缓存 ((库号, 配置基址) → (首实帧基址, 方向块跨度))
-    mon_metas: HashMap<(u16, u32), Option<(i32, i32)>>,
+    /// 怪物库元信息缓存 ((库号, 配置基址) → (首实帧基址, 方向块跨度, 实体段尾))
+    mon_metas: HashMap<(u16, u32), Option<(i32, i32, i32)>>,
     chunks: HashMap<(i32, i32), Entity>,
     walk: WalkGrid,
 }
@@ -464,7 +464,7 @@ impl World {
     /// 怪物库自适应元信息: (首实帧基址, 方向块跨度)。
     /// 市售库每库基址/跨度不一 (Mon7 从 440 起, Mon2 跨度 10), 布局按
     /// 「基址 + 动作序号×跨度×8 + 方向×跨度」寻址 (动作序: 站/走/攻/被击/死)
-    fn mon_meta(&mut self, n: u16, cfg_base: u32) -> Option<(i32, i32)> {
+    fn mon_meta(&mut self, n: u16, cfg_base: u32) -> Option<(i32, i32, i32)> {
         if let Some(m) = self.mon_metas.get(&(n, cfg_base)) {
             return *m;
         }
@@ -480,7 +480,25 @@ impl World {
                 .find(|&d| self.frame_dims(layer, base + d).is_some())
                 .unwrap_or(10)
                 .clamp(run, 32);
-            Some((base, stride))
+            // 实体段尾: 首个 ≥ 跨度的空洞 = 本怪结束 (再往后是同库的下一只怪 —
+            // 鸡的死亡帧算过界取到鹿就是没这道栅栏)
+            let cap = base + stride * 8 * 8;
+            let mut end = cap;
+            let mut gap = 0;
+            let mut i = base;
+            while i < cap {
+                if self.frame_dims(layer, i).is_some() {
+                    gap = 0;
+                } else {
+                    gap += 1;
+                    if gap >= stride {
+                        end = i - gap + 1;
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            Some((base, stride, end))
         })();
         self.mon_metas.insert((n, cfg_base), meta);
         meta
@@ -2333,7 +2351,7 @@ fn remote_step(
         // 怪物 = 每库自适应 (基址/跨度探测 + 块内实帧数取模, 防踩空帧闪烁)
         let (layer, frame_idx) = if let Some(n) = r.image {
             let layer = Layer::Mon(n);
-            let Some((base, stride)) = world.mon_meta(n, r.image_base) else {
+            let Some((base, stride, end)) = world.mon_meta(n, r.image_base) else {
                 continue;
             };
             // 动作序号: 站0 走1 攻2 被击3 死4; (相位, 一次性)
@@ -2344,11 +2362,27 @@ fn remote_step(
                 _ => (0, (r.anim_t / 0.25) as usize, false),
             };
             let mut block = base + act * stride * 8 + r.dir as i32 * stride;
-            let mut k = world.block_len(layer, block, stride) as usize;
-            if k == 0 {
-                // 该动作段缺帧 → 退站立段; 站立也缺 → 退库首块
-                block = base + r.dir as i32 * stride;
+            // 段尾栅栏: 越过本怪的段就是同库下一只怪的帧, 绝不能取
+            let mut k = if block >= end {
+                0
+            } else {
+                world.block_len(layer, block, stride) as usize
+            };
+            if k == 0 && oneshot {
+                // 死亡缺该方向 → 退本怪段内最后一块 (方向不对但动作对,
+                // 比僵直站立或变成别的怪好)
+                let last = base + ((end - base) / stride - 1).max(0) * stride;
+                block = last;
                 k = world.block_len(layer, block, stride) as usize;
+            }
+            if k == 0 {
+                // 该动作段缺帧 → 退站立段; 站立也缺 → 退段首块
+                block = base + r.dir as i32 * stride;
+                k = if block >= end {
+                    0
+                } else {
+                    world.block_len(layer, block, stride) as usize
+                };
             }
             if k == 0 {
                 block = base;
