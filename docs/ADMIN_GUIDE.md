@@ -26,7 +26,8 @@ tools\dev-server.ps1
 | `MIRFORGE_ADMIN` | `127.0.0.1:4001` | 管理台监听地址；设为 `off` 完全关闭 |
 | `MIRFORGE_ADMIN_TOKEN` | 无 | 访问令牌，见下 |
 | `MIRFORGE_DB` | `mirforge.db` | SQLite 路径，**配置与角色存档同库** |
-| `MIRFORGE_RES` | 无（必需） | 传奇资源根目录，含 `Map/`、`Data/` |
+| `MIRFORGE_RES` | 无（必需） | 地图资源根目录，含 `Map/`（内放 `.map` 文件） |
+| `MIRFORGE_PACKS` | `packs`（工作目录相对） | 图库包根目录（`.mfl`，见 packs/README.md）；dev 脚本会设为仓库根 `packs/` 的绝对路径 |
 
 ### 安全须知
 
