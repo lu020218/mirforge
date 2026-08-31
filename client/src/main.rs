@@ -298,6 +298,17 @@ struct Remotes(HashMap<String, Remote>);
 // ─────────── 资源 ───────────
 
 /// 帧标识：图层类别 + 库号 + 帧号
+/// 怪物库单实体的取帧元信息 (自适应探测)
+#[derive(Clone, Copy)]
+struct MonMeta {
+    /// 首实帧 (配置基址起往后找到的第一帧)
+    base: i32,
+    /// 方向块跨度
+    stride: i32,
+    /// 实体段尾 (越过即同库下一只怪, 取帧禁越)
+    end: i32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Layer {
     Back,
@@ -341,8 +352,8 @@ struct World {
     frames: HashMap<(Layer, i16, i32, bool), Option<FrameRef>>,
     /// 方向块实帧数缓存 ((层, 块基址) → 连续实帧数)
     blens: HashMap<(Layer, i32), u8>,
-    /// 怪物库元信息缓存 ((库号, 配置基址) → (首实帧基址, 方向块跨度, 实体段尾))
-    mon_metas: HashMap<(u16, u32), Option<(i32, i32, i32)>>,
+    /// 怪物库元信息缓存 ((库号, 配置基址) → 元信息)
+    mon_metas: HashMap<(u16, u32), Option<MonMeta>>,
     chunks: HashMap<(i32, i32), Entity>,
     walk: WalkGrid,
 }
@@ -464,7 +475,7 @@ impl World {
     /// 怪物库自适应元信息: (首实帧基址, 方向块跨度)。
     /// 市售库每库基址/跨度不一 (Mon7 从 440 起, Mon2 跨度 10), 布局按
     /// 「基址 + 动作序号×跨度×8 + 方向×跨度」寻址 (动作序: 站/走/攻/被击/死)
-    fn mon_meta(&mut self, n: u16, cfg_base: u32) -> Option<(i32, i32, i32)> {
+    fn mon_meta(&mut self, n: u16, cfg_base: u32) -> Option<MonMeta> {
         if let Some(m) = self.mon_metas.get(&(n, cfg_base)) {
             return *m;
         }
@@ -498,7 +509,7 @@ impl World {
                 }
                 i += 1;
             }
-            Some((base, stride, end))
+            Some(MonMeta { base, stride, end })
         })();
         self.mon_metas.insert((n, cfg_base), meta);
         meta
@@ -2351,7 +2362,7 @@ fn remote_step(
         // 怪物 = 每库自适应 (基址/跨度探测 + 块内实帧数取模, 防踩空帧闪烁)
         let (layer, frame_idx) = if let Some(n) = r.image {
             let layer = Layer::Mon(n);
-            let Some((base, stride, end)) = world.mon_meta(n, r.image_base) else {
+            let Some(MonMeta { base, stride, end }) = world.mon_meta(n, r.image_base) else {
                 continue;
             };
             // 动作序号: 站0 走1 攻2 被击3 死4; (相位, 一次性)
