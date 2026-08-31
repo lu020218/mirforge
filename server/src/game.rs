@@ -3826,7 +3826,8 @@ mod tests {
                     to_y: None,
                 }],
                 monster_spawns: vec![MonsterSpawn {
-                    template: "scarecrow".into(),
+                    // 故意用不存在于怪物模板表的名字 — 覆盖"旧边车内联数值兜底"路径
+                    template: "test_dummy".into(),
                     image: 5,
                     x: 10.0,
                     y: 10.0,
