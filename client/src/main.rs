@@ -2824,7 +2824,7 @@ fn cast_skills(
 /// 开发钩子: MIRFORGE_CAST=skill_id[:秒] — 周期性自动施放 (特效视觉自查用)
 fn dev_cast(
     time: Res<Time>,
-    mut net: ResMut<Net>,
+    net: ResMut<Net>,
     remotes: Res<Remotes>,
     mut q: Query<&mut Player>,
     mut next_at: Local<f64>,
