@@ -222,6 +222,8 @@ const PLAYER_ATTACK_CD: Duration = Duration::from_millis(600);
 const MONSTER_HIT_RANGE: f64 = 2.2;
 const DYING_TIME: Duration = Duration::from_millis(1300);
 const RESPAWN_TIME: Duration = Duration::from_secs(30);
+/// 尸体最长停留时长 (经典传奇: 尸体躺一阵才消失; 到重生时刻或此上限先到者为准)
+const CORPSE_CAP: Duration = Duration::from_secs(60);
 
 fn max_hp_for(level: u32) -> i32 {
     40 + level as i32 * 12
@@ -845,6 +847,8 @@ struct Monster {
     drops: Vec<DropEntry>,
     /// 死亡动画播放中 (到点转入等待重生)
     dying_until: Option<Instant>,
+    /// 尸体停留截止 (死亡动画结束 → 躺尸到此时刻才广播移除)
+    corpse_until: Option<Instant>,
     /// 等待重生 (期间不广播不参与 AI)
     respawn_at: Option<Instant>,
     /// removed=true 是否已广播过
@@ -985,6 +989,7 @@ fn materialize_monsters(zone: &Zone, rng: &mut u64, avoid: &[(f64, f64)]) -> Vec
                 exp,
                 drops: drops.clone(),
                 dying_until: None,
+                corpse_until: None,
                 respawn_at: None,
                 removed_sent: false,
             });
@@ -1030,6 +1035,7 @@ fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monster> {
                 exp: b.exp,
                 drops: b.drops.clone(),
                 dying_until: None,
+                corpse_until: None,
                 respawn_at: None,
                 removed_sent: false,
             }
@@ -3516,6 +3522,11 @@ impl Game {
             if m.dying_until.is_some_and(|t| now >= t) {
                 m.dying_until = None;
                 m.respawn_at = Some(now + m.respawn);
+                // 尸体躺到重生时刻 (上限 CORPSE_CAP), 期间继续广播 die 姿态
+                m.corpse_until = Some(now + m.respawn.min(CORPSE_CAP));
+            }
+            if m.corpse_until.is_some_and(|t| now >= t) {
+                m.corpse_until = None;
             }
             if m.respawn_at.is_some_and(|t| now >= t) {
                 m.respawn_at = None;
@@ -3576,7 +3587,7 @@ impl Game {
                     .filter(|m| &m.zone == zone_id)
                     .filter_map(|m| {
                         // 等重生: removed 只广播一次
-                        if m.respawn_at.is_some() {
+                        if m.respawn_at.is_some() && m.corpse_until.is_none() {
                             if m.removed_sent {
                                 return None;
                             }
@@ -3594,7 +3605,7 @@ impl Game {
                                 image_base: None,
                             });
                         }
-                        let anim = if m.dying_until.is_some() {
+                        let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
                             "die"
                         } else if m.attack_until.is_some() {
                             "attack"
