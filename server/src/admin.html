@@ -86,10 +86,10 @@
   tr.detail > td { padding: 0 0 10px; border-bottom: 1px solid var(--line); }
   tr.editing > td { background: rgba(201,165,92,.07); }
   tr.editing > td:first-child { box-shadow: inset 2px 0 0 var(--gold); }
-  #picker, #mmpicker, #npc-picker, #shape-picker { display: none; position: fixed; inset: 0;
+  #picker, #mmpicker, #npc-picker, #shape-picker, #pk-modal { display: none; position: fixed; inset: 0;
                        background: rgba(0,0,0,.65); z-index: 20; }
-  #picker.on, #npc-picker.on, #shape-picker.on { display: flex; align-items: center; justify-content: center; }
-  #picker .box, #mmpicker .box, #npc-picker .box, #shape-picker .box { background: var(--panel); border: 1px solid var(--gold-edge);
+  #picker.on, #npc-picker.on, #shape-picker.on, #pk-modal.on { display: flex; align-items: center; justify-content: center; }
+  #picker .box, #mmpicker .box, #npc-picker .box, #shape-picker .box, #pk-modal .box { background: var(--panel); border: 1px solid var(--gold-edge);
                  border-radius: 5px; padding: 16px; max-height: 86vh; overflow: auto; }
   tr.npc-dlg > td { background: rgba(201,165,92,.05); padding: 0; }
   .dlg-box { padding: 14px 18px; border-left: 2px solid var(--gold); }
@@ -121,6 +121,7 @@
       <a id="nav-maps" onclick="go('maps')"><span class="ico">▦</span>地图设置</a>
       <a id="nav-bosses" onclick="go('bosses')"><span class="ico">☠</span>BOSS 设置</a>
       <div class="sec">运维</div>
+      <a id="nav-resources" onclick="go('resources')"><span class="ico">▤</span>资源查看</a>
       <a id="nav-server" onclick="go('server')"><span class="ico">⚙</span>服务器设置</a>
     </div>
     <div class="foot">配置存于 SQLite<br>保存即热重载</div>
@@ -294,6 +295,26 @@
     </section>
 
     <!-- ═══ 服务器 ═══ -->
+    <section id="page-resources" class="page">
+      <div class="head"><h2>资源查看</h2><span class="desc">浏览 packs/ 图库内容</span></div>
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div id="pk-list" style="width:230px;flex-shrink:0;max-height:78vh;overflow:auto;
+             background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:8px"></div>
+        <div style="flex:1;min-width:0">
+          <div class="toolbar" style="margin-top:0;flex-wrap:wrap">
+            <b id="pk-title" style="color:var(--gold)">选择左侧图库</b>
+            <span id="pk-meta" class="hint"></span>
+            <button class="ghost" onclick="pkPage(-1)">上一页</button>
+            <span id="pk-range" class="hint"></span>
+            <button class="ghost" onclick="pkPage(1)">下一页</button>
+            <input id="pk-jump" placeholder="跳到帧" style="width:80px" onkeydown="if(event.key==='Enter')pkJump()">
+            <label class="hint"><input type="checkbox" id="pk-skip" checked onchange="renderPackGrid()"> 跳过空帧</label>
+          </div>
+          <div id="pk-grid" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px"></div>
+        </div>
+      </div>
+    </section>
+
     <section id="page-server" class="page">
       <div class="head"><h2>服务器设置</h2><span class="desc">运维操作与访问</span></div>
       <div class="card-box">
@@ -393,6 +414,12 @@
     <img id="npc-picker-img" width="768" onclick="pickNpcImage(event)">
   </div>
 </div>
+<div id="pk-modal" onclick="closePkModal(event)">
+  <div class="box" style="max-width:86vw;max-height:88vh;overflow:auto">
+    <div class="hint" id="pk-modal-meta" style="margin-bottom:8px"></div>
+    <img id="pk-modal-img" style="image-rendering:pixelated;max-width:80vw">
+  </div>
+</div>
 <div id="shape-picker" onclick="closeShapePicker(event)">
   <div class="box">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
@@ -420,7 +447,7 @@ const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
 
 // ── 页面路由 ──
-const PAGES = ['dashboard', 'items', 'skills', 'npcs', 'quests', 'maps', 'bosses', 'server'];
+const PAGES = ['dashboard', 'items', 'skills', 'npcs', 'quests', 'maps', 'bosses', 'resources', 'server'];
 let curPage = 'dashboard';
 /// NPC 表是否已载入 (只首次进页自动载, 见 go)
 let npcLoaded = false;
@@ -439,6 +466,7 @@ function go(p, silent) {
   const skip = skipReload === p;
   skipReload = null;
   if (p === 'items' || p === 'skills' || p === 'quests') loadCfg(p);
+  if (p === 'resources' && !window._packsLoaded) loadPackList();
   // NPC 页涉及跨页取点, 只在首次进入时载入 —— 每次进页都重载会冲掉未保存的行
   // (含刚取到的坐标和还没保存的新增 NPC); 要放弃编辑请点「重新载入」。
   // 地图下拉依赖区域列表, 所以先取 zones 再取配置。
@@ -507,6 +535,91 @@ async function saveAll() {
   await fetch('/api/save', { method: 'POST', headers: hdr });
   flash('已存档');
 }
+
+// ── 资源查看器 ──
+const PK_PER = 60;
+let pkFile = null, pkFrames = 0, pkStart = 0;
+async function loadPackList() {
+  window._packsLoaded = true;
+  const r = await fetch('/api/packs/list', { headers: hdr });
+  const list = await r.json();
+  const box = document.getElementById('pk-list');
+  const fmt = n => n > 1048576 ? (n/1048576).toFixed(1)+' MB' : Math.max(1, n>>10)+' KB';
+  let html = '', lastDir = null;
+  for (const e of list) {
+    const dir = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '(根)';
+    if (dir !== lastDir) { html += `<div class="sec" style="margin:8px 4px 2px">${dir}</div>`; lastDir = dir; }
+    const base = e.path.slice(e.path.lastIndexOf('/')+1);
+    html += `<a style="display:flex;justify-content:space-between;padding:3px 6px;cursor:pointer;border-radius:4px"
+      onclick="selectPack('${e.path}')" onmouseover="this.style.background='rgba(255,255,255,.05)'"
+      onmouseout="this.style.background=''"><span>${base}</span><span class="hint">${fmt(e.size)}</span></a>`;
+  }
+  box.innerHTML = html || '<div class="hint">packs/ 为空</div>';
+}
+async function selectPack(path) {
+  pkFile = path; pkStart = 0;
+  document.getElementById('pk-title').textContent = path;
+  document.getElementById('pk-meta').textContent = '统计中…';
+  renderPackGrid();
+  const r = await fetch('/api/packs/info?file=' + encodeURIComponent(path), { headers: hdr });
+  if (r.ok) {
+    const info = await r.json();
+    pkFrames = info.frames;
+    document.getElementById('pk-meta').textContent = `帧位 ${info.frames} · 实帧 ${info.real}`;
+    updatePkRange();
+  } else {
+    document.getElementById('pk-meta').textContent = '读取失败';
+  }
+}
+function updatePkRange() {
+  document.getElementById('pk-range').textContent =
+    pkFrames ? `帧 ${pkStart} - ${Math.min(pkStart + PK_PER, pkFrames) - 1} / ${pkFrames}` : `帧 ${pkStart} 起`;
+}
+function pkPage(d) {
+  if (!pkFile) return;
+  pkStart = Math.max(0, pkStart + d * PK_PER);
+  if (pkFrames) pkStart = Math.min(pkStart, Math.max(0, (Math.ceil(pkFrames / PK_PER) - 1) * PK_PER));
+  renderPackGrid();
+}
+function pkJump() {
+  const v = Number(document.getElementById('pk-jump').value);
+  if (!pkFile || !Number.isFinite(v)) return;
+  pkStart = Math.max(0, Math.floor(v / PK_PER) * PK_PER);
+  renderPackGrid();
+}
+function renderPackGrid() {
+  if (!pkFile) return;
+  updatePkRange();
+  const skip = document.getElementById('pk-skip').checked;
+  const grid = document.getElementById('pk-grid');
+  grid.innerHTML = '';
+  const end = pkFrames ? Math.min(pkStart + PK_PER, pkFrames) : pkStart + PK_PER;
+  for (let i = pkStart; i < end; i++) {
+    const cell = document.createElement('div');
+    cell.style.cssText = 'width:96px;background:var(--panel);border:1px solid var(--edge);' +
+      'border-radius:6px;padding:4px;text-align:center;cursor:zoom-in';
+    const url = `/api/packs/frame?file=${encodeURIComponent(pkFile)}&idx=${i}`;
+    cell.innerHTML = `<div style="height:84px;display:flex;align-items:center;justify-content:center;overflow:hidden">
+        <img loading="lazy" src="${url}" style="max-width:88px;max-height:82px;image-rendering:pixelated">
+      </div><div class="hint">${i}</div>`;
+    const img = cell.querySelector('img');
+    img.onerror = () => { if (skip) cell.remove(); else { img.remove(); cell.style.opacity = .35; } };
+    cell.onclick = () => openPkModal(i, url);
+    grid.appendChild(cell);
+  }
+}
+async function openPkModal(idx, url) {
+  const r = await fetch(url, { headers: hdr });
+  if (!r.ok) return;
+  const meta = r.headers.get('x-frame-meta') || '';
+  const blob = await r.blob();
+  const m = document.getElementById('pk-modal');
+  document.getElementById('pk-modal-meta').textContent = `${pkFile} · 帧 ${idx} · ${meta}`;
+  const im = document.getElementById('pk-modal-img');
+  im.src = URL.createObjectURL(blob);
+  m.classList.add('on');
+}
+function closePkModal(ev) { if (ev.target.id === 'pk-modal') ev.target.classList.remove('on'); }
 
 // ── 物品 ──
 const ITEM_COLS = ['template','name','slot','attack','magic','spirit','defense','hp','price','image','shape'];

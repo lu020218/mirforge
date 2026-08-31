@@ -673,6 +673,148 @@ async fn api_frame_png(
         .unwrap())
 }
 
+// ── 资源查看器: 浏览 packs/ 下任意 .mfl 的帧 ──
+
+/// 查看器库缓存 (最多同时持有几个 — 地图大库上百 MB, 不能无限攒)
+static VIEW_LIBS: std::sync::Mutex<
+    Option<std::collections::HashMap<String, std::sync::Arc<mir_formats::mfl::AnyLib>>>,
+> = std::sync::Mutex::new(None);
+
+/// 相对路径白名单校验: 只允许 packs 根下的 .mfl, 杜绝任意文件读取
+fn viewer_path(rel: &str) -> Option<std::path::PathBuf> {
+    if rel.contains("..") || rel.starts_with('/') || rel.contains('\\') || !rel.ends_with(".mfl") {
+        return None;
+    }
+    Some(packs_root().join(rel))
+}
+
+fn viewer_lib(rel: &str) -> Option<std::sync::Arc<mir_formats::mfl::AnyLib>> {
+    let mut guard = VIEW_LIBS.lock().ok()?;
+    let cache = guard.get_or_insert_with(Default::default);
+    if let Some(l) = cache.get(rel) {
+        return Some(l.clone());
+    }
+    let lib = std::fs::read(viewer_path(rel)?)
+        .ok()
+        .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok())?;
+    if cache.len() >= 4 {
+        cache.clear(); // 简单上限: 查看器串行使用, 清空即可
+    }
+    let arc = std::sync::Arc::new(lib);
+    cache.insert(rel.to_string(), arc.clone());
+    Some(arc)
+}
+
+#[derive(Serialize)]
+struct PackEntry {
+    path: String,
+    size: u64,
+}
+
+/// packs/ 下全部 .mfl 清单 (相对路径 + 字节数)
+async fn api_packs_list(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PackEntry>>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<PackEntry>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, base, out);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("mfl") {
+                if let (Ok(rel), Ok(meta)) = (p.strip_prefix(base), e.metadata()) {
+                    out.push(PackEntry {
+                        path: rel.to_string_lossy().replace('\\', "/"),
+                        size: meta.len(),
+                    });
+                }
+            }
+        }
+    }
+    let root = packs_root();
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct ViewerQuery {
+    file: String,
+    #[serde(default)]
+    idx: usize,
+}
+
+#[derive(Serialize)]
+struct PackInfo {
+    frames: usize,
+    real: usize,
+}
+
+/// 单库信息: 帧位数与实帧数
+async fn api_packs_info(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ViewerQuery>,
+) -> Result<Json<PackInfo>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let info = tokio::task::spawn_blocking(move || {
+        let lib = viewer_lib(&q.file)?;
+        let mut real = 0;
+        for i in 0..lib.len() {
+            if lib.image(i).ok().flatten().is_some() {
+                real += 1;
+            }
+        }
+        Some(PackInfo {
+            frames: lib.len(),
+            real,
+        })
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(info))
+}
+
+/// 单帧 PNG (空帧/越界 404); 响应头带尺寸与锚点供前端展示
+async fn api_packs_frame(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ViewerQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let out = tokio::task::spawn_blocking(move || {
+        let lib = viewer_lib(&q.file)?;
+        let img = lib.image(q.idx).ok().flatten()?;
+        let buf =
+            image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.rgba.clone())?;
+        let mut png = std::io::Cursor::new(Vec::new());
+        buf.write_to(&mut png, image::ImageFormat::Png).ok()?;
+        Some((png.into_inner(), img.width, img.height, img.offset_x, img.offset_y))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let (png, w, h, ox, oy) = out;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=3600")
+        .header("x-frame-meta", format!("{w}x{h} 锚({ox},{oy})"))
+        .body(axum::body::Body::from(png))
+        .unwrap())
+}
+
 /// 地图示意缩略图: 由 .map 阻挡位生成 (可走浅色/阻挡深色),
 /// 叠加出生点(金)/传送门(青)/刷新点(红) 标记 —— 用于配置时定位坐标
 async fn api_map_thumb(
@@ -918,6 +1060,9 @@ pub fn spawn(
         .route("/api/spritegrid/:kind", get(api_sprite_grid))
         .route("/api/frame/:kind/:n", get(api_frame_png))
         .route("/api/minimaps", get(api_minimap_grid))
+        .route("/api/packs/list", get(api_packs_list))
+        .route("/api/packs/info", get(api_packs_info))
+        .route("/api/packs/frame", get(api_packs_frame))
         .route("/api/mapthumb/:map", get(api_map_thumb))
         .route("/api/maptile/:map/:tx/:ty", get(api_map_tile))
         .with_state(state);
