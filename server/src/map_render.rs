@@ -24,12 +24,7 @@ type TileCache = HashMap<(String, u32, u32), std::sync::Arc<Vec<u8>>>;
 static TILE_CACHE: Mutex<Option<TileCache>> = Mutex::new(None);
 
 /// 带缓存的瓦片渲染
-pub fn tile_cached(
-    map_name: &str,
-    map: &MirMap,
-    tx: u32,
-    ty: u32,
-) -> std::sync::Arc<Vec<u8>> {
+pub fn tile_cached(map_name: &str, map: &MirMap, tx: u32, ty: u32) -> std::sync::Arc<Vec<u8>> {
     let key = (map_name.to_string(), tx, ty);
     if let Ok(mut g) = TILE_CACHE.lock() {
         if let Some(hit) = g.get_or_insert_with(TileCache::new).get(&key) {

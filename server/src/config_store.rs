@@ -45,6 +45,10 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             max_level INTEGER NOT NULL DEFAULT 3,
             train_base INTEGER NOT NULL DEFAULT 30,
             level_bonus REAL NOT NULL DEFAULT 0.3,
+            icon INTEGER NOT NULL DEFAULT 0,
+            fx_lib INTEGER NOT NULL DEFAULT 0,
+            fx_base INTEGER NOT NULL DEFAULT 0,
+            fx_frames INTEGER NOT NULL DEFAULT 0,
             ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_quests (
@@ -201,6 +205,16 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE cfg_monsters ADD COLUMN base INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
+    for col in [
+        "icon INTEGER NOT NULL DEFAULT 0",
+        "fx_lib INTEGER NOT NULL DEFAULT 0",
+        "fx_base INTEGER NOT NULL DEFAULT 0",
+        "fx_frames INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(&format!("ALTER TABLE cfg_skills ADD COLUMN {col}"))
+            .execute(pool)
+            .await;
+    }
     Ok(())
 }
 
@@ -245,7 +259,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
     };
     for r in sqlx::query(
         "SELECT id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                max_level, train_base, level_bonus
+                max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames
          FROM cfg_skills ORDER BY class, ord, level",
     )
     .fetch_all(pool)
@@ -271,6 +285,10 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
             max_level: r.get::<i64, _>("max_level").max(0) as u32,
             train_base: r.get::<i64, _>("train_base").max(1) as u32,
             level_bonus: r.get("level_bonus"),
+            icon: r.get::<i64, _>("icon").max(0) as u32,
+            fx_lib: r.get::<i64, _>("fx_lib").max(0) as u16,
+            fx_base: r.get::<i64, _>("fx_base").max(0) as u32,
+            fx_frames: r.get::<i64, _>("fx_frames").clamp(0, 255) as u8,
         };
         match r.get::<String, _>("class").as_str() {
             "mage" => skills.mage.push(def),
@@ -711,8 +729,8 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             sqlx::query(
                 "INSERT INTO cfg_skills
                  (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                  max_level, train_base, level_bonus, ord)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames, ord)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(class)
@@ -728,6 +746,10 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             .bind(s.max_level as i64)
             .bind(s.train_base as i64)
             .bind(s.level_bonus)
+            .bind(s.icon as i64)
+            .bind(s.fx_lib as i64)
+            .bind(s.fx_base as i64)
+            .bind(s.fx_frames as i64)
             .bind(i as i64)
             .execute(&mut *tx)
             .await?;
@@ -947,6 +969,48 @@ pub async fn migrate_monsters(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     if !out.is_empty() {
         tracing::info!("怪物模板迁移: 从刷新点蒸馏 {} 个模板", out.len());
         save_monsters(pool, &out).await?;
+    }
+    Ok(())
+}
+
+/// 旧库迁移: 技能图标/特效此前硬编码在客户端, 配置化后按原映射补入库
+/// (仅当全部技能 icon=0 时执行一次, 幂等)
+pub async fn migrate_skill_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cfg_skills WHERE icon != 0 OR fx_frames != 0")
+            .fetch_one(pool)
+            .await?;
+    if n > 0 {
+        return Ok(());
+    }
+    // (id, 图标帧, 特效库, 起始帧, 帧数) — 客户端原硬编码表原样搬迁
+    let map: [(&str, i64, i64, i64, i64); 9] = [
+        ("huoqiu", 0, 0, 170, 10),
+        ("zhiyu", 1, 0, 250, 20),
+        ("shidu", 2, 0, 600, 20),
+        ("huofu", 3, 0, 1320, 16),
+        ("leidian", 4, 0, 880, 10),
+        ("bingpaoxiao", 5, 1, 580, 8),
+        ("liehuo", 6, 0, 3500, 8),
+        ("shizihou", 7, 1, 650, 10),
+        ("yeman", 8, 1, 0, 18),
+    ];
+    let mut hits = 0;
+    for (id, icon, lib, base, frames) in map {
+        let r = sqlx::query(
+            "UPDATE cfg_skills SET icon = ?, fx_lib = ?, fx_base = ?, fx_frames = ? WHERE id = ?",
+        )
+        .bind(icon)
+        .bind(lib)
+        .bind(base)
+        .bind(frames)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        hits += r.rows_affected();
+    }
+    if hits > 0 {
+        tracing::info!("技能图标/特效迁移: 补齐 {hits} 个技能的原映射");
     }
     Ok(())
 }

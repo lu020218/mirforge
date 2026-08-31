@@ -92,6 +92,9 @@ async fn main() {
     config_store::migrate_monsters(db.pool())
         .await
         .expect("怪物模板迁移失败");
+    config_store::migrate_skill_fx(db.pool())
+        .await
+        .expect("技能图标/特效迁移失败");
 
     // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
     if config_store::is_empty(db.pool()).await.unwrap_or(false) {

@@ -147,9 +147,9 @@ impl AnyLib {
         if data.starts_with(MAGIC) {
             Ok(AnyLib::Mfl(MflLib::parse_bytes(data)?))
         } else {
-            Ok(AnyLib::Crystal(crate::crystal_lib::CrystalLib::parse_bytes(
-                data,
-            )?))
+            Ok(AnyLib::Crystal(
+                crate::crystal_lib::CrystalLib::parse_bytes(data)?,
+            ))
         }
     }
 

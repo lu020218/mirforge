@@ -249,6 +249,13 @@ pub enum ServerMessage {
         /// 施放者的技能修炼等级 (4 级起客户端播强化特效)
         #[serde(default)]
         level: u32,
+        /// 特效: 库号 (magic/00N) / 起始帧 / 帧数 (0 = 无帧动画, 客户端画扩散圈)
+        #[serde(default)]
+        fx_lib: u16,
+        #[serde(default)]
+        fx_base: u32,
+        #[serde(default)]
+        fx_frames: u8,
     },
     /// 本区 NPC 全量快照 (进区/切区/配置热重载时下发)
     /// 对话页 (点击 NPC 或选了跳页选项后下发)
@@ -395,6 +402,9 @@ pub struct SkillInfo {
     /// 升下一级所需熟练度 (已满级为 0)
     #[serde(default)]
     pub train_need: u32,
+    /// 技能图标 (packs/magicon.mfl 帧号)
+    #[serde(default)]
+    pub icon: u32,
 }
 
 /// 任务面板的单任务条目

@@ -269,22 +269,6 @@ fn spawn_stat_bar(
 }
 
 /// 进入游戏时构建 HUD (全部绝对定位, 对齐设计稿)
-/// 技能 id → packs/magicon.mfl 帧号 (图标由特效代表帧裁切生成, 顺序固定)
-fn magicon_index(id: &str) -> Option<usize> {
-    Some(match id {
-        "huoqiu" => 0,
-        "zhiyu" => 1,
-        "shidu" => 2,
-        "huofu" => 3,
-        "leidian" => 4,
-        "bingpaoxiao" => 5,
-        "liehuo" => 6,
-        "shizihou" => 7,
-        "yeman" => 8,
-        _ => return None,
-    })
-}
-
 /// 技能图标缓存 (与 net.skills 同序), HUD 技能格与技能面板共用
 #[derive(Resource, Default)]
 pub struct SkillIcons(pub Vec<Option<Handle<Image>>>);
@@ -304,7 +288,7 @@ fn load_skill_icons(
     net.skills
         .iter()
         .map(|s| {
-            let img = lib.as_ref()?.image(magicon_index(&s.id)?).ok().flatten()?;
+            let img = lib.as_ref()?.image(s.icon as usize).ok().flatten()?;
             Some(images.add(Image::new(
                 bevy::render::render_resource::Extent3d {
                     width: img.width as u32,

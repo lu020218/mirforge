@@ -271,6 +271,16 @@ pub struct SkillDef {
     /// 每修炼级的伤害/治疗加成比例 (0.3 = 每级 +30%)
     #[serde(default = "default_level_bonus")]
     pub level_bonus: f64,
+    /// 技能图标 (packs/magicon.mfl 帧号)
+    #[serde(default)]
+    pub icon: u32,
+    /// 特效: 库号 (magic/00N) / 起始帧 / 帧数 (帧数 0 = 无帧动画)
+    #[serde(default)]
+    pub fx_lib: u16,
+    #[serde(default)]
+    pub fx_base: u32,
+    #[serde(default)]
+    pub fx_frames: u8,
 }
 
 fn default_max_level() -> u32 {
@@ -2554,6 +2564,7 @@ impl Game {
                     } else {
                         s.train_need(sp.level)
                     },
+                    icon: s.icon,
                 }
             })
             .collect();
@@ -3340,6 +3351,9 @@ impl Game {
                 },
                 targets: hit_ids.iter().map(|(id, _)| id.clone()).collect(),
                 level: skill_level,
+                fx_lib: def.fx_lib,
+                fx_base: def.fx_base,
+                fx_frames: def.fx_frames,
             },
         )
         .await;

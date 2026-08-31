@@ -367,8 +367,7 @@ impl World {
             Layer::Weapon(n) => return Some(format!("CWeapon/{n:02}")),
             Layer::Mon(n) => return Some(format!("Monster/{n:03}")),
             Layer::Npc(n) => return Some(format!("NPC/{n:02}")),
-            Layer::Fx(0) => return Some("Magic".into()),
-            Layer::Fx(_) => return Some("Magic2".into()),
+            Layer::Fx(n) => return Some(format!("Fx/{n}")),
             _ => {}
         }
         // 盛大格式地图 (私服市售图通用): 层基址 back=100/mid=110/front=120,
@@ -398,11 +397,11 @@ impl World {
     /// 淘汰路线: 每接入一类就在这里补一行; 全部类别被 packs 覆盖后
     /// Crystal 兜底即可整体移除。
     fn pack_path(&self, name: &str) -> Option<PathBuf> {
-        // 单例: 技能特效两库
-        match name {
-            "Magic" => return Some(self.packs_root.join("magic/000.mfl")),
-            "Magic2" => return Some(self.packs_root.join("magic/001.mfl")),
-            _ => {}
+        // 技能特效库: Fx/{n} → packs/magic/{n:03}.mfl (管理台特效库号即 n)
+        if let Some(n) = name.strip_prefix("Fx/") {
+            if let Ok(n) = n.parse::<u32>() {
+                return Some(self.packs_root.join("magic").join(format!("{n:03}.mfl")));
+            }
         }
         // 地图图库: 保持 Map/ 下相对路径
         if let Some(rest) = name.strip_prefix("Map/") {
@@ -2088,6 +2087,9 @@ fn net_pump(
                     position,
                     targets,
                     level,
+                    fx_lib,
+                    fx_base,
+                    fx_frames,
                     ..
                 } => {
                     let color = skill_color(&skill_id);
@@ -2099,7 +2101,8 @@ fn net_pump(
                             points.push(r.pos);
                         }
                     }
-                    let fx = skill_fx(&skill_id);
+                    // 特效帧段随广播下发 (管理台配置); 帧数 0 = 无帧动画画扩散圈
+                    let fx = (fx_frames > 0).then_some((fx_lib as u8, fx_base as i32, fx_frames));
                     for pt in points {
                         let px = pt.x as f32 * CELL_W - CELL_W / 2.0;
                         let py = pt.y as f32 * CELL_H - CELL_H / 2.0;
@@ -2863,23 +2866,6 @@ fn dev_autologin(
 #[derive(Component)]
 struct Fx {
     born: f64,
-}
-
-/// 技能 → 特效 (库 0=magic/000 / 1=magic/001, 起始帧, 帧数)。
-/// 帧号出处: 对市售 WZL 特效包出索引图逐段人工核对 (连续段边界实测)
-fn skill_fx(id: &str) -> Option<(u8, i32, u8)> {
-    Some(match id {
-        "huoqiu" => (0, 170, 10),     // 火球命中爆焰
-        "zhiyu" => (0, 250, 20),      // 治愈蓝光柱
-        "leidian" => (0, 880, 10),    // 雷电电光爆
-        "shidu" => (0, 600, 20),      // 施毒绿雾
-        "huofu" => (0, 1320, 16),     // 灵魂火符符爆
-        "bingpaoxiao" => (1, 580, 8), // 冰咆哮冰爆
-        "liehuo" => (0, 3500, 8),     // 烈火剑法红刀光
-        "shizihou" => (1, 650, 10),   // 狮子吼金色爆发
-        "yeman" => (1, 0, 18),        // 野蛮冲撞尘土
-        _ => return None,
-    })
 }
 
 /// 原版技能特效帧动画 (100ms/帧, 播完自毁; blend 亮度透明)

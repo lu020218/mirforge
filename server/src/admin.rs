@@ -478,8 +478,7 @@ fn with_preview_lib<R>(
     let mut guard = PREVIEW_LIBS.lock().ok()?;
     let cache = guard.get_or_insert_with(Default::default);
     if !cache.contains_key(&key) {
-        let lib = preview_pack_path(kind, n)
-            .and_then(|p| mir_formats::mfl::AnyLib::open(&p).ok());
+        let lib = preview_pack_path(kind, n).and_then(|p| mir_formats::mfl::AnyLib::open(&p).ok());
         cache.insert(key.clone(), lib);
     }
     cache.get(&key).and_then(|l| l.as_ref()).and_then(f)
@@ -761,6 +760,50 @@ async fn api_mon_bases(
             out.truncate(64);
             Some(out)
         })
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(out))
+}
+
+/// 任意 packs 库的段候选 (帧段空洞切分) — 技能特效选段等通用
+/// 返回 [起始帧, 段内实帧估数] 列表
+async fn api_packs_bases(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ViewerQuery>,
+) -> Result<Json<Vec<(u32, u32)>>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let out = tokio::task::spawn_blocking(move || {
+        let lib = viewer_lib(&q.file)?;
+        let real = |i: usize| lib.dims(i).is_some_and(|(w, h)| w >= 8 && h >= 8);
+        let cap = lib.len().min(6000);
+        let base0 = (0..cap).find(|&i| real(i))?;
+        let mut segs: Vec<(u32, u32)> = Vec::new();
+        let (mut start, mut count, mut gap) = (base0, 0u32, 0usize);
+        let mut i = base0;
+        while i < cap {
+            if real(i) {
+                if gap >= 8 {
+                    segs.push((start as u32, count));
+                    start = i;
+                    count = 0;
+                }
+                gap = 0;
+                count += 1;
+            } else {
+                gap += 1;
+            }
+            i += 1;
+        }
+        if count > 0 {
+            segs.push((start as u32, count));
+        }
+        segs.truncate(64);
+        Some(segs)
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -1153,6 +1196,7 @@ pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         .route("/api/frame/:kind/:n", get(api_frame_png))
         .route("/api/minimaps", get(api_minimap_grid))
         .route("/api/monster_bases/:n", get(api_mon_bases))
+        .route("/api/packs/bases", get(api_packs_bases))
         .route("/api/packs/list", get(api_packs_list))
         .route("/api/packs/info", get(api_packs_info))
         .route("/api/packs/frame", get(api_packs_frame))
