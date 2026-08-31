@@ -10,18 +10,23 @@
 
 use std::io::Read;
 
-use crate::{DecodedImage, FormatError, Result};
+use crate::{Bytes, DecodedImage, FormatError, Result};
 
 /// 已打开的 .Lib 图库（持有原始字节，按需解帧）。
 #[derive(Debug)]
 pub struct CrystalLib {
-    data: Vec<u8>,
+    data: Bytes,
     pub version: i32,
     offsets: Vec<i32>,
 }
 
 impl CrystalLib {
     pub fn parse(data: Vec<u8>) -> Result<Self> {
+        Self::parse_bytes(Bytes::Vec(data))
+    }
+
+    /// 与 parse 同, 但可用 mmap 字节 (运行时路径)
+    pub fn parse_bytes(data: Bytes) -> Result<Self> {
         if data.len() < 8 {
             return Err(FormatError::Truncated {
                 need: 8,

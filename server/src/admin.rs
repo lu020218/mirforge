@@ -479,8 +479,7 @@ fn with_preview_lib<R>(
     let cache = guard.get_or_insert_with(Default::default);
     if !cache.contains_key(&key) {
         let lib = preview_pack_path(kind, n)
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok());
+            .and_then(|p| mir_formats::mfl::AnyLib::open(&p).ok());
         cache.insert(key.clone(), lib);
     }
     cache.get(&key).and_then(|l| l.as_ref()).and_then(f)
@@ -790,9 +789,7 @@ fn viewer_lib(rel: &str) -> Option<std::sync::Arc<mir_formats::mfl::AnyLib>> {
     if let Some(l) = cache.get(rel) {
         return Some(l.clone());
     }
-    let lib = std::fs::read(viewer_path(rel)?)
-        .ok()
-        .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok())?;
+    let lib = mir_formats::mfl::AnyLib::open(&viewer_path(rel)?).ok()?;
     if cache.len() >= 4 {
         cache.clear(); // 简单上限: 查看器串行使用, 清空即可
     }

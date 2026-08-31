@@ -94,9 +94,7 @@ fn with_frame<R>(
         let packs = std::env::var("MIRFORGE_PACKS")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
-        let parsed = std::fs::read(packs.join("map").join(format!("{name}.mfl")))
-            .ok()
-            .and_then(|d| AnyLib::parse(d).ok());
+        let parsed = AnyLib::open(&packs.join("map").join(format!("{name}.mfl"))).ok();
         cache.insert(name.clone(), parsed);
     }
     let img = cache

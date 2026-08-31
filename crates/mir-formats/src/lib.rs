@@ -31,6 +31,40 @@ pub enum FormatError {
     Decompress(String),
     #[error("尚未实现: {0} (见开发计划 M0)")]
     NotImplemented(&'static str),
+    #[error("IO: {0}")]
+    Io(String),
+}
+
+/// 库文件字节来源: 整读堆内存 (打包工具) 或 mmap (运行时 — 原始字节不占堆,
+/// 驻留由操作系统页缓存按内存压力自动收放, 大图库常开也不撑爆内存)
+pub enum Bytes {
+    Vec(Vec<u8>),
+    Mmap(memmap2::Mmap),
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::Vec(v) => v,
+            Bytes::Mmap(m) => m,
+        }
+    }
+}
+
+impl std::fmt::Debug for Bytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Bytes({} 字节)", self.len())
+    }
+}
+
+impl Bytes {
+    /// mmap 打开文件 (只读)
+    pub fn map_file(path: &std::path::Path) -> Result<Self> {
+        let f = std::fs::File::open(path).map_err(|e| FormatError::Io(e.to_string()))?;
+        let m = unsafe { memmap2::Mmap::map(&f) }.map_err(|e| FormatError::Io(e.to_string()))?;
+        Ok(Bytes::Mmap(m))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, FormatError>;

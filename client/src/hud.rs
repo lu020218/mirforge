@@ -300,9 +300,7 @@ fn load_skill_icons(
     let packs = std::env::var("MIRFORGE_PACKS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
-    let lib = std::fs::read(packs.join("magicon.mfl"))
-        .ok()
-        .and_then(|d| mir_formats::mfl::AnyLib::parse(d).ok());
+    let lib = mir_formats::mfl::AnyLib::open(&packs.join("magicon.mfl")).ok();
     net.skills
         .iter()
         .map(|s| {

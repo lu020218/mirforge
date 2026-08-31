@@ -14,19 +14,24 @@
 
 use std::io::{Read, Write};
 
-use crate::{DecodedImage, FormatError, Result};
+use crate::{Bytes, DecodedImage, FormatError, Result};
 
 pub const MAGIC: &[u8; 4] = b"MFL1";
 
 /// 已打开的 .mfl 图库 (持有原始字节, 按需解帧)。
 #[derive(Debug)]
 pub struct MflLib {
-    data: Vec<u8>,
+    data: Bytes,
     offsets: Vec<u32>,
 }
 
 impl MflLib {
     pub fn parse(data: Vec<u8>) -> Result<Self> {
+        Self::parse_bytes(Bytes::Vec(data))
+    }
+
+    /// 与 parse 同, 但可用 mmap 字节 (运行时路径)
+    pub fn parse_bytes(data: Bytes) -> Result<Self> {
         if data.len() < 8 {
             return Err(FormatError::Truncated {
                 need: 8,
@@ -130,10 +135,19 @@ pub enum AnyLib {
 
 impl AnyLib {
     pub fn parse(data: Vec<u8>) -> Result<Self> {
+        Self::parse_bytes(Bytes::Vec(data))
+    }
+
+    /// mmap 打开库文件: 原始字节不进堆, 大库常开由 OS 页缓存管驻留
+    pub fn open(path: &std::path::Path) -> Result<Self> {
+        Self::parse_bytes(Bytes::map_file(path)?)
+    }
+
+    fn parse_bytes(data: Bytes) -> Result<Self> {
         if data.starts_with(MAGIC) {
-            Ok(AnyLib::Mfl(MflLib::parse(data)?))
+            Ok(AnyLib::Mfl(MflLib::parse_bytes(data)?))
         } else {
-            Ok(AnyLib::Crystal(crate::crystal_lib::CrystalLib::parse(
+            Ok(AnyLib::Crystal(crate::crystal_lib::CrystalLib::parse_bytes(
                 data,
             )?))
         }

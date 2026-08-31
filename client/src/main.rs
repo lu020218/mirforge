@@ -418,10 +418,8 @@ impl World {
         if !self.libs.contains_key(name) {
             // 只走 packs (Crystal 资源路线已废除; mir-pack convert 负责把
             // 原版库转码进 packs)。缺库只告警一次 — None 结果同样缓存。
-            let lib = self
-                .pack_path(name)
-                .and_then(|p| std::fs::read(p).ok())
-                .and_then(|d| AnyLib::parse(d).ok());
+            // mmap 打开: 原始字节不进堆, 大库常开由 OS 页缓存管驻留
+            let lib = self.pack_path(name).and_then(|p| AnyLib::open(&p).ok());
             if lib.is_none() && !name.starts_with("portrait/") {
                 warn!("packs 缺库: {name} (用 mir-pack convert 从原版资源转码)");
             }
@@ -567,9 +565,7 @@ impl ItemIcons {
             let packs = std::env::var("MIRFORGE_PACKS")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
-            self.lib = std::fs::read(packs.join("items.mfl"))
-                .ok()
-                .and_then(|d| AnyLib::parse(d).ok());
+            self.lib = AnyLib::open(&packs.join("items.mfl")).ok();
             let _ = data_root; // Crystal 路线已废除, 图标只走 packs/items.mfl
         }
         let h = self
@@ -639,8 +635,7 @@ fn load_minimap(
     mm.loaded_for = key;
     let mut trim = Rect::default();
     mm.image = net.zone_minimap.map(|f| f as usize).and_then(|idx| {
-        let path = world.packs_root.join("mmap.mfl");
-        let lib = AnyLib::parse(std::fs::read(path).ok()?).ok()?;
+        let lib = AnyLib::open(&world.packs_root.join("mmap.mfl")).ok()?;
         let img = lib.image(idx).ok().flatten()?;
         let size = Vec2::new(img.width as f32, img.height as f32);
         trim = opaque_bounds(&img.rgba, img.width as u32, img.height as u32)
