@@ -17,8 +17,8 @@ packs/
   weapon/050.mfl      武器外观 (对应物品表"外观"字段, 自有素材建议从 050 起编号)
   armor/050.mfl       衣甲外观
   hair/               发型
-  monster/            怪物
-  npc/                NPC
+  monster/            怪物 (素材包 Mon 号 → 同号)
+  npc/                NPC (合集库按 60 帧/个切分, 帧 0-3 = 站立循环)
   map/<套>/<名>.mfl   地图图库 (保持原相对路径, 如 map/WemadeMir2/Tiles.mfl)
   portrait/050.mfl    人物面板立绘 (帧 0=男 1=女, 编号对应衣甲外观号)
   portrait/naked.mfl  裸模立绘 (未穿衣甲时用, 帧 0=男 1=女)
@@ -31,10 +31,13 @@ packs/
 ## 从购买素材批量打包
 
 素材包常见形态与对应命令:
-- LibraryEditor 解包目录 (逐帧 PNG + Placements) → `mir-pack pack`
+- LibraryEditor 解包目录 (逐帧 PNG/BMP + Placements) → `mir-pack pack`
+  (BMP 无 alpha, 纯黑自动抠透明)
+- NPC 合集帧目录 (每 60 帧一个 NPC) → `mir-pack pack-split <目录> <输出目录> 60`
 - 散图 (立绘/小地图) → `mir-pack pack-list`
 - Crystal .Lib → `mir-pack convert` (整目录) 或逐个 pack
-- WZL/WZX 与 WIL/WIX → 解码器待实现 (roadmap)
+- WIL/WIX (#ILIB v1.0 16bpp) → `mir-pack pack-wil`
+- WZL/WZX → 解码器待实现 (roadmap)
 
 地图接入三件套: `.map` 放在 MIRFORGE_RES 下任意位置 (按文件名扫描);
 该图的 Tiles/SmTiles/Objects 套打进 `packs/map/`;

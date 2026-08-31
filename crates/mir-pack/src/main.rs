@@ -24,6 +24,11 @@ fn main() {
         Some("info") if args.len() == 2 => info(Path::new(&args[1])),
         Some("convert") if args.len() == 3 => convert(Path::new(&args[1]), Path::new(&args[2])),
         Some("mapinfo") if args.len() == 2 => mapinfo(Path::new(&args[1])),
+        Some("pack-wil") if args.len() == 3 => pack_wil(Path::new(&args[1]), Path::new(&args[2])),
+        Some("pack-split") if args.len() == 4 => {
+            let stride: usize = args[3].parse().map_err(|_| "跨度须为整数").unwrap_or(60);
+            pack_split(Path::new(&args[1]), Path::new(&args[2]), stride)
+        }
         Some("preview") if (3..=5).contains(&args.len()) => {
             let start = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let n = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(16);
@@ -59,11 +64,11 @@ fn scan_frames(dir: &Path) -> Result<Vec<(usize, String, PathBuf)>, AnyErr> {
         let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let is_png = p
+        let is_img = p
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("png"));
-        if !is_png {
+            .is_some_and(|e| e.eq_ignore_ascii_case("png") || e.eq_ignore_ascii_case("bmp"));
+        if !is_img {
             continue;
         }
         if let Ok(idx) = stem.parse::<usize>() {
@@ -99,11 +104,23 @@ fn pack(src: &Path, out: &Path) -> Result<(), AnyErr> {
             bad += 1;
             continue;
         };
-        let rgba = img.to_rgba8();
+        let mut rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
         if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
             bad += 1;
             continue;
+        }
+        // BMP 无 alpha 通道, 老图库约定纯黑为背景 → 抠成透明
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("bmp"))
+        {
+            for px in rgba.pixels_mut() {
+                if px.0[0] == 0 && px.0[1] == 0 && px.0[2] == 0 {
+                    px.0[3] = 0;
+                }
+            }
         }
         let (x, y) = placement(src, &stem);
         frames[idx] = Some(MflFrame {
@@ -315,6 +332,101 @@ fn convert(data: &Path, packs: &Path) -> Result<(), AnyErr> {
     } else {
         Err(format!("{} 个库转码失败", failed.len()).into())
     }
+}
+
+/// 整库帧目录按固定跨度切成编号库: 帧 n → 第 n/stride 号库的第 n%stride 帧。
+/// 市售 NPC 合集常见形态 (每个 NPC 60 帧一段) → npc/000.mfl 起
+fn pack_split(src: &Path, outdir: &Path, stride: usize) -> Result<(), AnyErr> {
+    let files = scan_frames(src)?;
+    if files.is_empty() || stride == 0 {
+        return Err("没有帧或跨度为 0".into());
+    }
+    let blocks = files.last().unwrap().0 / stride + 1;
+    let mut per: Vec<Vec<Option<MflFrame>>> = (0..blocks)
+        .map(|_| (0..stride).map(|_| None).collect())
+        .collect();
+    for (idx, stem, path) in files {
+        let Ok(img) = image::open(&path) else {
+            continue;
+        };
+        let mut rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
+            continue;
+        }
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("bmp"))
+        {
+            for px in rgba.pixels_mut() {
+                if px.0[0] == 0 && px.0[1] == 0 && px.0[2] == 0 {
+                    px.0[3] = 0;
+                }
+            }
+        }
+        let (x, y) = placement(src, &stem);
+        per[idx / stride][idx % stride] = Some(MflFrame {
+            width: w as u16,
+            height: h as u16,
+            offset_x: x,
+            offset_y: y,
+            rgba: rgba.into_raw(),
+        });
+    }
+    std::fs::create_dir_all(outdir)?;
+    let mut written = 0usize;
+    for (n, frames) in per.iter().enumerate() {
+        if frames.iter().all(|f| f.is_none()) {
+            continue;
+        }
+        std::fs::write(outdir.join(format!("{n:03}.mfl")), mfl::write(frames)?)?;
+        written += 1;
+    }
+    println!("切分完成: {blocks} 段 × {stride} 帧, 写出 {written} 个库 → {}", outdir.display());
+    Ok(())
+}
+
+/// WIL/WIX → .mfl (同名 .wix 自动定位, 大小写不限)
+fn pack_wil(src: &Path, out: &Path) -> Result<(), AnyErr> {
+    let wix = ["wix", "WIX", "Wix"]
+        .iter()
+        .map(|e| src.with_extension(e))
+        .find(|p| p.exists())
+        .ok_or_else(|| format!("找不到 {} 的 .wix 索引", src.display()))?;
+    let lib = mir_formats::wil::WilLib::parse(std::fs::read(src)?, std::fs::read(wix)?)?;
+    let mut w = mfl::MflWriter::new(lib.len());
+    let (mut ok, mut empty) = (0usize, 0usize);
+    for i in 0..lib.len() {
+        match lib.image(i).ok().flatten() {
+            Some(img) => {
+                w.push(&MflFrame {
+                    width: img.width,
+                    height: img.height,
+                    offset_x: img.offset_x,
+                    offset_y: img.offset_y,
+                    rgba: img.rgba,
+                })?;
+                ok += 1;
+            }
+            None => {
+                w.push_empty()?;
+                empty += 1;
+            }
+        }
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let bytes = w.finish();
+    std::fs::write(out, &bytes)?;
+    println!(
+        "打包完成: {} 帧位, 实帧 {ok}, 空帧 {empty}, {} KB → {}",
+        lib.len(),
+        bytes.len() / 1024,
+        out.display()
+    );
+    Ok(())
 }
 
 /// 地图诊断: 尺寸 + 三层库号直方图 (接入新地图时先看引用了哪些图库)
