@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 一键跑全部协议级冒烟 (每套独立重启服务器, 世界状态互不污染)。
-# 用法: MIRFORGE_RES=<资源目录> tools/run-smokes.sh
+# 用法: tools/run-smokes.sh  (需要仓库根 packs/ 已就绪, 可用 MIRFORGE_PACKS 覆盖)
 set -u
 cd "$(dirname "$0")/.."
 
-: "${MIRFORGE_RES:?请设置 MIRFORGE_RES 指向传奇资源目录}"
+: "${MIRFORGE_PACKS:=packs}"
+export MIRFORGE_PACKS
 ADDR="${MIRFORGE_ADDR:-127.0.0.1:4100}"
 DB=target/smoke-run.db
 

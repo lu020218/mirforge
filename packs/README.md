@@ -1,10 +1,10 @@
 # packs/ — 自有资源包体系
 
-引擎的**唯一**图库来源:所有图库资源以 `.mfl` 格式按类型存放于此,
-Crystal 资源路线已废除 — 引擎不再读取任何 `.Lib`。原版资源用
-`mir-pack convert` 一次性转码进来;自购/自制素材用 `pack`/`pack-list`
-打包进来,同号文件即替换。`resources/` 目前仅剩 `.map` 地图文件还在使用
-(地图格式迁移是独立课题)。
+引擎的**唯一**资源根:图库 (`.mfl`) 与地图 (`.map`) 都存放于此。
+Crystal 资源路线已废除 — 引擎不再读取任何 `.Lib`,也不读 `resources/`
+(那只是素材原始文件的开发态堆场)。素材用 `mir-pack` 打包/收入:
+`pack`/`pack-list`/`pack-wil`/`pack-wzl` 打图库,`import-maps` 收地图,
+同号文件即替换。
 
 ## 目录结构(按类型,不按购买批次)
 
@@ -41,7 +41,8 @@ packs/
 - WZL/WZX (www.shandagames.com 头, enc5=RGB565/enc6=BGR888) → `mir-pack pack-wzl`
   (enc3 调色板与 enc7 变体样本占比 ~5%, 暂按空帧跳过)
 
-地图接入三件套: `.map` 放在 MIRFORGE_RES 下任意位置 (按文件名扫描);
+地图接入三件套: `.map` 用 `mir-pack import-maps <素材目录> packs` 收入
+`packs/map/` (同名只收第一份);
 该图的 Tiles/SmTiles/Objects 套打进 `packs/map/`;
 小地图图片追加进 `mmap.mfl` 并在管理台把区域的小地图帧号指过去。
 `mir-pack mapinfo <xx.map>` 可查看一张图引用的库号

@@ -24,6 +24,9 @@ fn main() {
         Some("info") if args.len() == 2 => info(Path::new(&args[1])),
         Some("convert") if args.len() == 3 => convert(Path::new(&args[1]), Path::new(&args[2])),
         Some("mapinfo") if args.len() == 2 => mapinfo(Path::new(&args[1])),
+        Some("import-maps") if args.len() == 3 => {
+            import_maps(Path::new(&args[1]), Path::new(&args[2]))
+        }
         Some("pack-wil") if args.len() == 3 => pack_wil(Path::new(&args[1]), Path::new(&args[2])),
         Some("pack-wzl") if args.len() == 3 => pack_wzl(Path::new(&args[1]), Path::new(&args[2])),
         Some("extract") if args.len() == 4 => extract(
@@ -498,6 +501,48 @@ fn pack_wil(src: &Path, out: &Path) -> Result<(), AnyErr> {
         bytes.len() / 1024,
         out.display()
     );
+    Ok(())
+}
+
+/// 把源目录里的全部 .map 地图文件收进 packs/map/ (引擎唯一的地图来源)。
+/// 同名只收第一份并告警; 跳过 Placements 目录
+fn import_maps(src: &Path, packs: &Path) -> Result<(), AnyErr> {
+    let dst_dir = packs.join("map");
+    std::fs::create_dir_all(&dst_dir)?;
+    let mut seen = std::collections::HashSet::new();
+    let (mut copied, mut skipped) = (0usize, 0usize);
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if e.file_name().to_str() != Some("Placements") {
+                    stack.push(p);
+                }
+                continue;
+            }
+            let is_map = p
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case("map"));
+            if !is_map {
+                continue;
+            }
+            let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
+            if !seen.insert(name.clone()) {
+                eprintln!("重名跳过: {} (已收过同名地图)", p.display());
+                skipped += 1;
+                continue;
+            }
+            std::fs::copy(&p, dst_dir.join(p.file_name().unwrap()))?;
+            println!("收入 {} ← {}", name, p.display());
+            copied += 1;
+        }
+    }
+    println!("完成: 收入 {copied} 张地图, 重名跳过 {skipped}");
     Ok(())
 }
 

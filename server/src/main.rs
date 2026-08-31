@@ -4,7 +4,7 @@
 //! 构建行走网格（与客户端同一 sim 判定）；WebSocket 网关 + 20Hz 游戏循环。
 //!
 //! 环境变量：
-//! - `MIRFORGE_RES`   资源根目录（必需，含 Map/）
+//! - `MIRFORGE_PACKS` 资源包根 (默认 packs/; 图库 .mfl 与地图 .map 都在其中)
 //! - `MIRFORGE_ZONES` 边车目录（默认找 `zones/` 或 `server/zones/`）
 //! - `MIRFORGE_MAP`   缺省区域（新角色出生地，默认 `0.map`）
 //! - `MIRFORGE_ADDR`  监听地址（默认 `127.0.0.1:4000`）
@@ -60,10 +60,9 @@ fn map_path_of(idx: &mir_formats::scan::ResourceIndex, map_name: &str) -> Option
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    let root = std::env::var("MIRFORGE_RES").unwrap_or_else(|_| {
-        eprintln!("请设置 MIRFORGE_RES 指向传奇资源目录");
-        std::process::exit(2);
-    });
+    // 引擎唯一资源根 = packs/ (图库 .mfl + 地图 .map); resources/ 只是
+    // 开发态素材堆场, 引擎不读
+    let packs_root = std::env::var("MIRFORGE_PACKS").unwrap_or_else(|_| "packs".into());
     let default_zone = std::env::var("MIRFORGE_MAP").unwrap_or_else(|_| "0.map".into());
     let addr = std::env::var("MIRFORGE_ADDR").unwrap_or_else(|_| "127.0.0.1:4000".into());
     let db_path = std::env::var("MIRFORGE_DB").unwrap_or_else(|_| "mirforge.db".into());
@@ -79,16 +78,11 @@ async fn main() {
                 .unwrap_or_else(|| PathBuf::from("data"))
         });
 
-    // 地图按约定放在 Map/ 子树 — 只扫它, 避免整棵散帧素材树 (几十万文件)
-    let scan_root = {
-        let m = Path::new(&root).join("Map");
-        if m.is_dir() {
-            m
-        } else {
-            Path::new(&root).to_path_buf()
-        }
-    };
-    let idx = mir_formats::scan::ResourceIndex::scan(&scan_root);
+    let idx = mir_formats::scan::ResourceIndex::scan(&Path::new(&packs_root).join("map"));
+    if idx.maps.is_empty() {
+        eprintln!("packs/map 下没有地图 (.map)。用 `mir-pack import-maps <素材目录> {packs_root}` 收入地图");
+        std::process::exit(2);
+    }
     let dir = zones_dir();
     let db = db::Db::open(&db_path).await.expect("打开数据库失败");
     config_store::ensure_schema(db.pool())
@@ -203,7 +197,7 @@ async fn main() {
         })
         .collect();
     let game = game::Game::new(zones, default_zone, db.clone(), sessions, map_files);
-    let admin_rx = admin::spawn(PathBuf::from(&root), db);
+    let admin_rx = admin::spawn(db);
     tokio::spawn(game.run(events, admin_rx));
     Arc::new(gw).listen(&addr).await.expect("网关监听失败");
 }

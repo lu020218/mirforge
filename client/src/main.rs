@@ -4,7 +4,7 @@
 //! 分块按需生成与回收，帧图按需解码进运行时图集；移动判定走共享 sim crate。
 //!
 //! 环境变量：
-//! - `MIRFORGE_RES`  资源根目录（必需，指向含 Map/ 与图库的目录）
+//! - `MIRFORGE_PACKS` 资源包根 (默认 packs/; 图库 .mfl 与地图 .map 都在其中)
 //! - `MIRFORGE_MAP`  地图文件名（默认 `0.map`）
 //! - `MIRFORGE_START` 初始镜头格坐标（默认 `330,150`，0.map 的比奇城一带）
 //!
@@ -803,20 +803,19 @@ fn setup(
     mut net: ResMut<Net>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let root = std::env::var("MIRFORGE_RES").unwrap_or_else(|_| {
-        error!("请设置 MIRFORGE_RES 指向传奇资源目录");
+    // 引擎唯一资源根 = packs/ (图库 .mfl + 地图 .map 都在这);
+    // resources/ 只是开发态的素材原始文件堆场, 引擎不读
+    let packs_root = std::env::var("MIRFORGE_PACKS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("packs"));
+    let idx = mir_formats::scan::ResourceIndex::scan(&packs_root.join("map"));
+    if idx.maps.is_empty() {
+        error!(
+            "packs/map 下没有地图 (.map)。用 `mir-pack import-maps <素材目录> {}` 收入地图",
+            packs_root.display()
+        );
         std::process::exit(2);
-    });
-    // 地图按约定放在 Map/ 子树 — 只扫它, 避免整棵散帧素材树 (几十万文件)
-    let scan_root = {
-        let m = Path::new(&root).join("Map");
-        if m.is_dir() {
-            m
-        } else {
-            Path::new(&root).to_path_buf()
-        }
-    };
-    let idx = mir_formats::scan::ResourceIndex::scan(&scan_root);
+    }
     let map_name = std::env::var("MIRFORGE_MAP").unwrap_or_else(|_| "0.map".into());
     let Some(entry) = idx.maps.iter().find(|m| {
         m.path
@@ -832,11 +831,11 @@ fn setup(
     };
     let map = mir_formats::map::parse(&std::fs::read(&entry.path).expect("读地图失败"))
         .expect("解析地图失败");
-    // 图库全部来自 packs/ (.mfl); 资源目录只负责提供 .map 地图文件
-    let data_root = PathBuf::from(&root);
+    // data_root 仅余历史签名兼容 (图标加载器等已不读它), 指向 packs
+    let data_root = packs_root.clone();
     info!(
-        "地图 {map_name}: {:?} {}x{}, 资源根 {:?}",
-        map.kind, map.width, map.height, data_root
+        "地图 {map_name}: {:?} {}x{}, 包根 {:?}",
+        map.kind, map.width, map.height, packs_root
     );
 
     let start = std::env::var("MIRFORGE_START").unwrap_or_else(|_| "330,150".into());
@@ -892,10 +891,6 @@ fn setup(
                 .map(|n| (n.to_lowercase(), m.path.clone()))
         })
         .collect();
-    // 自有资源包根: MIRFORGE_PACKS 可覆盖, 默认工作目录下 packs/
-    let packs_root = std::env::var("MIRFORGE_PACKS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("packs"));
     commands.insert_resource(World {
         map,
         map_name: map_name.to_lowercase(),

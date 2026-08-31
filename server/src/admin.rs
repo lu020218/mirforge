@@ -443,7 +443,6 @@ async fn api_zones_add(
 
 // ── 资源帧预览 (图标/外观选择器) ──
 
-static RES_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 static PREVIEW_LIBS: std::sync::Mutex<
     Option<std::collections::HashMap<String, Option<mir_formats::mfl::AnyLib>>>,
 > = std::sync::Mutex::new(None);
@@ -1014,12 +1013,9 @@ async fn api_map_tile(
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let root = RES_ROOT.get().cloned().ok_or(StatusCode::NOT_FOUND)?;
     let png = tokio::task::spawn_blocking(move || {
         let map = mir_formats::map::parse(&std::fs::read(&info.path).ok()?).ok()?;
-        Some(crate::map_render::tile_cached(
-            &root, &map_name, &map, tx, ty,
-        ))
+        Some(crate::map_render::tile_cached(&map_name, &map, tx, ty))
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -1128,11 +1124,7 @@ async fn index() -> Html<&'static str> {
 }
 
 /// 启动管理台 HTTP 服务; 返回命令接收端 (游戏循环消费)
-pub fn spawn(
-    res_root: std::path::PathBuf,
-    db: crate::db::Db,
-) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
-    let _ = RES_ROOT.set(res_root);
+pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
     let addr = std::env::var("MIRFORGE_ADMIN").unwrap_or_else(|_| "127.0.0.1:4001".into());
     if addr == "off" {
         return None;

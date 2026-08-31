@@ -30,14 +30,10 @@ client/          Bevy 客户端
 
 ## 快速开始
 
-资源分两处（本仓库不含任何游戏资源，均被 .gitignore 排除）：
-
-- **地图**：`.map` 文件放仓库根 `resources/`（含 `Map/` 子目录），或用
-  `MIRFORGE_RES` 指向任意位置；
-- **图库**：所有图像资源以自有 `.mfl` 格式放仓库根 `packs/`（按类型分目录）。
-  市售素材用 `mir-pack` 打包进来，格式与命令见 [packs/README.md](packs/README.md)。
-
-开发脚本会自动找到两者，缺图库时会给出提示。
+引擎唯一资源根是仓库根 `packs/`（图库 `.mfl` + 地图 `.map`,均被 .gitignore
+排除,本仓库不含任何游戏资源）。市售素材先用 `mir-pack` 打包/收入
+packs（格式与命令见 [packs/README.md](packs/README.md)）；`resources/`
+只是素材原始文件的开发态堆场,引擎不读它。`MIRFORGE_PACKS` 可改包根路径。
 
 **Windows (PowerShell) 一键脚本：**
 
@@ -56,7 +52,6 @@ tools\dev-server.ps1 -Res D:\mir-res
 **bash / CI：**
 
 ```bash
-export MIRFORGE_RES=/path/to/mir-res
 cargo run -p mirforge-server                                       # 服务器
 MIRFORGE_SERVER=ws://127.0.0.1:4000 cargo run -p mirforge-client   # 客户端
 cargo run -p mirforge-client                                       # 或离线单机
@@ -69,7 +64,7 @@ cargo run -p mirforge-client                                       # 或离线�
 
 ```bash
 cargo test --workspace                # 单元/逻辑测试 (不需要资源)
-MIRFORGE_RES=... tools/run-smokes.sh  # 五套协议级端到端冒烟 (需要资源)
+tools/run-smokes.sh                   # 五套协议级端到端冒烟 (需要 packs/)
 ```
 
 常用环境变量：`MIRFORGE_MAP`(默认 0.map)、`MIRFORGE_ADDR`(默认 127.0.0.1:4000)、

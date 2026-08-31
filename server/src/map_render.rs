@@ -25,7 +25,6 @@ static TILE_CACHE: Mutex<Option<TileCache>> = Mutex::new(None);
 
 /// 带缓存的瓦片渲染
 pub fn tile_cached(
-    res_root: &std::path::Path,
     map_name: &str,
     map: &MirMap,
     tx: u32,
@@ -37,7 +36,7 @@ pub fn tile_cached(
             return hit.clone();
         }
     }
-    let png = std::sync::Arc::new(render_tile(res_root, map, tx, ty));
+    let png = std::sync::Arc::new(render_tile(map, tx, ty));
     if let Ok(mut g) = TILE_CACHE.lock() {
         let c = g.get_or_insert_with(TileCache::new);
         // 简单上限, 超出即清空 (预览场景足够)
@@ -79,7 +78,6 @@ fn lib_name(layer: MapLayer, lib: i16) -> Option<String> {
 
 /// 取一帧图像（进程内缓存已解析的库）
 fn with_frame<R>(
-    res_root: &std::path::Path,
     layer: MapLayer,
     lib: i16,
     idx: i32,
@@ -92,8 +90,7 @@ fn with_frame<R>(
     let mut guard = MAP_LIBS.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
     if !cache.contains_key(&name) {
-        // Crystal 路线已废除: 地图图库只走 packs/map (mir-pack convert 转码)
-        let _ = res_root;
+        // 图库只走 packs/map
         let packs = std::env::var("MIRFORGE_PACKS")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from("packs"));
@@ -154,7 +151,7 @@ fn blit(
 }
 
 /// 渲染一块瓦片：cells [tx*16,ty*16) 起的 16×16 格
-pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -> Vec<u8> {
+pub fn render_tile(map: &MirMap, tx: u32, ty: u32) -> Vec<u8> {
     let (tw, th) = (TILE_CELLS * CELL_W, TILE_CELLS * CELL_H);
     let mut canvas = image::RgbaImage::from_pixel(tw, th, image::Rgba([14, 16, 24, 255]));
     let (ox, oy) = ((tx * TILE_CELLS) as i64, (ty * TILE_CELLS) as i64);
@@ -175,28 +172,28 @@ pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -
             let Some(c) = cell_at(cx, cy) else { continue };
             let (dx, dy) = (cx * CELL_W as i64 - px0, cy * CELL_H as i64 - py0);
             if c.back >= 0 && cx % 2 == 0 && cy % 2 == 0 {
-                with_frame(res_root, MapLayer::Back, c.back_lib, c.back, |img| {
+                with_frame(MapLayer::Back, c.back_lib, c.back, |img| {
                     blit(&mut canvas, img, dx, dy, false)
                 });
             }
             if c.mid >= 0 {
-                let floor = with_frame(res_root, MapLayer::Mid, c.mid_lib, c.mid, |img| {
+                let floor = with_frame(MapLayer::Mid, c.mid_lib, c.mid, |img| {
                     is_floor_size(img.width, img.height)
                 })
                 .unwrap_or(false);
                 if floor {
-                    with_frame(res_root, MapLayer::Mid, c.mid_lib, c.mid, |img| {
+                    with_frame(MapLayer::Mid, c.mid_lib, c.mid, |img| {
                         blit(&mut canvas, img, dx, dy, false)
                     });
                 }
             }
             if c.front >= 0 {
-                let floor = with_frame(res_root, MapLayer::Front, c.front_lib, c.front, |img| {
+                let floor = with_frame(MapLayer::Front, c.front_lib, c.front, |img| {
                     is_floor_size(img.width, img.height)
                 })
                 .unwrap_or(false);
                 if floor {
-                    with_frame(res_root, MapLayer::Front, c.front_lib, c.front, |img| {
+                    with_frame(MapLayer::Front, c.front_lib, c.front, |img| {
                         blit(&mut canvas, img, dx, dy, false)
                     });
                 }
@@ -212,7 +209,7 @@ pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -
             let bottom = (cy + 1) * CELL_H as i64 - py0;
             // mid 非标准尺寸 → 对象
             if c.mid >= 0 {
-                with_frame(res_root, MapLayer::Mid, c.mid_lib, c.mid, |img| {
+                with_frame(MapLayer::Mid, c.mid_lib, c.mid, |img| {
                     if !is_floor_size(img.width, img.height) {
                         blit(&mut canvas, img, base_x, bottom - img.height as i64, false);
                     }
@@ -220,7 +217,7 @@ pub fn render_tile(res_root: &std::path::Path, map: &MirMap, tx: u32, ty: u32) -
             }
             if c.front >= 0 {
                 let blend = c.ani_frame & 0x80 > 0;
-                with_frame(res_root, MapLayer::Front, c.front_lib, c.front, |img| {
+                with_frame(MapLayer::Front, c.front_lib, c.front, |img| {
                     if is_floor_size(img.width, img.height) && c.ani_frame & 0x7F == 0 {
                         return; // 已在地板层画过
                     }
