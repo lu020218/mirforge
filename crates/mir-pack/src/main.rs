@@ -25,6 +25,12 @@ fn main() {
         Some("convert") if args.len() == 3 => convert(Path::new(&args[1]), Path::new(&args[2])),
         Some("mapinfo") if args.len() == 2 => mapinfo(Path::new(&args[1])),
         Some("pack-wil") if args.len() == 3 => pack_wil(Path::new(&args[1]), Path::new(&args[2])),
+        Some("pack-wzl") if args.len() == 3 => pack_wzl(Path::new(&args[1]), Path::new(&args[2])),
+        Some("extract") if args.len() == 4 => extract(
+            Path::new(&args[1]),
+            args[2].parse().unwrap_or(0),
+            Path::new(&args[3]),
+        ),
         Some("pack-split") if args.len() == 4 => {
             let stride: usize = args[3].parse().map_err(|_| "跨度须为整数").unwrap_or(60);
             pack_split(Path::new(&args[1]), Path::new(&args[2]), stride)
@@ -383,7 +389,73 @@ fn pack_split(src: &Path, outdir: &Path, stride: usize) -> Result<(), AnyErr> {
         std::fs::write(outdir.join(format!("{n:03}.mfl")), mfl::write(frames)?)?;
         written += 1;
     }
-    println!("切分完成: {blocks} 段 × {stride} 帧, 写出 {written} 个库 → {}", outdir.display());
+    println!(
+        "切分完成: {blocks} 段 × {stride} 帧, 写出 {written} 个库 → {}",
+        outdir.display()
+    );
+    Ok(())
+}
+
+/// WZL/WZX → .mfl (同名 .wzx 自动定位, 大小写不限)
+fn pack_wzl(src: &Path, out: &Path) -> Result<(), AnyErr> {
+    let wzx = ["wzx", "WZX", "Wzx"]
+        .iter()
+        .map(|e| src.with_extension(e))
+        .find(|p| p.exists())
+        .ok_or_else(|| format!("找不到 {} 的 .wzx 索引", src.display()))?;
+    let lib = mir_formats::wzl::WzlLib::parse(std::fs::read(src)?, std::fs::read(wzx)?)?;
+    let mut w = mfl::MflWriter::new(lib.len());
+    let (mut ok, mut empty) = (0usize, 0usize);
+    for i in 0..lib.len() {
+        match lib.image(i).ok().flatten() {
+            Some(img) => {
+                w.push(&MflFrame {
+                    width: img.width,
+                    height: img.height,
+                    offset_x: img.offset_x,
+                    offset_y: img.offset_y,
+                    rgba: img.rgba,
+                })?;
+                ok += 1;
+            }
+            None => {
+                w.push_empty()?;
+                empty += 1;
+            }
+        }
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let bytes = w.finish();
+    std::fs::write(out, &bytes)?;
+    println!(
+        "打包完成: {} 帧位, 实帧 {ok}, 空帧 {empty}, {} KB → {}",
+        lib.len(),
+        bytes.len() / 1024,
+        out.display()
+    );
+    Ok(())
+}
+
+/// 抽单帧存 PNG (做图标/核对帧号用)
+fn extract(path: &Path, frame: usize, out: &Path) -> Result<(), AnyErr> {
+    let lib = MflLib::parse(std::fs::read(path)?)?;
+    let img = lib
+        .image(frame)?
+        .ok_or_else(|| format!("帧 {frame} 为空"))?;
+    let buf = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.rgba)
+        .ok_or("尺寸不符")?;
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    buf.save(out)?;
+    println!(
+        "帧 {frame} ({}x{}) → {}",
+        img.width,
+        img.height,
+        out.display()
+    );
     Ok(())
 }
 

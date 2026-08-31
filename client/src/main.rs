@@ -146,6 +146,7 @@ fn main() {
                 load_minimap,
                 ground_render,
                 cast_skills,
+                dev_cast,
                 player_sprite,
                 remote_step,
                 npc_step,
@@ -2712,17 +2713,19 @@ struct Fx {
     born: f64,
 }
 
-/// 技能 → 原版特效 (库 0=Magic/1=Magic2, 起始帧, 帧数)。
-/// 帧号出处: Crystal PlayerObject.cs 各 Spell 的 Effect(...) 定义
+/// 技能 → 特效 (库 0=magic/000 / 1=magic/001, 起始帧, 帧数)。
+/// 帧号出处: 对市售 WZL 特效包出索引图逐段人工核对 (连续段边界实测)
 fn skill_fx(id: &str) -> Option<(u8, i32, u8)> {
     Some(match id {
-        "huoqiu" => (0, 170, 10),       // FireBall 命中爆焰
-        "zhiyu" => (0, 370, 10),        // Healing 金光
-        "leidian" => (1, 10, 5),        // ThunderBolt 落雷
-        "shidu" => (0, 770, 10),        // Poisoning 毒雾
-        "huofu" => (0, 1360, 10),       // SoulFireBall 符爆
-        "bingpaoxiao" => (0, 3850, 20), // IceStorm 冰暴
-        "shizihou" => (1, 710, 20),     // LionRoar 吼波
+        "huoqiu" => (0, 170, 10),     // 火球命中爆焰
+        "zhiyu" => (0, 250, 20),      // 治愈蓝光柱
+        "leidian" => (0, 880, 10),    // 雷电电光爆
+        "shidu" => (0, 600, 20),      // 施毒绿雾
+        "huofu" => (0, 1320, 16),     // 灵魂火符符爆
+        "bingpaoxiao" => (1, 580, 8), // 冰咆哮冰爆
+        "liehuo" => (0, 3500, 8),     // 烈火剑法红刀光
+        "shizihou" => (1, 650, 10),   // 狮子吼金色爆发
+        "yeman" => (1, 0, 18),        // 野蛮冲撞尘土
         _ => return None,
     })
 }
@@ -2814,6 +2817,59 @@ fn cast_skills(
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,
         target_id: target.map(|(id, _, _)| id),
+        position: None,
+    });
+}
+
+/// 开发钩子: MIRFORGE_CAST=skill_id[:秒] — 周期性自动施放 (特效视觉自查用)
+fn dev_cast(
+    time: Res<Time>,
+    mut net: ResMut<Net>,
+    remotes: Res<Remotes>,
+    mut q: Query<&mut Player>,
+    mut next_at: Local<f64>,
+) {
+    let Ok(spec) = std::env::var("MIRFORGE_CAST") else {
+        return;
+    };
+    let Ok(mut p) = q.get_single_mut() else {
+        return;
+    };
+    let (id, every) = match spec.split_once(':') {
+        Some((a, b)) => (a.to_string(), b.parse().unwrap_or(2.0)),
+        None => (spec, 2.0),
+    };
+    let now = time.elapsed_secs_f64();
+    if now < *next_at {
+        return;
+    }
+    let Some(s) = net.skills.iter().find(|s| s.id == id).cloned() else {
+        return;
+    };
+    let target = if s.self_cast {
+        None
+    } else {
+        let Some(t) = remotes
+            .0
+            .iter()
+            .filter(|(_, r)| r.image.is_some() && r.anim != 4)
+            .map(|(tid, r)| (tid.clone(), (r.pos - p.pos).length(), r.pos))
+            .filter(|(_, d, _)| *d <= s.range)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+        else {
+            return; // 射程内无目标, 下帧再试
+        };
+        Some(t)
+    };
+    *next_at = now + every;
+    if let Some((_, _, mp)) = &target {
+        p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
+    }
+    p.attack_start = Some(now);
+    p.anim_t = 0.0;
+    net.send(ClientMessage::UseSkill {
+        skill_id: s.id,
+        target_id: target.map(|(t, _, _)| t),
         position: None,
     });
 }

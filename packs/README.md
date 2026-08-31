@@ -11,7 +11,8 @@ Crystal 资源路线已废除 — 引擎不再读取任何 `.Lib`。原版资源
 ```
 packs/
   items.mfl           物品图标库 (整库, 帧号 = 物品表"图标帧"字段)
-  magicon.mfl         技能图标库 (MagIcon 帧号)
+  magicon.mfl         技能图标库 (帧号 = 客户端 magicon_index 固定表,
+                      图标由特效代表帧裁切生成)
   mmap.mfl            小地图库 (帧号 = 区域配置的小地图帧)
   magic/000.mfl       技能特效 (000=Magic, 001=Magic2)
   weapon/050.mfl      武器外观 (对应物品表"外观"字段, 自有素材建议从 050 起编号)
@@ -37,7 +38,8 @@ packs/
 - 散图 (立绘/小地图) → `mir-pack pack-list`
 - Crystal .Lib → `mir-pack convert` (整目录) 或逐个 pack
 - WIL/WIX (#ILIB v1.0 16bpp) → `mir-pack pack-wil`
-- WZL/WZX → 解码器待实现 (roadmap)
+- WZL/WZX (www.shandagames.com 头, enc5=RGB565/enc6=BGR888) → `mir-pack pack-wzl`
+  (enc3 调色板与 enc7 变体样本占比 ~5%, 暂按空帧跳过)
 
 地图接入三件套: `.map` 放在 MIRFORGE_RES 下任意位置 (按文件名扫描);
 该图的 Tiles/SmTiles/Objects 套打进 `packs/map/`;

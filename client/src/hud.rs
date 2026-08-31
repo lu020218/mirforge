@@ -269,19 +269,18 @@ fn spawn_stat_bar(
 }
 
 /// 进入游戏时构建 HUD (全部绝对定位, 对齐设计稿)
-/// 技能 id → MagIcon.Lib 帧号 (逐帧人工核对: 火球/治愈/毒骷髅/焰符/闪电/
-/// 火焰剑/雪花/狮头/冲撞人形)
+/// 技能 id → packs/magicon.mfl 帧号 (图标由特效代表帧裁切生成, 顺序固定)
 fn magicon_index(id: &str) -> Option<usize> {
     Some(match id {
         "huoqiu" => 0,
-        "zhiyu" => 2,
-        "shidu" => 10,
-        "huofu" => 16,
-        "leidian" => 20,
-        "bingpaoxiao" => 46,
-        "liehuo" => 50,
-        "shizihou" => 58,
-        "yeman" => 60,
+        "zhiyu" => 1,
+        "shidu" => 2,
+        "huofu" => 3,
+        "leidian" => 4,
+        "bingpaoxiao" => 5,
+        "liehuo" => 6,
+        "shizihou" => 7,
+        "yeman" => 8,
         _ => return None,
     })
 }
