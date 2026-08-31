@@ -3,7 +3,7 @@
 **开源的现代化传奇（Legend of Mir 2）游戏引擎，Rust 实现，包含服务器与客户端。**
 
 - 🦀 全 Rust：服务器（权威模拟）+ 客户端（[Bevy](https://bevyengine.org)）+ 双端共享的协议与判定 crate
-- 📦 **直读原版资源**：把市面上已有的传奇资源目录（`.map` / `WIL/WIX` / `WZL/WZX` / Crystal `.Lib`）指给引擎即可运行，无需预转换
+- 📦 **自有资源体系**：市售素材（逐帧 PNG / `WIL/WIX` / `WZL/WZX` / Crystal `.Lib`）经 `mir-pack` 一次打包为自有 `.mfl` 格式，引擎只读 `packs/`
 - 🖥️ 现代体验：现代 MMORPG 风格界面、HiDPI/4K 自适应、任意窗口尺寸
 - ⚖️ 双许可：MIT OR Apache-2.0
 
@@ -44,9 +44,6 @@ tools\dev-client.ps1                 # 窗口 2: 客户端 (注册→建角→�
 
 # 离线单机漫游 (不需要服务器)
 tools\dev-client.ps1 -Offline
-
-# 资源目录不在默认位置时
-tools\dev-server.ps1 -Res D:\mir-res
 ```
 
 **bash / CI：**
@@ -68,8 +65,8 @@ tools/run-smokes.sh                   # 五套协议级端到端冒烟 (需要 p
 ```
 
 常用环境变量：`MIRFORGE_MAP`(默认 0.map)、`MIRFORGE_ADDR`(默认 127.0.0.1:4000)、
-`MIRFORGE_DB`(SQLite 路径)、`MIRFORGE_LIBSET`(默认 WemadeMir2)。
-区域/刷怪/掉落/传送门由 `server/zones/*.json` 边车配置驱动。
+`MIRFORGE_DB`(SQLite 路径)、`MIRFORGE_PACKS`(资源包根, 默认 packs/)。
+区域/怪物/物品等全部配置存于 SQLite, 在管理台可视化维护。
 
 服务端自带 Web 管理台 (默认 <http://127.0.0.1:4001>)，物品/技能/NPC/任务/地图/BOSS
 均可视化维护、保存即热重载。操作手册见 [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)。
