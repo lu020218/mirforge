@@ -79,7 +79,16 @@ async fn main() {
                 .unwrap_or_else(|| PathBuf::from("data"))
         });
 
-    let idx = mir_formats::scan::ResourceIndex::scan(Path::new(&root));
+    // 地图按约定放在 Map/ 子树 — 只扫它, 避免整棵散帧素材树 (几十万文件)
+    let scan_root = {
+        let m = Path::new(&root).join("Map");
+        if m.is_dir() {
+            m
+        } else {
+            Path::new(&root).to_path_buf()
+        }
+    };
+    let idx = mir_formats::scan::ResourceIndex::scan(&scan_root);
     let dir = zones_dir();
     let db = db::Db::open(&db_path).await.expect("打开数据库失败");
     config_store::ensure_schema(db.pool())

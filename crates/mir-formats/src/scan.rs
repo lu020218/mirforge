@@ -49,6 +49,11 @@ pub struct ResourceIndex {
 
 impl ResourceIndex {
     /// 递归扫描目录。深度与文件数不设上限，但每文件只读头部。
+    ///
+    /// 性能要点 (散帧素材目录动辄几十万文件):
+    /// - 用 DirEntry::file_type() 判目录 — 遍历自带的信息, 不比 `is_dir()`
+    ///   每条目多付一次 stat 系统调用;
+    /// - 不下钻 `Placements/` (LibraryEditor 解包的逐帧锚点目录, 只有 txt)。
     pub fn scan(root: &Path) -> Self {
         let mut out = Self::default();
         let mut stack = vec![root.to_path_buf()];
@@ -57,12 +62,13 @@ impl ResourceIndex {
                 continue;
             };
             for e in entries.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    stack.push(p);
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if e.file_name().to_str() != Some("Placements") {
+                        stack.push(e.path());
+                    }
                     continue;
                 }
-                out.classify(&p);
+                out.classify(&e.path());
             }
         }
         // 稳定输出顺序 (与文件系统遍历顺序解耦)

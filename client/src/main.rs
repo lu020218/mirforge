@@ -807,7 +807,16 @@ fn setup(
         error!("请设置 MIRFORGE_RES 指向传奇资源目录");
         std::process::exit(2);
     });
-    let idx = mir_formats::scan::ResourceIndex::scan(Path::new(&root));
+    // 地图按约定放在 Map/ 子树 — 只扫它, 避免整棵散帧素材树 (几十万文件)
+    let scan_root = {
+        let m = Path::new(&root).join("Map");
+        if m.is_dir() {
+            m
+        } else {
+            Path::new(&root).to_path_buf()
+        }
+    };
+    let idx = mir_formats::scan::ResourceIndex::scan(&scan_root);
     let map_name = std::env::var("MIRFORGE_MAP").unwrap_or_else(|_| "0.map".into());
     let Some(entry) = idx.maps.iter().find(|m| {
         m.path
