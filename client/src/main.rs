@@ -150,8 +150,7 @@ fn main() {
                 player_sprite,
                 remote_step,
                 npc_step,
-                float_damage,
-                fx_step,
+                (float_damage, fx_step, projectile_step),
                 upload_dirty_pages,
                 net_send,
                 hud::update.run_if(in_state(Screen::InGame)),
@@ -2101,6 +2100,8 @@ fn net_pump(
                     fx_base,
                     fx_frames,
                     anim,
+                    stages,
+                    src,
                     ..
                 } => {
                     // 旁观视角: 施放者播挥砍/施法动作 (本地玩家自己已就地播过)
@@ -2121,9 +2122,66 @@ fn net_pump(
                     }
                     // 特效帧段随广播下发 (管理台配置); 帧数 0 = 无帧动画画扩散圈
                     let fx = (fx_frames > 0).then_some((fx_lib as u8, fx_base as i32, fx_frames));
+                    // 二/三段: 起手特效在施放者脚下 (段位置按经典布局自动推导:
+                    // 三段 = 命中-170, 二段 = 命中-10; 帧数 0 = 播放时逐块实测)
+                    let src_pt = src.map(|sp| DVec2::new(sp.x, sp.y));
+                    let now_s = time.elapsed_secs_f64();
+                    if stages >= 2 {
+                        if let (Some(sp), Some((lib, base, _))) = (src_pt, fx) {
+                            let cast_base = base - if stages >= 3 { 170 } else { 10 };
+                            if cast_base >= 0 {
+                                let cx = sp.x as f32 * CELL_W - CELL_W / 2.0;
+                                let cy = sp.y as f32 * CELL_H - CELL_H / 2.0;
+                                commands.spawn((
+                                    Sprite::default(),
+                                    Transform::from_xyz(cx, -cy, 700.0),
+                                    Visibility::Hidden,
+                                    EffectAnim {
+                                        lib,
+                                        base: cast_base,
+                                        frames: 0,
+                                        born: now_s,
+                                        px: cx,
+                                        py: cy,
+                                    },
+                                ));
+                            }
+                        }
+                    }
                     for pt in points {
                         let px = pt.x as f32 * CELL_W - CELL_W / 2.0;
                         let py = pt.y as f32 * CELL_H - CELL_H / 2.0;
+                        // 三段: 飞行弹体压阵, 命中段等到达再播
+                        if stages >= 3 {
+                            if let (Some(sp), Some((lib, base, frames))) = (src_pt, fx) {
+                                let d = pt - sp;
+                                if base >= 160 && d.length() > 0.3 {
+                                    // Mir 16 向: 0=上, 顺时针
+                                    let ang = d.x.atan2(-d.y);
+                                    let dir16 = ((ang / (std::f64::consts::TAU / 16.0)).round()
+                                        as i32)
+                                        .rem_euclid(16);
+                                    let sx = sp.x as f32 * CELL_W - CELL_W / 2.0;
+                                    let sy = sp.y as f32 * CELL_H - CELL_H / 2.0;
+                                    commands.spawn((
+                                        Sprite::default(),
+                                        Transform::from_xyz(sx, -sy, 700.0),
+                                        Visibility::Hidden,
+                                        Projectile {
+                                            lib,
+                                            row: base - 160 + dir16 * 10,
+                                            born: now_s,
+                                            dur: (d.length() / 14.0).max(0.08),
+                                            from: Vec2::new(sx, sy),
+                                            to: Vec2::new(px, py),
+                                            hit_base: base,
+                                            hit_frames: frames,
+                                        },
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
                         if empowered {
                             commands.spawn((
                                 Sprite {
@@ -2894,10 +2952,26 @@ struct Fx {
 struct EffectAnim {
     lib: u8,
     base: i32,
+    /// 0 = 自适应: 按 10 槽块实测帧数 (起手段等按经典布局推导的段用)
     frames: u8,
     born: f64,
     px: f32,
     py: f32,
+}
+
+/// 技能飞行弹体: 从施放者直线飞向目标, 循环播 16 向飞行帧, 到达再播命中段
+#[derive(Component)]
+struct Projectile {
+    lib: u8,
+    /// 本向飞行行基址 (fx_base-160 + dir16*10, 帧数逐块实测)
+    row: i32,
+    born: f64,
+    dur: f64,
+    /// 起终点 (世界像素, y 向下为正)
+    from: Vec2,
+    to: Vec2,
+    hit_base: i32,
+    hit_frames: u8,
 }
 
 fn skill_color(id: &str) -> Color {
@@ -3065,8 +3139,13 @@ fn fx_step(
     }
     // 原版特效帧动画: 100ms/帧, blend (加色近似) 解码
     for (e, mut tf, mut sp, mut vis, fx) in q_anim.iter_mut() {
+        let eff = if fx.frames == 0 {
+            world.block_len(Layer::Fx(fx.lib), fx.base, 10).min(10)
+        } else {
+            fx.frames
+        };
         let k = ((now - fx.born) / 0.1) as i32;
-        if k >= fx.frames as i32 {
+        if k >= eff as i32 {
             commands.entity(e).despawn();
             continue;
         }
@@ -3077,6 +3156,56 @@ fn fx_step(
             sp.anchor = Anchor::TopLeft;
             tf.translation.x = fx.px + f.off.x;
             tf.translation.y = -(fx.py + f.off.y);
+            *vis = Visibility::Inherited;
+        }
+    }
+}
+
+/// 技能弹体步进: 直线插值飞行, 循环飞行帧; 到达 (或该向无帧) 时播命中段
+fn projectile_step(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
+    mut q: Query<(
+        Entity,
+        &mut Transform,
+        &mut Sprite,
+        &mut Visibility,
+        &Projectile,
+    )>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (e, mut tf, mut sp, mut vis, pj) in q.iter_mut() {
+        let t = ((now - pj.born) / pj.dur).min(1.0);
+        let k = world.block_len(Layer::Fx(pj.lib), pj.row, 10).min(10);
+        if t >= 1.0 || k == 0 {
+            commands.entity(e).despawn();
+            commands.spawn((
+                Sprite::default(),
+                Transform::from_xyz(pj.to.x, -pj.to.y, 700.0),
+                Visibility::Hidden,
+                EffectAnim {
+                    lib: pj.lib,
+                    base: pj.hit_base,
+                    frames: pj.hit_frames,
+                    born: now,
+                    px: pj.to.x,
+                    py: pj.to.y,
+                },
+            ));
+            continue;
+        }
+        let fi = pj.row + (((now - pj.born) / 0.09) as i32) % k as i32;
+        if let Some(f) = world.frame_ex(Layer::Fx(pj.lib), 0, fi, true) {
+            world.ensure_pages(&mut images);
+            sp.image = world.pages[f.page].clone();
+            sp.rect = Some(f.rect);
+            sp.anchor = Anchor::TopLeft;
+            let x = pj.from.x + (pj.to.x - pj.from.x) * t as f32;
+            let y = pj.from.y + (pj.to.y - pj.from.y) * t as f32;
+            tf.translation.x = x + f.off.x;
+            tf.translation.y = -(y + f.off.y);
             *vis = Visibility::Inherited;
         }
     }

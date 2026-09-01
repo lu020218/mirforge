@@ -277,6 +277,9 @@ pub struct SkillDef {
     /// 施放动作: "attack" 挥砍 / "cast" 施法; 空按 cast 处理
     #[serde(default)]
     pub anim: String,
+    /// 技能类型: 1 一段(命中) / 2 二段(起手+命中) / 3 三段(起手+飞行+命中)
+    #[serde(default)]
+    pub stages: u8,
     /// 特效: 库号 (magic/00N) / 起始帧 / 帧数 (帧数 0 = 无帧动画)
     #[serde(default)]
     pub fx_lib: u16,
@@ -3359,6 +3362,8 @@ impl Game {
                 fx_base: def.fx_base,
                 fx_frames: def.fx_frames,
                 anim: def.anim.clone(),
+                stages: def.stages.max(1),
+                src: Some(Position { x: px, y: py }),
             },
         )
         .await;

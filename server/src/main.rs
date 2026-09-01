@@ -101,6 +101,9 @@ async fn main() {
     config_store::migrate_skill_anim(db.pool())
         .await
         .expect("技能动作回填失败");
+    config_store::migrate_skill_stages(db.pool())
+        .await
+        .expect("技能类型回填失败");
 
     // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
     if config_store::is_empty(db.pool()).await.unwrap_or(false) {

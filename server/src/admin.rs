@@ -964,6 +964,10 @@ struct StripQuery {
     base: usize,
     #[serde(default)]
     frames: usize,
+    /// 扫描窗硬上限 (0 = 默认 frames*4+32); 起手/飞行等 10 槽块预览用,
+    /// 防止越过块边界吸入邻段帧
+    #[serde(default)]
+    span: usize,
 }
 
 /// 成品拼条缓存 (段级; 特效库解帧+缩放不便宜, 弹层反复开)
@@ -983,7 +987,7 @@ async fn api_packs_strip(
     }
     const CELL: u32 = 96;
     let n = q.frames.clamp(1, 30);
-    let key = (q.file.clone(), q.base, n);
+    let key = (q.file.clone(), q.base, n + q.span * 100);
     if let Ok(mut g) = STRIP_CACHE.lock() {
         if let Some(hit) = g.get_or_insert_with(Default::default).get(&key) {
             return Ok(strip_response(hit.as_ref().clone()));
@@ -993,7 +997,8 @@ async fn api_packs_strip(
         let lib = viewer_lib(&q.file)?;
         // 收集实帧 (容忍段内空洞, 扫描窗口有界)
         let mut imgs = Vec::new();
-        let end = (q.base + n * 4 + 32).min(lib.len());
+        let win = if q.span > 0 { q.span } else { n * 4 + 32 };
+        let end = (q.base + win).min(lib.len());
         for i in q.base..end {
             if imgs.len() >= n {
                 break;

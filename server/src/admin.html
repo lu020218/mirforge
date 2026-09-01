@@ -182,7 +182,7 @@
       <div id="err-skills" class="err-msg"></div>
       <div class="card-box">
         <table id="skill-table">
-          <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th>参数1</th><th>参数2</th><th title="修炼满级; 官设 3, 调 4/5 可做高级特效玩法">满级</th><th title="从 L 升到 L+1 需施放 基数×(L+1) 次">修炼基数</th><th title="每修炼级伤害/治疗加成比例, 0.3 = 每级 +30%">每级加成</th><th title="packs/magicon.mfl 的帧号, 点缩略图挑选">图标</th><th title="施放时人物动作: 挥砍(战士系) / 施法(双手前推)">动作</th><th title="特效库号 (magic/00N) / 起始帧 / 帧数; 点「选段」可视化挑">特效</th><th></th></tr></thead>
+          <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th>参数1</th><th>参数2</th><th title="修炼满级; 官设 3, 调 4/5 可做高级特效玩法">满级</th><th title="从 L 升到 L+1 需施放 基数×(L+1) 次">修炼基数</th><th title="每修炼级伤害/治疗加成比例, 0.3 = 每级 +30%">每级加成</th><th title="packs/magicon.mfl 的帧号, 点缩略图挑选">图标</th><th title="施放时人物动作: 挥砍(战士系) / 施法(双手前推)">动作</th><th title="特效过程: 一段=命中; 二段=起手+命中; 三段=起手+飞行+命中 (段位置按经典布局自动推导: 起手=命中-10/-170, 飞行=命中-160 起 16 向)">类型</th><th title="特效库号 (magic/00N) / 起始帧 / 帧数; 点「选段」可视化挑">特效</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -789,11 +789,16 @@ function skillRow(cls, sk) {
         <option value="attack" ${(sk.anim ?? '') === 'attack' ? 'selected' : ''}>挥砍</option>
         <option value="cast" ${(sk.anim ?? '') !== 'attack' ? 'selected' : ''}>施法</option>
     </select></td>
+    <td><select data-c="stages">
+        <option value="1" ${(sk.stages ?? 1) <= 1 ? 'selected' : ''}>一段</option>
+        <option value="2" ${(sk.stages ?? 1) === 2 ? 'selected' : ''}>二段</option>
+        <option value="3" ${(sk.stages ?? 1) >= 3 ? 'selected' : ''}>三段</option>
+    </select></td>
     <td><input data-c="fx_lib" value="${sk.fx_lib ?? 0}" style="width:38px" title="库号">
         <input data-c="fx_base" value="${sk.fx_base ?? 0}" style="width:55px" title="起始帧">
         <input data-c="fx_frames" value="${sk.fx_frames ?? 0}" style="width:38px" title="帧数">
         <button class="ghost" onclick="openFxPicker(this)" title="从特效库可视化选段">选段</button>
-        <span class="fx-mini" style="display:inline-block;vertical-align:middle;width:40px;height:40px" title="当前特效预览"></span></td>
+        <span class="fx-mini" style="display:inline-block;vertical-align:middle;min-width:40px;height:40px;white-space:nowrap" title="当前特效过程预览: 起手→飞行(向右)→命中"></span></td>
     <td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   const sync = () => {
     const t = tr.querySelector('[data-c=ktype]').value;
@@ -807,6 +812,7 @@ function skillRow(cls, sk) {
       '/api/packs/frame?file=magicon.mfl&idx=' + (Number(e.target.value) || 0));
   ['fx_lib', 'fx_base', 'fx_frames'].forEach(c =>
     tr.querySelector(`input[data-c="${c}"]`).addEventListener('change', () => syncFxMini(tr)));
+  tr.querySelector('select[data-c="stages"]').addEventListener('change', () => syncFxMini(tr));
   syncFxMini(tr);
   return tr;
 }
@@ -865,24 +871,33 @@ function pickFxSeg(base, frames) {
 }
 
 // 特效动画块: /api/packs/strip 拼条 + CSS steps() 循环播放 (约 10 帧/秒)
-function fxAnimDiv(file, base, frames, cell) {
+function fxAnimDiv(file, base, frames, cell, span) {
   const n = Math.max(1, Math.min(frames, 30));
-  return `<div class="fxanim" style="width:${cell}px;height:${cell}px;margin:0 auto;
-    background-image:url('/api/packs/strip?file=${encodeURIComponent(file)}&base=${base}&frames=${n}');
+  return `<div class="fxanim" style="width:${cell}px;height:${cell}px;margin:0 auto;display:inline-block;
+    background-image:url('/api/packs/strip?file=${encodeURIComponent(file)}&base=${base}&frames=${n}${span ? '&span=' + span : ''}');
     background-size:${n * cell}px ${cell}px;
     --fx-end:-${n * cell}px;
     animation:fxplay ${(n / 10).toFixed(1)}s steps(${n}) infinite"></div>`;
 }
 
-// 技能行内小预览: 反映当前 fx_lib/fx_base/fx_frames 配置
+// 技能行内小预览: 按类型展示完整过程 (起手→飞行→命中; 飞行统一预览向右 dir16=4)
 function syncFxMini(tr) {
   const box = tr.querySelector('.fx-mini');
   if (!box) return;
   const v = c => Number(tr.querySelector(`input[data-c="${c}"]`).value) || 0;
   const frames = v('fx_frames');
-  box.innerHTML = frames > 0
-    ? fxAnimDiv(`magic/${String(v('fx_lib')).padStart(3, '0')}.mfl`, v('fx_base'), frames, 40)
-    : '';
+  if (frames <= 0) { box.innerHTML = ''; return; }
+  const file = `magic/${String(v('fx_lib')).padStart(3, '0')}.mfl`;
+  const base = v('fx_base');
+  const stages = Number(tr.querySelector('select[data-c="stages"]').value) || 1;
+  const parts = [];
+  if (stages >= 2) {
+    const castBase = base - (stages >= 3 ? 170 : 10);
+    if (castBase >= 0) parts.push(fxAnimDiv(file, castBase, 10, 40, 10));
+  }
+  if (stages >= 3 && base >= 160) parts.push(fxAnimDiv(file, base - 160 + 4 * 10, 10, 40, 10));
+  parts.push(fxAnimDiv(file, base, frames, 40));
+  box.innerHTML = parts.join('');
 }
 function closeFxPicker(ev) { if (ev.target.id === 'fx-picker') ev.target.classList.remove('on'); }
 function addSkillRow() {
@@ -907,6 +922,7 @@ function collectSkills() {
       level_bonus: Number(v('level_bonus')) || 0,
       icon: Number(v('icon')) || 0,
       anim: tr.querySelector('select[data-c="anim"]').value,
+      stages: Number(tr.querySelector('select[data-c="stages"]').value) || 1,
       fx_lib: Number(v('fx_lib')) || 0,
       fx_base: Number(v('fx_base')) || 0,
       fx_frames: Number(v('fx_frames')) || 0,

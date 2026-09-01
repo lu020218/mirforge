@@ -15,7 +15,8 @@
       "mp": 6,
       "name": "火球术",
       "range": 7,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 3
     },
     {
       "anim": "cast",
@@ -35,7 +36,8 @@
       "mp": 12,
       "name": "雷电术",
       "range": 7,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 2
     },
     {
       "anim": "cast",
@@ -55,7 +57,8 @@
       "mp": 20,
       "name": "冰咆哮",
       "range": 7,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 1
     }
   ],
   "taoist": [
@@ -72,7 +75,8 @@
       "mp": 8,
       "name": "治愈术",
       "range": 0,
-      "self_cast": true
+      "self_cast": true,
+      "stages": 1
     },
     {
       "anim": "cast",
@@ -89,7 +93,8 @@
       "mp": 10,
       "name": "施毒术",
       "range": 7,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 1
     },
     {
       "anim": "cast",
@@ -106,7 +111,8 @@
       "mp": 12,
       "name": "灵魂火符",
       "range": 7,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 3
     }
   ],
   "warrior": [
@@ -125,7 +131,8 @@
       "mp": 5,
       "name": "烈火剑法",
       "range": 2.5,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 1
     },
     {
       "anim": "attack",
@@ -142,7 +149,8 @@
       "mp": 8,
       "name": "野蛮冲撞",
       "range": 2.5,
-      "self_cast": false
+      "self_cast": false,
+      "stages": 1
     },
     {
       "anim": "attack",
@@ -162,7 +170,8 @@
       "mp": 15,
       "name": "狮子吼",
       "range": 0,
-      "self_cast": true
+      "self_cast": true,
+      "stages": 1
     }
   ]
 }
