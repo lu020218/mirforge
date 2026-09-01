@@ -15,11 +15,12 @@ packs/
                       管理台技能页可视化挑选)
   mmap.mfl            小地图库 (帧号 = 区域配置的小地图帧)
   magic/000.mfl       技能特效素材源合集 (000=Magic, 001=Magic2, ... 保留备选段)
-  magic/010.mfl       单技能标准文件 (每技能一个, mir-pack remap 从合集抽段生成):
+  magic/100.mfl       单技能标准文件 (每技能一个, mir-pack remap 从合集抽段生成):
                       起手@0 (≤10 帧), 飞行@10 (16 向×10 槽, 逆时针行序),
-                      命中@170 起; 技能配置 fx_base 统一 170, 段位置是格式约定
-                      (010 火球 011 治愈 012 施毒 013 火符 014 雷电
-                       015 冰咆哮 016 烈火 017 狮吼 018 野蛮)
+                      命中@170 起; 技能配置 fx_base 统一 170, 段位置是格式约定。
+                      100 起编号与素材源合集拉开, 全部拆完后旧合集可删
+                      (100 火球 101 治愈 102 施毒 103 火符 104 雷电
+                       105 冰咆哮 106 烈火 107 狮吼 108 野蛮)
   weapon/050.mfl      武器外观 (对应物品表"外观"字段, 自有素材建议从 050 起编号)
   armor/050.mfl       衣甲外观
   hair/               发型
@@ -43,8 +44,10 @@ packs/
 - 散图 (立绘/小地图) → `mir-pack pack-list`
 - Crystal .Lib → `mir-pack convert` (整目录) 或逐个 pack
 - WIL/WIX (#ILIB v1.0 16bpp) → `mir-pack pack-wil`
-- WZL/WZX (www.shandagames.com 头, enc5=RGB565/enc6=BGR888) → `mir-pack pack-wzl`
-  (enc3 调色板与 enc7 变体样本占比 ~5%, 暂按空帧跳过)
+- WZL/WZX (www.shandagames.com 头) → `mir-pack pack-wzl`
+  (enc3=8bpp 经典调色板 / enc5=RGB565 / enc6=BGR888 / enc7=BGRA,
+   len=0 帧为未压缩裸像素, 全编码已支持)
+- 段重组 (单技能标准文件等) → `mir-pack remap <源.mfl> <出.mfl> dst=src:count...`
 
 地图接入三件套: `.map` 用 `mir-pack import-maps <素材目录> packs` 收入
 `packs/map/` (同名只收第一份);

@@ -1028,17 +1028,28 @@ pub async fn migrate_skill_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// 特效切换单技能标准文件 (magic/010+, 起手@0/飞行@10/命中@170):
 /// 仅命中"仍指向素材源合集库旧段"的技能, 幂等
 pub async fn migrate_skill_fx_split(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    // (id, 旧库, 旧命中基址, 新库) — 命中基址统一迁到 170
-    let map: [(&str, i64, i64, i64); 9] = [
-        ("huoqiu", 0, 170, 10),
-        ("zhiyu", 0, 250, 11),
-        ("shidu", 0, 600, 12),
-        ("huofu", 0, 1320, 13),
-        ("leidian", 0, 880, 14),
-        ("bingpaoxiao", 1, 580, 15),
-        ("liehuo", 0, 3500, 16),
-        ("shizihou", 1, 650, 17),
-        ("yeman", 1, 0, 18),
+    // (id, 旧库, 旧命中基址, 新库) — 命中基址统一迁到 170。
+    // 单技能文件从 100 起编号, 与素材源合集 (000-009) 拉开, 拆完好删旧库;
+    // 第二组条目兜底曾短暂用过 010-018 编号的库
+    let map: [(&str, i64, i64, i64); 18] = [
+        ("huoqiu", 0, 170, 100),
+        ("zhiyu", 0, 250, 101),
+        ("shidu", 0, 600, 102),
+        ("huofu", 0, 1320, 103),
+        ("leidian", 0, 880, 104),
+        ("bingpaoxiao", 1, 580, 105),
+        ("liehuo", 0, 3500, 106),
+        ("shizihou", 1, 650, 107),
+        ("yeman", 1, 0, 108),
+        ("huoqiu", 10, 170, 100),
+        ("zhiyu", 11, 170, 101),
+        ("shidu", 12, 170, 102),
+        ("huofu", 13, 170, 103),
+        ("leidian", 14, 170, 104),
+        ("bingpaoxiao", 15, 170, 105),
+        ("liehuo", 16, 170, 106),
+        ("shizihou", 17, 170, 107),
+        ("yeman", 18, 170, 108),
     ];
     let mut hits = 0;
     for (id, old_lib, old_base, new_lib) in map {
