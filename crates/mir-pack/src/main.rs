@@ -409,12 +409,23 @@ fn pack_split(src: &Path, outdir: &Path, stride: usize) -> Result<(), AnyErr> {
 fn remap(src: &Path, out: &Path, specs: &[&str]) -> Result<(), AnyErr> {
     let lib = mfl::AnyLib::open(src)?;
     let mut moves: Vec<(usize, usize, usize)> = Vec::new();
+    let mut pad = 0usize;
     for sp in specs {
-        let (dst, rest) = sp.split_once('=').ok_or("spec 应为 dst=src:count")?;
-        let (sb, cnt) = rest.split_once(':').ok_or("spec 应为 dst=src:count")?;
+        // pad=N: 帧位数至少撑到 N (统一规格用)
+        if let Some(n) = sp.strip_prefix("pad=") {
+            pad = n.parse()?;
+            continue;
+        }
+        let (dst, rest) = sp.split_once('=').ok_or("spec 应为 dst=src:count 或 pad=N")?;
+        let (sb, cnt) = rest.split_once(':').ok_or("spec 应为 dst=src:count 或 pad=N")?;
         moves.push((dst.parse()?, sb.parse()?, cnt.parse()?));
     }
-    let total = moves.iter().map(|(d, _, c)| d + c).max().unwrap_or(0);
+    let total = moves
+        .iter()
+        .map(|(d, _, c)| d + c)
+        .max()
+        .unwrap_or(0)
+        .max(pad);
     let mut frames: Vec<Option<MflFrame>> = Vec::new();
     frames.resize_with(total, || None);
     let mut ok = 0usize;
