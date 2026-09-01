@@ -840,7 +840,8 @@ async function openFxPicker(btn) {
     <div style="width:110px;background:var(--panel);border:1px solid var(--edge);border-radius:6px;
          padding:6px;text-align:center;cursor:pointer" onclick="pickFxSeg(${b},${n})">
       <div style="height:90px;display:flex;align-items:center;justify-content:center;overflow:hidden">
-        <img loading="lazy" src="/api/packs/frame?file=${encodeURIComponent(file)}&idx=${b + Math.floor(n / 2)}" style="max-width:100px;max-height:88px">
+        <img loading="lazy" src="/api/packs/frame?file=${encodeURIComponent(file)}&idx=${b + Math.floor(n / 2)}" style="max-width:100px;max-height:88px"
+             onerror="this.onerror=null;this.src='/api/packs/frame?file=${encodeURIComponent(file)}&idx=${b}'">
       </div><div class="hint">帧 ${b} · ${n} 帧</div>
     </div>`).join('');
   document.getElementById('fx-picker').classList.add('on');
