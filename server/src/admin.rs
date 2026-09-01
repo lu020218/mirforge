@@ -957,6 +957,123 @@ async fn api_packs_frame(
         .unwrap())
 }
 
+#[derive(Deserialize)]
+struct StripQuery {
+    file: String,
+    #[serde(default)]
+    base: usize,
+    #[serde(default)]
+    frames: usize,
+}
+
+/// 成品拼条缓存 (段级; 特效库解帧+缩放不便宜, 弹层反复开)
+type StripCache = std::collections::HashMap<(String, usize, usize), std::sync::Arc<Vec<u8>>>;
+static STRIP_CACHE: std::sync::Mutex<Option<StripCache>> = std::sync::Mutex::new(None);
+
+/// 特效段动画拼条: 自 base 起收集至多 frames 个实帧, 按各帧锚点对齐到
+/// 公共包围盒后缩放进 96px 格子, 横拼一条 PNG。前端用 CSS steps() 循环
+/// 播放, 一段一个请求就能看完整动画。
+async fn api_packs_strip(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<StripQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    const CELL: u32 = 96;
+    let n = q.frames.clamp(1, 30);
+    let key = (q.file.clone(), q.base, n);
+    if let Ok(mut g) = STRIP_CACHE.lock() {
+        if let Some(hit) = g.get_or_insert_with(Default::default).get(&key) {
+            return Ok(strip_response(hit.as_ref().clone()));
+        }
+    }
+    let png = tokio::task::spawn_blocking(move || {
+        let lib = viewer_lib(&q.file)?;
+        // 收集实帧 (容忍段内空洞, 扫描窗口有界)
+        let mut imgs = Vec::new();
+        let end = (q.base + n * 4 + 32).min(lib.len());
+        for i in q.base..end {
+            if imgs.len() >= n {
+                break;
+            }
+            if let Ok(Some(img)) = lib.image(i) {
+                if img.width >= 2 && img.height >= 2 {
+                    imgs.push(img);
+                }
+            }
+        }
+        if imgs.is_empty() {
+            return None;
+        }
+        // 锚点公共包围盒: 每帧真实相对位置对齐, 动画不抖
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for im in &imgs {
+            x0 = x0.min(im.offset_x as i32);
+            y0 = y0.min(im.offset_y as i32);
+            x1 = x1.max(im.offset_x as i32 + im.width as i32);
+            y1 = y1.max(im.offset_y as i32 + im.height as i32);
+        }
+        let (bw, bh) = ((x1 - x0) as f32, (y1 - y0) as f32);
+        let scale = (CELL as f32 / bw).min(CELL as f32 / bh).min(1.0);
+        let (pad_x, pad_y) = (
+            (CELL as f32 - bw * scale) / 2.0,
+            (CELL as f32 - bh * scale) / 2.0,
+        );
+        let mut canvas = image::RgbaImage::new(n as u32 * CELL, CELL);
+        for (i, im) in imgs.iter().enumerate() {
+            let cell_x = i as u32 * CELL;
+            let dw = (im.width as f32 * scale).ceil() as u32;
+            let dh = (im.height as f32 * scale).ceil() as u32;
+            let ox = pad_x + (im.offset_x as i32 - x0) as f32 * scale;
+            let oy = pad_y + (im.offset_y as i32 - y0) as f32 * scale;
+            for dy in 0..dh {
+                let sy = (dy as f32 / scale) as usize;
+                let ty = oy as u32 + dy;
+                if sy >= im.height as usize || ty >= CELL {
+                    continue;
+                }
+                for dx in 0..dw {
+                    let sx = (dx as f32 / scale) as usize;
+                    let tx = cell_x + ox as u32 + dx;
+                    if sx >= im.width as usize || tx >= (i as u32 + 1) * CELL {
+                        continue;
+                    }
+                    let si = (sy * im.width as usize + sx) * 4;
+                    let px = &im.rgba[si..si + 4];
+                    if px[3] > 0 {
+                        canvas.put_pixel(tx, ty, image::Rgba([px[0], px[1], px[2], px[3]]));
+                    }
+                }
+            }
+        }
+        let mut png = std::io::Cursor::new(Vec::new());
+        canvas.write_to(&mut png, image::ImageFormat::Png).ok()?;
+        Some(png.into_inner())
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let arc = std::sync::Arc::new(png.clone());
+    if let Ok(mut g) = STRIP_CACHE.lock() {
+        let c = g.get_or_insert_with(Default::default);
+        if c.len() > 128 {
+            c.clear();
+        }
+        c.insert(key, arc);
+    }
+    Ok(strip_response(png))
+}
+
+fn strip_response(png: Vec<u8>) -> axum::response::Response {
+    axum::response::Response::builder()
+        .header("content-type", "image/png")
+        .header("cache-control", "max-age=3600")
+        .body(axum::body::Body::from(png))
+        .unwrap()
+}
+
 /// 地图示意缩略图: 由 .map 阻挡位生成 (可走浅色/阻挡深色),
 /// 叠加出生点(金)/传送门(青)/刷新点(红) 标记 —— 用于配置时定位坐标
 async fn api_map_thumb(
@@ -1197,6 +1314,7 @@ pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         .route("/api/minimaps", get(api_minimap_grid))
         .route("/api/monster_bases/:n", get(api_mon_bases))
         .route("/api/packs/bases", get(api_packs_bases))
+        .route("/api/packs/strip", get(api_packs_strip))
         .route("/api/packs/list", get(api_packs_list))
         .route("/api/packs/info", get(api_packs_info))
         .route("/api/packs/frame", get(api_packs_frame))
