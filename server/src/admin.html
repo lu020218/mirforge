@@ -182,7 +182,7 @@
       <div id="err-skills" class="err-msg"></div>
       <div class="card-box">
         <table id="skill-table">
-          <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th>参数1</th><th>参数2</th><th title="修炼满级; 官设 3, 调 4/5 可做高级特效玩法">满级</th><th title="从 L 升到 L+1 需施放 基数×(L+1) 次">修炼基数</th><th title="每修炼级伤害/治疗加成比例, 0.3 = 每级 +30%">每级加成</th><th title="packs/magicon.mfl 的帧号, 点缩略图挑选">图标</th><th title="特效库号 (magic/00N) / 起始帧 / 帧数; 点「选段」可视化挑">特效</th><th></th></tr></thead>
+          <thead><tr><th>职业</th><th>id</th><th>名称</th><th>MP</th><th>冷却ms</th><th>等级</th><th>射程</th><th>自身</th><th>类型</th><th>参数1</th><th>参数2</th><th title="修炼满级; 官设 3, 调 4/5 可做高级特效玩法">满级</th><th title="从 L 升到 L+1 需施放 基数×(L+1) 次">修炼基数</th><th title="每修炼级伤害/治疗加成比例, 0.3 = 每级 +30%">每级加成</th><th title="packs/magicon.mfl 的帧号, 点缩略图挑选">图标</th><th title="施放时人物动作: 挥砍(战士系) / 施法(双手前推)">动作</th><th title="特效库号 (magic/00N) / 起始帧 / 帧数; 点「选段」可视化挑">特效</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -785,6 +785,10 @@ function skillRow(cls, sk) {
     <td><input data-c="level_bonus" value="${sk.level_bonus ?? 0.3}"></td>
     <td><input data-c="icon" value="${sk.icon ?? 0}" style="width:45px">
         <img class="icon" title="点击从图标库选择" src="/api/packs/frame?file=magicon.mfl&idx=${sk.icon ?? 0}" onclick="openSkillIconPicker(this)"></td>
+    <td><select data-c="anim">
+        <option value="attack" ${(sk.anim ?? '') === 'attack' ? 'selected' : ''}>挥砍</option>
+        <option value="cast" ${(sk.anim ?? '') !== 'attack' ? 'selected' : ''}>施法</option>
+    </select></td>
     <td><input data-c="fx_lib" value="${sk.fx_lib ?? 0}" style="width:38px" title="库号">
         <input data-c="fx_base" value="${sk.fx_base ?? 0}" style="width:55px" title="起始帧">
         <input data-c="fx_frames" value="${sk.fx_frames ?? 0}" style="width:38px" title="帧数">
@@ -902,6 +906,7 @@ function collectSkills() {
       train_base: Number(v('train_base')) || 30,
       level_bonus: Number(v('level_bonus')) || 0,
       icon: Number(v('icon')) || 0,
+      anim: tr.querySelector('select[data-c="anim"]').value,
       fx_lib: Number(v('fx_lib')) || 0,
       fx_base: Number(v('fx_base')) || 0,
       fx_frames: Number(v('fx_frames')) || 0,

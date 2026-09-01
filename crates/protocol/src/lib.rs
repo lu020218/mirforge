@@ -256,6 +256,9 @@ pub enum ServerMessage {
         fx_base: u32,
         #[serde(default)]
         fx_frames: u8,
+        /// 施放动作 (attack/cast), 旁观客户端据此播放施放者动作
+        #[serde(default)]
+        anim: String,
     },
     /// 本区 NPC 全量快照 (进区/切区/配置热重载时下发)
     /// 对话页 (点击 NPC 或选了跳页选项后下发)
@@ -405,6 +408,9 @@ pub struct SkillInfo {
     /// 技能图标 (packs/magicon.mfl 帧号)
     #[serde(default)]
     pub icon: u32,
+    /// 施放动作: "attack" 挥砍 / 其余按施法 (双手前推) 播
+    #[serde(default)]
+    pub anim: String,
 }
 
 /// 任务面板的单任务条目

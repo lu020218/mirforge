@@ -290,6 +290,9 @@ struct Remote {
     /// 武器叠层实体
     wep_entity: Option<Entity>,
     last_seen: f64,
+    /// 攻击/施法动作开始时刻与段基址 (SkillEffect 驱动, 单次播放)
+    act_start: Option<f64>,
+    act_base: usize,
 }
 
 #[derive(Resource, Default)]
@@ -891,6 +894,7 @@ fn setup(
                 running: false,
                 anim_t: 0.0,
                 attack_start: None,
+                attack_base: 192,
             },
             Sprite::default(),
             Transform::default(),
@@ -1001,6 +1005,8 @@ struct Player {
     anim_t: f64,
     /// 普攻动作开始时刻 (Time::elapsed_secs_f64; 动作期间站桩)
     attack_start: Option<f64>,
+    /// 当前动作段基址: 192 挥砍 / 384 施法 (帧表四攻击段之二)
+    attack_base: usize,
 }
 
 /// 普攻动作时长 (6 帧 × 90ms) 与客户端侧冷却
@@ -1235,6 +1241,7 @@ fn player_move(
                 if d.length() <= ATTACK_RANGE && now_t - *last_atk > ATTACK_CD_SECS {
                     *last_atk = now_t;
                     p.attack_start = Some(now_t);
+                    p.attack_base = 192;
                     p.anim_t = 0.0;
                     net.send(ClientMessage::Attack {
                         target_id: mid.clone(),
@@ -1467,7 +1474,7 @@ fn player_sprite(
     let sex = if female { 600 } else { 0 };
     let dirb = sex + p.dir * 8;
     let frame_idx = if let Some(t) = p.attack_start.filter(|t| now_t - t < ATTACK_ANIM_SECS) {
-        192 + dirb + (((now_t - t) / 0.09) as usize).min(5)
+        p.attack_base + dirb + (((now_t - t) / 0.09) as usize).min(5)
     } else if p.moving && p.running {
         128 + dirb + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
     } else if p.moving {
@@ -2000,6 +2007,7 @@ fn net_pump(
                                 running: false,
                                 anim_t: 0.0,
                                 attack_start: None,
+                attack_base: 192,
                             },
                             Sprite::default(),
                             Transform::default(),
@@ -2083,6 +2091,7 @@ fn net_pump(
                     net.notice_rev += 1;
                 }
                 ServerMessage::SkillEffect {
+                    caster_id,
                     skill_id,
                     position,
                     targets,
@@ -2090,8 +2099,16 @@ fn net_pump(
                     fx_lib,
                     fx_base,
                     fx_frames,
+                    anim,
                     ..
                 } => {
+                    // 旁观视角: 施放者播挥砍/施法动作 (本地玩家自己已就地播过)
+                    if Some(&caster_id) != net.my_id.as_ref() {
+                        if let Some(r) = remotes.0.get_mut(&caster_id) {
+                            r.act_start = Some(time.elapsed_secs_f64());
+                            r.act_base = if anim == "attack" { 192 } else { 384 };
+                        }
+                    }
                     let color = skill_color(&skill_id);
                     // 4 级起 (超官设满级的私服玩法) 叠一圈金色冲击环, 一眼认出高修炼
                     let empowered = level >= 4;
@@ -2411,7 +2428,10 @@ fn remote_step(
             (layer, idx as usize)
         } else {
             let dirb = r.dir * 8;
-            let idx = if walking && r.anim == 2 {
+            let acting = r.act_start.filter(|t| now - t < 0.54);
+            let idx = if let Some(t) = acting {
+                r.act_base + dirb + (((now - t) / 0.09) as usize).min(5)
+            } else if walking && r.anim == 2 {
                 128 + dirb + foot
             } else if walking {
                 64 + dirb + foot
@@ -2951,6 +2971,7 @@ fn cast_skills(
     net.cds
         .insert(s.id.clone(), now + s.cooldown_ms as f64 / 1000.0);
     p.attack_start = Some(now);
+    p.attack_base = if s.anim == "attack" { 192 } else { 384 };
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,
@@ -3004,6 +3025,7 @@ fn dev_cast(
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
     }
     p.attack_start = Some(now);
+    p.attack_base = if s.anim == "attack" { 192 } else { 384 };
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,

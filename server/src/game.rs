@@ -274,6 +274,9 @@ pub struct SkillDef {
     /// 技能图标 (packs/magicon.mfl 帧号)
     #[serde(default)]
     pub icon: u32,
+    /// 施放动作: "attack" 挥砍 / "cast" 施法; 空按 cast 处理
+    #[serde(default)]
+    pub anim: String,
     /// 特效: 库号 (magic/00N) / 起始帧 / 帧数 (帧数 0 = 无帧动画)
     #[serde(default)]
     pub fx_lib: u16,
@@ -2565,6 +2568,7 @@ impl Game {
                         s.train_need(sp.level)
                     },
                     icon: s.icon,
+                    anim: s.anim.clone(),
                 }
             })
             .collect();
@@ -3354,6 +3358,7 @@ impl Game {
                 fx_lib: def.fx_lib,
                 fx_base: def.fx_base,
                 fx_frames: def.fx_frames,
+                anim: def.anim.clone(),
             },
         )
         .await;

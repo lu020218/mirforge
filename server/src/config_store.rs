@@ -49,6 +49,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             fx_lib INTEGER NOT NULL DEFAULT 0,
             fx_base INTEGER NOT NULL DEFAULT 0,
             fx_frames INTEGER NOT NULL DEFAULT 0,
+            anim TEXT NOT NULL DEFAULT '',
             ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_quests (
@@ -210,6 +211,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "fx_lib INTEGER NOT NULL DEFAULT 0",
         "fx_base INTEGER NOT NULL DEFAULT 0",
         "fx_frames INTEGER NOT NULL DEFAULT 0",
+        "anim TEXT NOT NULL DEFAULT ''",
     ] {
         let _ = sqlx::query(&format!("ALTER TABLE cfg_skills ADD COLUMN {col}"))
             .execute(pool)
@@ -259,7 +261,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
     };
     for r in sqlx::query(
         "SELECT id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames
+                max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames, anim
          FROM cfg_skills ORDER BY class, ord, level",
     )
     .fetch_all(pool)
@@ -289,6 +291,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
             fx_lib: r.get::<i64, _>("fx_lib").max(0) as u16,
             fx_base: r.get::<i64, _>("fx_base").max(0) as u32,
             fx_frames: r.get::<i64, _>("fx_frames").clamp(0, 255) as u8,
+            anim: r.get("anim"),
         };
         match r.get::<String, _>("class").as_str() {
             "mage" => skills.mage.push(def),
@@ -729,8 +732,8 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             sqlx::query(
                 "INSERT INTO cfg_skills
                  (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                  max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames, ord)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames, anim, ord)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(class)
@@ -750,6 +753,7 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             .bind(s.fx_lib as i64)
             .bind(s.fx_base as i64)
             .bind(s.fx_frames as i64)
+            .bind(&s.anim)
             .bind(i as i64)
             .execute(&mut *tx)
             .await?;
@@ -1017,6 +1021,20 @@ pub async fn migrate_skill_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
 /// 旧代用图标升级: 早期图标库是从特效帧生成的 9 帧代用品 (帧 0-8),
 /// 换成购买图标库后按语义映射升级。仅命中"仍配着旧代用帧号"的技能, 幂等
+/// 施放动作回填: 战士技能挥砍, 法师/道士技能施法 (仅填空值, 幂等)
+pub async fn migrate_skill_anim(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE cfg_skills SET anim = CASE WHEN class = 'warrior' THEN 'attack' ELSE 'cast' END
+         WHERE anim = ''",
+    )
+    .execute(pool)
+    .await?;
+    if r.rows_affected() > 0 {
+        tracing::info!("技能动作回填: {} 个技能按职业设定挥砍/施法", r.rows_affected());
+    }
+    Ok(())
+}
+
 pub async fn migrate_skill_icons_v2(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let map: [(&str, i64, i64); 9] = [
         ("huoqiu", 0, 8),

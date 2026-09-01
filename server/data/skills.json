@@ -1,6 +1,7 @@
 {
   "mage": [
     {
+      "anim": "cast",
       "cd_ms": 1500,
       "fx_base": 170,
       "fx_frames": 10,
@@ -17,6 +18,7 @@
       "self_cast": false
     },
     {
+      "anim": "cast",
       "cd_ms": 4000,
       "fx_base": 880,
       "fx_frames": 10,
@@ -36,6 +38,7 @@
       "self_cast": false
     },
     {
+      "anim": "cast",
       "cd_ms": 8000,
       "fx_base": 580,
       "fx_frames": 8,
@@ -57,6 +60,7 @@
   ],
   "taoist": [
     {
+      "anim": "cast",
       "cd_ms": 3000,
       "fx_base": 250,
       "fx_frames": 20,
@@ -71,6 +75,7 @@
       "self_cast": true
     },
     {
+      "anim": "cast",
       "cd_ms": 4000,
       "fx_base": 600,
       "fx_frames": 20,
@@ -87,6 +92,7 @@
       "self_cast": false
     },
     {
+      "anim": "cast",
       "cd_ms": 2000,
       "fx_base": 1320,
       "fx_frames": 16,
@@ -105,6 +111,7 @@
   ],
   "warrior": [
     {
+      "anim": "attack",
       "cd_ms": 3000,
       "fx_base": 3500,
       "fx_frames": 8,
@@ -121,6 +128,7 @@
       "self_cast": false
     },
     {
+      "anim": "attack",
       "cd_ms": 6000,
       "fx_base": 0,
       "fx_frames": 18,
@@ -137,6 +145,7 @@
       "self_cast": false
     },
     {
+      "anim": "attack",
       "cd_ms": 10000,
       "fx_base": 650,
       "fx_frames": 10,
