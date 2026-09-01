@@ -1005,7 +1005,8 @@ struct Player {
     anim_t: f64,
     /// 普攻动作开始时刻 (Time::elapsed_secs_f64; 动作期间站桩)
     attack_start: Option<f64>,
-    /// 当前动作段基址: 192 挥砍 / 384 施法 (帧表四攻击段之二)
+    /// 当前动作段基址: 192 挥砍 / 392 施法 (施法段实测起于 392,
+    /// 384 是前一个 8 帧旋身动作的末块, 用错会导致朝向错位一格)
     attack_base: usize,
 }
 
@@ -2106,7 +2107,7 @@ fn net_pump(
                     if Some(&caster_id) != net.my_id.as_ref() {
                         if let Some(r) = remotes.0.get_mut(&caster_id) {
                             r.act_start = Some(time.elapsed_secs_f64());
-                            r.act_base = if anim == "attack" { 192 } else { 384 };
+                            r.act_base = if anim == "attack" { 192 } else { 392 };
                         }
                     }
                     let color = skill_color(&skill_id);
@@ -2971,7 +2972,7 @@ fn cast_skills(
     net.cds
         .insert(s.id.clone(), now + s.cooldown_ms as f64 / 1000.0);
     p.attack_start = Some(now);
-    p.attack_base = if s.anim == "attack" { 192 } else { 384 };
+    p.attack_base = if s.anim == "attack" { 192 } else { 392 };
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,
@@ -3025,7 +3026,7 @@ fn dev_cast(
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
     }
     p.attack_start = Some(now);
-    p.attack_base = if s.anim == "attack" { 192 } else { 384 };
+    p.attack_base = if s.anim == "attack" { 192 } else { 392 };
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,
