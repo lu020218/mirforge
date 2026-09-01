@@ -448,7 +448,7 @@ static PREVIEW_LIBS: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 /// 自有资源包根 (与客户端同规则: MIRFORGE_PACKS 可覆盖, 默认工作目录 packs/)
-fn packs_root() -> std::path::PathBuf {
+pub(crate) fn packs_root() -> std::path::PathBuf {
     std::env::var("MIRFORGE_PACKS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("packs"))

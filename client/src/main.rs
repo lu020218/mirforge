@@ -2126,6 +2126,11 @@ fn net_pump(
                     // 三段 = 命中-170, 二段 = 命中-10; 帧数 0 = 播放时逐块实测)
                     let src_pt = src.map(|sp| DVec2::new(sp.x, sp.y));
                     let now_s = time.elapsed_secs_f64();
+                    // 二段: 命中段等起手播完再开 (三段由弹体到达自然衔接)
+                    let hit_wait = match (stages, src_pt.is_some(), fx) {
+                        (2, true, Some((_, base, _))) if base >= 10 => base - 10,
+                        _ => -1,
+                    };
                     if stages >= 2 {
                         if let (Some(sp), Some((lib, base, _))) = (src_pt, fx) {
                             let cast_base = base - if stages >= 3 { 170 } else { 10 };
@@ -2143,6 +2148,7 @@ fn net_pump(
                                         born: now_s,
                                         px: cx,
                                         py: cy,
+                                        wait_base: -1,
                                     },
                                 ));
                             }
@@ -2157,10 +2163,11 @@ fn net_pump(
                                 let d = pt - sp;
                                 if base >= 160 && d.length() > 0.3 {
                                     // Mir 16 向: 0=上, 顺时针
-                                    let ang = d.x.atan2(-d.y);
-                                    let dir16 = ((ang / (std::f64::consts::TAU / 16.0)).round()
-                                        as i32)
-                                        .rem_euclid(16);
+                                    // 素材 16 向行序为逆时针, 头向 ≈ 197.5° - 22.5°×行号
+                                    // (亮度质心逐行实测拟合: 行1=下, 行5=右, 行9=上, 行13=左)
+                                    let deg = d.x.atan2(-d.y).to_degrees().rem_euclid(360.0);
+                                    let dir16 =
+                                        (((197.5 - deg) / 22.5).round() as i32).rem_euclid(16);
                                     let sx = sp.x as f32 * CELL_W - CELL_W / 2.0;
                                     let sy = sp.y as f32 * CELL_H - CELL_H / 2.0;
                                     commands.spawn((
@@ -2176,6 +2183,7 @@ fn net_pump(
                                             to: Vec2::new(px, py),
                                             hit_base: base,
                                             hit_frames: frames,
+                                            cast_base: base - 170,
                                         },
                                     ));
                                     continue;
@@ -2209,6 +2217,7 @@ fn net_pump(
                                         born: time.elapsed_secs_f64(),
                                         px,
                                         py,
+                                        wait_base: hit_wait,
                                     },
                                 ));
                             }
@@ -2957,6 +2966,8 @@ struct EffectAnim {
     born: f64,
     px: f32,
     py: f32,
+    /// >= 0: 等该 10 槽块 (起手段) 播完再开播 —— 二段命中衔接用
+    wait_base: i32,
 }
 
 /// 技能飞行弹体: 从施放者直线飞向目标, 循环播 16 向飞行帧, 到达再播命中段
@@ -2972,6 +2983,8 @@ struct Projectile {
     to: Vec2,
     hit_base: i32,
     hit_frames: u8,
+    /// >= 0: 起手段基址, 起手播完才起飞 (段顺序衔接)
+    cast_base: i32,
 }
 
 fn skill_color(id: &str) -> Color {
@@ -3144,7 +3157,16 @@ fn fx_step(
         } else {
             fx.frames
         };
-        let k = ((now - fx.born) / 0.1) as i32;
+        let delay = if fx.wait_base >= 0 {
+            world.block_len(Layer::Fx(fx.lib), fx.wait_base, 10).min(10) as f64 * 0.1
+        } else {
+            0.0
+        };
+        let age = now - fx.born - delay;
+        if age < 0.0 {
+            continue; // 前段未播完, 保持隐藏
+        }
+        let k = (age / 0.1) as i32;
         if k >= eff as i32 {
             commands.entity(e).despawn();
             continue;
@@ -3177,7 +3199,16 @@ fn projectile_step(
 ) {
     let now = time.elapsed_secs_f64();
     for (e, mut tf, mut sp, mut vis, pj) in q.iter_mut() {
-        let t = ((now - pj.born) / pj.dur).min(1.0);
+        let cast_dur = if pj.cast_base >= 0 {
+            world.block_len(Layer::Fx(pj.lib), pj.cast_base, 10).min(10) as f64 * 0.1
+        } else {
+            0.0
+        };
+        let tt = now - pj.born - cast_dur;
+        if tt < 0.0 {
+            continue; // 起手未播完, 弹体待发
+        }
+        let t = (tt / pj.dur).min(1.0);
         let k = world.block_len(Layer::Fx(pj.lib), pj.row, 10).min(10);
         if t >= 1.0 || k == 0 {
             commands.entity(e).despawn();
@@ -3192,11 +3223,12 @@ fn projectile_step(
                     born: now,
                     px: pj.to.x,
                     py: pj.to.y,
+                    wait_base: -1,
                 },
             ));
             continue;
         }
-        let fi = pj.row + (((now - pj.born) / 0.09) as i32) % k as i32;
+        let fi = pj.row + ((tt / 0.09) as i32) % k as i32;
         if let Some(f) = world.frame_ex(Layer::Fx(pj.lib), 0, fi, true) {
             world.ensure_pages(&mut images);
             sp.image = world.pages[f.page].clone();

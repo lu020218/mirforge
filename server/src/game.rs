@@ -1141,6 +1141,53 @@ pub struct Game {
     rng: u64,
     last_save: Instant,
     last_regen: Instant,
+    /// 技能延迟结算队列: 与客户端起手/飞行编排对齐 (到点才掉血)
+    pending_hits: Vec<PendingHit>,
+}
+
+/// 延迟结算条目: (到点时刻, 施放者, 命中列表)
+type PendingHit = (Instant, String, Vec<(String, i32)>);
+
+/// 技能弹体飞行速度 (格/秒) —— 与客户端 Projectile 一致, 改动需两端同步
+const SKILL_FLY_SPEED: f64 = 14.0;
+
+/// 起手段帧数实测缓存 (packs/magic 库 10 槽块, 与客户端 block_len 同判据)
+static FX_BLOCK_LEN: std::sync::Mutex<
+    Option<std::collections::HashMap<(u16, i64), u8>>,
+> = std::sync::Mutex::new(None);
+
+fn fx_block_len(lib: u16, base: i64) -> u8 {
+    if base < 0 {
+        return 0;
+    }
+    let Ok(mut g) = FX_BLOCK_LEN.lock() else {
+        return 0;
+    };
+    let cache = g.get_or_insert_with(Default::default);
+    if let Some(&k) = cache.get(&(lib, base)) {
+        return k;
+    }
+    let path = crate::admin::packs_root()
+        .join("magic")
+        .join(format!("{lib:03}.mfl"));
+    let k = mir_formats::mfl::AnyLib::open(&path)
+        .ok()
+        .map(|l| {
+            let mut k = 0u8;
+            for i in 0..10usize {
+                if l.dims(base as usize + i)
+                    .is_some_and(|(w, h)| w >= 8 && h >= 8)
+                {
+                    k += 1;
+                } else {
+                    break;
+                }
+            }
+            k
+        })
+        .unwrap_or(0);
+    cache.insert((lib, base), k);
+    k
 }
 
 fn now_ms() -> u64 {
@@ -1181,6 +1228,7 @@ impl Game {
             rng: 0x00C0_FFEE_1234_5678,
             last_save: Instant::now(),
             last_regen: Instant::now(),
+            pending_hits: Vec::new(),
         }
     }
 
@@ -3367,8 +3415,32 @@ impl Game {
             },
         )
         .await;
-        for (mon_id, dmg) in hit_ids {
-            self.hit_monster(&char_id, &mon_id, dmg).await;
+        // 延迟结算: 与客户端特效编排同步 (起手播完、弹体到达才掉血)
+        if !hit_ids.is_empty() {
+            let stages = def.stages.max(1);
+            let cast_dur = if stages >= 2 {
+                let cast_base = def.fx_base as i64 - if stages >= 3 { 170 } else { 10 };
+                fx_block_len(def.fx_lib, cast_base) as f64 * 0.1
+            } else {
+                0.0
+            };
+            let flight = if stages >= 3 {
+                ((center.0 - px).powi(2) + (center.1 - py).powi(2)).sqrt() / SKILL_FLY_SPEED
+            } else {
+                0.0
+            };
+            let delay = cast_dur + flight;
+            if delay < 0.05 {
+                for (mon_id, dmg) in hit_ids {
+                    self.hit_monster(&char_id, &mon_id, dmg).await;
+                }
+            } else {
+                self.pending_hits.push((
+                    Instant::now() + Duration::from_secs_f64(delay),
+                    char_id.clone(),
+                    hit_ids,
+                ));
+            }
         }
         // 升级: 通知 + 重发技能表; 修炼度落库 (每次施放都存, 掉线不丢练度)
         if let Some(new_lv) = leveled_to {
@@ -3467,6 +3539,23 @@ impl Game {
 
     async fn tick(&mut self) {
         let now = Instant::now();
+        // 技能延迟结算到点 (怪物已死/离场由 hit_monster 自然无效化)
+        if self.pending_hits.iter().any(|(at, ..)| now >= *at) {
+            let mut due = Vec::new();
+            let mut i = 0;
+            while i < self.pending_hits.len() {
+                if now >= self.pending_hits[i].0 {
+                    due.push(self.pending_hits.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+            for (_, char_id, hits) in due {
+                for (mon_id, dmg) in hits {
+                    self.hit_monster(&char_id, &mon_id, dmg).await;
+                }
+            }
+        }
         // 地面物品过期清理 (按区广播变化)
         if self.ground.iter().any(|g| now >= g.expire) {
             let zones: Vec<String> = self
