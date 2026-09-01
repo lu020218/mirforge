@@ -985,15 +985,15 @@ pub async fn migrate_skill_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     }
     // (id, 图标帧, 特效库, 起始帧, 帧数) — 客户端原硬编码表原样搬迁
     let map: [(&str, i64, i64, i64, i64); 9] = [
-        ("huoqiu", 0, 0, 170, 10),
-        ("zhiyu", 1, 0, 250, 20),
-        ("shidu", 2, 0, 600, 20),
-        ("huofu", 3, 0, 1320, 16),
-        ("leidian", 4, 0, 880, 10),
-        ("bingpaoxiao", 5, 1, 580, 8),
-        ("liehuo", 6, 0, 3500, 8),
-        ("shizihou", 7, 1, 650, 10),
-        ("yeman", 8, 1, 0, 18),
+        ("huoqiu", 8, 0, 170, 10),
+        ("zhiyu", 281, 0, 250, 20),
+        ("shidu", 161, 0, 600, 20),
+        ("huofu", 125, 0, 1320, 16),
+        ("leidian", 92, 0, 880, 10),
+        ("bingpaoxiao", 534, 1, 580, 8),
+        ("liehuo", 433, 0, 3500, 8),
+        ("shizihou", 536, 1, 650, 10),
+        ("yeman", 399, 1, 0, 18),
     ];
     let mut hits = 0;
     for (id, icon, lib, base, frames) in map {
@@ -1011,6 +1011,36 @@ pub async fn migrate_skill_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     }
     if hits > 0 {
         tracing::info!("技能图标/特效迁移: 补齐 {hits} 个技能的原映射");
+    }
+    Ok(())
+}
+
+/// 旧代用图标升级: 早期图标库是从特效帧生成的 9 帧代用品 (帧 0-8),
+/// 换成购买图标库后按语义映射升级。仅命中"仍配着旧代用帧号"的技能, 幂等
+pub async fn migrate_skill_icons_v2(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let map: [(&str, i64, i64); 9] = [
+        ("huoqiu", 0, 8),
+        ("zhiyu", 1, 281),
+        ("shidu", 2, 161),
+        ("huofu", 3, 125),
+        ("leidian", 4, 92),
+        ("bingpaoxiao", 5, 534),
+        ("liehuo", 6, 433),
+        ("shizihou", 7, 536),
+        ("yeman", 8, 399),
+    ];
+    let mut hits = 0;
+    for (id, old_icon, new_icon) in map {
+        let r = sqlx::query("UPDATE cfg_skills SET icon = ? WHERE id = ? AND icon = ?")
+            .bind(new_icon)
+            .bind(id)
+            .bind(old_icon)
+            .execute(pool)
+            .await?;
+        hits += r.rows_affected();
+    }
+    if hits > 0 {
+        tracing::info!("技能图标升级: {hits} 个技能从代用图标换到购买图标库");
     }
     Ok(())
 }
