@@ -3418,9 +3418,9 @@ impl Game {
         // 延迟结算: 与客户端特效编排同步 (起手播完、弹体到达才掉血)
         if !hit_ids.is_empty() {
             let stages = def.stages.max(1);
+            // 单技能标准文件: 起手固定 @0 (无起手帧则时长为 0)
             let cast_dur = if stages >= 2 {
-                let cast_base = def.fx_base as i64 - if stages >= 3 { 170 } else { 10 };
-                fx_block_len(def.fx_lib, cast_base) as f64 * 0.1
+                fx_block_len(def.fx_lib, 0) as f64 * 0.1
             } else {
                 0.0
             };

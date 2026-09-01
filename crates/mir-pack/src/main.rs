@@ -29,6 +29,11 @@ fn main() {
         }
         Some("pack-wil") if args.len() == 3 => pack_wil(Path::new(&args[1]), Path::new(&args[2])),
         Some("pack-wzl") if args.len() == 3 => pack_wzl(Path::new(&args[1]), Path::new(&args[2])),
+        Some("remap") if args.len() >= 4 => remap(
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+            &args[3..].iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        ),
         Some("extract") if args.len() == 4 => extract(
             Path::new(&args[1]),
             args[2].parse().unwrap_or(0),
@@ -395,6 +400,46 @@ fn pack_split(src: &Path, outdir: &Path, stride: usize) -> Result<(), AnyErr> {
     println!(
         "切分完成: {blocks} 段 × {stride} 帧, 写出 {written} 个库 → {}",
         outdir.display()
+    );
+    Ok(())
+}
+
+/// 段搬运: 从源库抽帧段拼新库 (单技能标准文件等重组用)。
+/// spec 形如 `dst=src:count`, 帧原样转存 (含锚点), 目标帧位自动撑到最大
+fn remap(src: &Path, out: &Path, specs: &[&str]) -> Result<(), AnyErr> {
+    let lib = mfl::AnyLib::open(src)?;
+    let mut moves: Vec<(usize, usize, usize)> = Vec::new();
+    for sp in specs {
+        let (dst, rest) = sp.split_once('=').ok_or("spec 应为 dst=src:count")?;
+        let (sb, cnt) = rest.split_once(':').ok_or("spec 应为 dst=src:count")?;
+        moves.push((dst.parse()?, sb.parse()?, cnt.parse()?));
+    }
+    let total = moves.iter().map(|(d, _, c)| d + c).max().unwrap_or(0);
+    let mut frames: Vec<Option<MflFrame>> = Vec::new();
+    frames.resize_with(total, || None);
+    let mut ok = 0usize;
+    for (dst, sb, cnt) in moves {
+        for k in 0..cnt {
+            if let Some(img) = lib.image(sb + k).ok().flatten() {
+                frames[dst + k] = Some(MflFrame {
+                    width: img.width,
+                    height: img.height,
+                    offset_x: img.offset_x,
+                    offset_y: img.offset_y,
+                    rgba: img.rgba,
+                });
+                ok += 1;
+            }
+        }
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(out, mfl::write(&frames)?)?;
+    println!(
+        "重组完成: {} 帧位, 实帧 {ok} → {}",
+        total,
+        out.display()
     );
     Ok(())
 }

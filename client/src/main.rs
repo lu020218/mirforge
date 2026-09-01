@@ -2122,36 +2122,33 @@ fn net_pump(
                     }
                     // 特效帧段随广播下发 (管理台配置); 帧数 0 = 无帧动画画扩散圈
                     let fx = (fx_frames > 0).then_some((fx_lib as u8, fx_base as i32, fx_frames));
-                    // 二/三段: 起手特效在施放者脚下 (段位置按经典布局自动推导:
-                    // 三段 = 命中-170, 二段 = 命中-10; 帧数 0 = 播放时逐块实测)
+                    // 二/三段: 起手特效在施放者脚下。单技能标准文件固定布局:
+                    // 起手@0, 飞行@10 (16 向×10 槽), 命中@170; 帧数逐块实测
                     let src_pt = src.map(|sp| DVec2::new(sp.x, sp.y));
                     let now_s = time.elapsed_secs_f64();
-                    // 二段: 命中段等起手播完再开 (三段由弹体到达自然衔接)
+                    // 二段: 命中段等起手块 (@0) 播完再开 (三段由弹体到达自然衔接)
                     let hit_wait = match (stages, src_pt.is_some(), fx) {
-                        (2, true, Some((_, base, _))) if base >= 10 => base - 10,
+                        (2, true, Some(_)) => 0,
                         _ => -1,
                     };
                     if stages >= 2 {
-                        if let (Some(sp), Some((lib, base, _))) = (src_pt, fx) {
-                            let cast_base = base - if stages >= 3 { 170 } else { 10 };
-                            if cast_base >= 0 {
-                                let cx = sp.x as f32 * CELL_W - CELL_W / 2.0;
-                                let cy = sp.y as f32 * CELL_H - CELL_H / 2.0;
-                                commands.spawn((
-                                    Sprite::default(),
-                                    Transform::from_xyz(cx, -cy, 700.0),
-                                    Visibility::Hidden,
-                                    EffectAnim {
-                                        lib,
-                                        base: cast_base,
-                                        frames: 0,
-                                        born: now_s,
-                                        px: cx,
-                                        py: cy,
-                                        wait_base: -1,
-                                    },
-                                ));
-                            }
+                        if let (Some(sp), Some((lib, _, _))) = (src_pt, fx) {
+                            let cx = sp.x as f32 * CELL_W - CELL_W / 2.0;
+                            let cy = sp.y as f32 * CELL_H - CELL_H / 2.0;
+                            commands.spawn((
+                                Sprite::default(),
+                                Transform::from_xyz(cx, -cy, 700.0),
+                                Visibility::Hidden,
+                                EffectAnim {
+                                    lib,
+                                    base: 0,
+                                    frames: 0,
+                                    born: now_s,
+                                    px: cx,
+                                    py: cy,
+                                    wait_base: -1,
+                                },
+                            ));
                         }
                     }
                     for pt in points {
@@ -2161,7 +2158,7 @@ fn net_pump(
                         if stages >= 3 {
                             if let (Some(sp), Some((lib, base, frames))) = (src_pt, fx) {
                                 let d = pt - sp;
-                                if base >= 160 && d.length() > 0.3 {
+                                if d.length() > 0.3 {
                                     // Mir 16 向: 0=上, 顺时针
                                     // 素材 16 向行序为逆时针, 头向 ≈ 197.5° - 22.5°×行号
                                     // (亮度质心逐行实测拟合: 行1=下, 行5=右, 行9=上, 行13=左)
@@ -2176,14 +2173,14 @@ fn net_pump(
                                         Visibility::Hidden,
                                         Projectile {
                                             lib,
-                                            row: base - 160 + dir16 * 10,
+                                            row: 10 + dir16 * 10,
                                             born: now_s,
                                             dur: (d.length() / 14.0).max(0.08),
                                             from: Vec2::new(sx, sy),
                                             to: Vec2::new(px, py),
                                             hit_base: base,
                                             hit_frames: frames,
-                                            cast_base: base - 170,
+                                            cast_base: 0,
                                         },
                                     ));
                                     continue;
@@ -2974,7 +2971,7 @@ struct EffectAnim {
 #[derive(Component)]
 struct Projectile {
     lib: u8,
-    /// 本向飞行行基址 (fx_base-160 + dir16*10, 帧数逐块实测)
+    /// 本向飞行行基址 (标准文件 10 + dir16*10, 帧数逐块实测)
     row: i32,
     born: f64,
     dur: f64,

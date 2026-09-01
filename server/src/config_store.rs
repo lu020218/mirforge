@@ -1025,6 +1025,41 @@ pub async fn migrate_skill_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
 /// 旧代用图标升级: 早期图标库是从特效帧生成的 9 帧代用品 (帧 0-8),
 /// 换成购买图标库后按语义映射升级。仅命中"仍配着旧代用帧号"的技能, 幂等
+/// 特效切换单技能标准文件 (magic/010+, 起手@0/飞行@10/命中@170):
+/// 仅命中"仍指向素材源合集库旧段"的技能, 幂等
+pub async fn migrate_skill_fx_split(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    // (id, 旧库, 旧命中基址, 新库) — 命中基址统一迁到 170
+    let map: [(&str, i64, i64, i64); 9] = [
+        ("huoqiu", 0, 170, 10),
+        ("zhiyu", 0, 250, 11),
+        ("shidu", 0, 600, 12),
+        ("huofu", 0, 1320, 13),
+        ("leidian", 0, 880, 14),
+        ("bingpaoxiao", 1, 580, 15),
+        ("liehuo", 0, 3500, 16),
+        ("shizihou", 1, 650, 17),
+        ("yeman", 1, 0, 18),
+    ];
+    let mut hits = 0;
+    for (id, old_lib, old_base, new_lib) in map {
+        let r = sqlx::query(
+            "UPDATE cfg_skills SET fx_lib = ?, fx_base = 170
+             WHERE id = ? AND fx_lib = ? AND fx_base = ?",
+        )
+        .bind(new_lib)
+        .bind(id)
+        .bind(old_lib)
+        .bind(old_base)
+        .execute(pool)
+        .await?;
+        hits += r.rows_affected();
+    }
+    if hits > 0 {
+        tracing::info!("技能特效迁移: {hits} 个技能切换到单技能标准文件");
+    }
+    Ok(())
+}
+
 /// 技能类型回填: 火球/火符=三段(飞行), 雷电=二段(起手), 其余=一段 (仅填 0 值, 幂等)
 pub async fn migrate_skill_stages(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let mut hits = 0;
