@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use protocol::{ClientMessage, EntityUpdate, Position, ServerMessage, PROTOCOL_VERSION};
+use sim::layout::fx as fxl;
 use sim::{dir8_from, WalkGrid, BODY_RADIUS};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -1148,9 +1149,6 @@ pub struct Game {
 /// 延迟结算条目: (到点时刻, 施放者, 命中列表)
 type PendingHit = (Instant, String, Vec<(String, i32)>);
 
-/// 技能弹体飞行速度 (格/秒) —— 与客户端 Projectile 一致, 改动需两端同步
-const SKILL_FLY_SPEED: f64 = 14.0;
-
 /// 起手段帧数实测缓存 (packs/magic 库 10 槽块, 与客户端 block_len 同判据)
 static FX_BLOCK_LEN: std::sync::Mutex<Option<std::collections::HashMap<(u16, i64), u8>>> =
     std::sync::Mutex::new(None);
@@ -1173,7 +1171,7 @@ fn fx_block_len(lib: u16, base: i64) -> u8 {
         .ok()
         .map(|l| {
             let mut k = 0u8;
-            for i in 0..10usize {
+            for i in 0..fxl::SLOT as usize {
                 if l.dims(base as usize + i)
                     .is_some_and(|(w, h)| w >= 8 && h >= 8)
                 {
@@ -3419,12 +3417,12 @@ impl Game {
             let stages = def.stages.max(1);
             // 单技能标准文件: 起手固定 @0 (无起手帧则时长为 0)
             let cast_dur = if stages >= 2 {
-                fx_block_len(def.fx_lib, 0) as f64 * 0.1
+                fx_block_len(def.fx_lib, fxl::CAST as i64) as f64 * 0.1
             } else {
                 0.0
             };
             let flight = if stages >= 3 {
-                ((center.0 - px).powi(2) + (center.1 - py).powi(2)).sqrt() / SKILL_FLY_SPEED
+                ((center.0 - px).powi(2) + (center.1 - py).powi(2)).sqrt() / fxl::FLY_SPEED
             } else {
                 0.0
             };

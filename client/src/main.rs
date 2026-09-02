@@ -31,6 +31,7 @@ use mir_atlas::{AtlasCpu, PAGE_SIZE};
 use mir_formats::map::MirMap;
 use mir_formats::mfl::AnyLib;
 use protocol::{CharacterClass, CharacterSummary, ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use sim::layout::{fx as fxl, hum};
 use sim::{dir8_from, WalkGrid, BODY_RADIUS, NPC_TALK_RANGE};
 
 const CELL_W: f32 = 48.0;
@@ -784,7 +785,11 @@ fn make_portrait(
         .and_then(|l| l.image(gender_frame).ok().flatten());
     // packs 衣甲布局: 站立 0+dir*8, dir4=南(面向镜头) → 帧 32; 女版 +600。
     // 女装帧取不到就退男装帧
-    let idx = if female { 600 + 32 } else { 32 };
+    let idx = if female {
+        hum::FEMALE + hum::PORTRAIT_SOUTH
+    } else {
+        hum::PORTRAIT_SOUTH
+    };
     let stand = |world: &mut World, lib: &str| {
         world.open_lib(lib).and_then(|l| {
             l.image(idx)
@@ -893,7 +898,7 @@ fn setup(
                 running: false,
                 anim_t: 0.0,
                 attack_start: None,
-                attack_base: 192,
+                attack_base: hum::ATTACK,
             },
             Sprite::default(),
             Transform::default(),
@@ -1004,8 +1009,7 @@ struct Player {
     anim_t: f64,
     /// 普攻动作开始时刻 (Time::elapsed_secs_f64; 动作期间站桩)
     attack_start: Option<f64>,
-    /// 当前动作段基址: 192 挥砍 / 392 施法 (施法段实测起于 392,
-    /// 384 是前一个 8 帧旋身动作的末块, 用错会导致朝向错位一格)
+    /// 当前动作段基址: [`hum::ATTACK`] 挥砍 / [`hum::CAST`] 施法
     attack_base: usize,
 }
 
@@ -1241,7 +1245,7 @@ fn player_move(
                 if d.length() <= ATTACK_RANGE && now_t - *last_atk > ATTACK_CD_SECS {
                     *last_atk = now_t;
                     p.attack_start = Some(now_t);
-                    p.attack_base = 192;
+                    p.attack_base = hum::ATTACK;
                     p.anim_t = 0.0;
                     net.send(ClientMessage::Attack {
                         target_id: mid.clone(),
@@ -1471,14 +1475,14 @@ fn player_sprite(
         .find(|c| Some(&c.id) == net.character_id.as_ref())
         .map(|c| c.gender == "female")
         .unwrap_or(false);
-    let sex = if female { 600 } else { 0 };
-    let dirb = sex + p.dir * 8;
+    let sex = if female { hum::FEMALE } else { 0 };
+    let dirb = sex + p.dir * hum::DIR_STRIDE;
     let frame_idx = if let Some(t) = p.attack_start.filter(|t| now_t - t < ATTACK_ANIM_SECS) {
         p.attack_base + dirb + (((now_t - t) / 0.09) as usize).min(5)
     } else if p.moving && p.running {
-        128 + dirb + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
+        hum::RUN + dirb + ((p.anim_t / RUN_FRAME_DT) as usize % 6)
     } else if p.moving {
-        64 + dirb + ((p.anim_t / WALK_FRAME_DT) as usize % 6)
+        hum::WALK + dirb + ((p.anim_t / WALK_FRAME_DT) as usize % 6)
     } else {
         dirb + ((p.anim_t / 0.2) as usize % 4)
     };
@@ -2007,7 +2011,7 @@ fn net_pump(
                                 running: false,
                                 anim_t: 0.0,
                                 attack_start: None,
-                                attack_base: 192,
+                                attack_base: hum::ATTACK,
                             },
                             Sprite::default(),
                             Transform::default(),
@@ -2108,7 +2112,11 @@ fn net_pump(
                     if Some(&caster_id) != net.my_id.as_ref() {
                         if let Some(r) = remotes.0.get_mut(&caster_id) {
                             r.act_start = Some(time.elapsed_secs_f64());
-                            r.act_base = if anim == "attack" { 192 } else { 392 };
+                            r.act_base = if anim == "attack" {
+                                hum::ATTACK
+                            } else {
+                                hum::CAST
+                            };
                         }
                     }
                     let color = skill_color(&skill_id);
@@ -2128,7 +2136,7 @@ fn net_pump(
                     let now_s = time.elapsed_secs_f64();
                     // 二段: 命中段等起手块 (@0) 播完再开 (三段由弹体到达自然衔接)
                     let hit_wait = match (stages, src_pt.is_some(), fx) {
-                        (2, true, Some(_)) => 0,
+                        (2, true, Some(_)) => fxl::CAST,
                         _ => -1,
                     };
                     if stages >= 2 {
@@ -2141,7 +2149,7 @@ fn net_pump(
                                 Visibility::Hidden,
                                 EffectAnim {
                                     lib,
-                                    base: 0,
+                                    base: fxl::CAST,
                                     frames: 0,
                                     born: now_s,
                                     px: cx,
@@ -2160,11 +2168,7 @@ fn net_pump(
                                 let d = pt - sp;
                                 if d.length() > 0.3 {
                                     // Mir 16 向: 0=上, 顺时针
-                                    // 素材 16 向行序为逆时针, 头向 ≈ 197.5° - 22.5°×行号
-                                    // (亮度质心逐行实测拟合: 行1=下, 行5=右, 行9=上, 行13=左)
-                                    let deg = d.x.atan2(-d.y).to_degrees().rem_euclid(360.0);
-                                    let dir16 =
-                                        (((197.5 - deg) / 22.5).round() as i32).rem_euclid(16);
+                                    let row = fxl::fly_row(d.x, d.y);
                                     let sx = sp.x as f32 * CELL_W - CELL_W / 2.0;
                                     let sy = sp.y as f32 * CELL_H - CELL_H / 2.0;
                                     commands.spawn((
@@ -2173,14 +2177,14 @@ fn net_pump(
                                         Visibility::Hidden,
                                         Projectile {
                                             lib,
-                                            row: 10 + dir16 * 10,
+                                            row: fxl::fly_base(row),
                                             born: now_s,
-                                            dur: (d.length() / 14.0).max(0.08),
+                                            dur: (d.length() / fxl::FLY_SPEED).max(0.08),
                                             from: Vec2::new(sx, sy),
                                             to: Vec2::new(px, py),
                                             hit_base: base,
                                             hit_frames: frames,
-                                            cast_base: 0,
+                                            cast_base: fxl::CAST,
                                         },
                                     ));
                                     continue;
@@ -2492,14 +2496,14 @@ fn remote_step(
                 } as i32;
             (layer, idx as usize)
         } else {
-            let dirb = r.dir * 8;
+            let dirb = r.dir * hum::DIR_STRIDE;
             let acting = r.act_start.filter(|t| now - t < 0.54);
             let idx = if let Some(t) = acting {
                 r.act_base + dirb + (((now - t) / 0.09) as usize).min(5)
             } else if walking && r.anim == 2 {
-                128 + dirb + foot
+                hum::RUN + dirb + foot
             } else if walking {
-                64 + dirb + foot
+                hum::WALK + dirb + foot
             } else {
                 dirb + ((r.anim_t / 0.2) as usize % 4)
             };
@@ -2971,7 +2975,7 @@ struct EffectAnim {
 #[derive(Component)]
 struct Projectile {
     lib: u8,
-    /// 本向飞行行基址 (标准文件 10 + dir16*10, 帧数逐块实测)
+    /// 本向飞行行基址 ([`fxl::fly_base`], 帧数逐块实测)
     row: i32,
     born: f64,
     dur: f64,
@@ -3056,7 +3060,11 @@ fn cast_skills(
     net.cds
         .insert(s.id.clone(), now + s.cooldown_ms as f64 / 1000.0);
     p.attack_start = Some(now);
-    p.attack_base = if s.anim == "attack" { 192 } else { 392 };
+    p.attack_base = if s.anim == "attack" {
+        hum::ATTACK
+    } else {
+        hum::CAST
+    };
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,
@@ -3110,7 +3118,11 @@ fn dev_cast(
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
     }
     p.attack_start = Some(now);
-    p.attack_base = if s.anim == "attack" { 192 } else { 392 };
+    p.attack_base = if s.anim == "attack" {
+        hum::ATTACK
+    } else {
+        hum::CAST
+    };
     p.anim_t = 0.0;
     net.send(ClientMessage::UseSkill {
         skill_id: s.id,
@@ -3150,12 +3162,17 @@ fn fx_step(
     // 原版特效帧动画: 100ms/帧, blend (加色近似) 解码
     for (e, mut tf, mut sp, mut vis, fx) in q_anim.iter_mut() {
         let eff = if fx.frames == 0 {
-            world.block_len(Layer::Fx(fx.lib), fx.base, 10).min(10)
+            world
+                .block_len(Layer::Fx(fx.lib), fx.base, fxl::SLOT)
+                .min(10)
         } else {
             fx.frames
         };
         let delay = if fx.wait_base >= 0 {
-            world.block_len(Layer::Fx(fx.lib), fx.wait_base, 10).min(10) as f64 * 0.1
+            world
+                .block_len(Layer::Fx(fx.lib), fx.wait_base, fxl::SLOT)
+                .min(10) as f64
+                * 0.1
         } else {
             0.0
         };
@@ -3197,7 +3214,10 @@ fn projectile_step(
     let now = time.elapsed_secs_f64();
     for (e, mut tf, mut sp, mut vis, pj) in q.iter_mut() {
         let cast_dur = if pj.cast_base >= 0 {
-            world.block_len(Layer::Fx(pj.lib), pj.cast_base, 10).min(10) as f64 * 0.1
+            world
+                .block_len(Layer::Fx(pj.lib), pj.cast_base, fxl::SLOT)
+                .min(10) as f64
+                * 0.1
         } else {
             0.0
         };
@@ -3206,7 +3226,9 @@ fn projectile_step(
             continue; // 起手未播完, 弹体待发
         }
         let t = (tt / pj.dur).min(1.0);
-        let k = world.block_len(Layer::Fx(pj.lib), pj.row, 10).min(10);
+        let k = world
+            .block_len(Layer::Fx(pj.lib), pj.row, fxl::SLOT)
+            .min(10);
         if t >= 1.0 || k == 0 {
             commands.entity(e).despawn();
             commands.spawn((

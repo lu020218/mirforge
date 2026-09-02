@@ -10,6 +10,8 @@
 //! - 移动被挡时沿墙滑行（全向量 → 仅 x → 仅 y）。
 
 /// 实体圆形碰撞体半径（格）
+pub mod layout;
+
 pub const BODY_RADIUS: f64 = 0.35;
 
 /// NPC 可交互半径（格）
