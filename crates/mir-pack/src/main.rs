@@ -416,8 +416,12 @@ fn remap(src: &Path, out: &Path, specs: &[&str]) -> Result<(), AnyErr> {
             pad = n.parse()?;
             continue;
         }
-        let (dst, rest) = sp.split_once('=').ok_or("spec 应为 dst=src:count 或 pad=N")?;
-        let (sb, cnt) = rest.split_once(':').ok_or("spec 应为 dst=src:count 或 pad=N")?;
+        let (dst, rest) = sp
+            .split_once('=')
+            .ok_or("spec 应为 dst=src:count 或 pad=N")?;
+        let (sb, cnt) = rest
+            .split_once(':')
+            .ok_or("spec 应为 dst=src:count 或 pad=N")?;
         moves.push((dst.parse()?, sb.parse()?, cnt.parse()?));
     }
     let total = moves
@@ -447,11 +451,7 @@ fn remap(src: &Path, out: &Path, specs: &[&str]) -> Result<(), AnyErr> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(out, mfl::write(&frames)?)?;
-    println!(
-        "重组完成: {} 帧位, 实帧 {ok} → {}",
-        total,
-        out.display()
-    );
+    println!("重组完成: {} 帧位, 实帧 {ok} → {}", total, out.display());
     Ok(())
 }
 

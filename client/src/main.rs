@@ -2007,7 +2007,7 @@ fn net_pump(
                                 running: false,
                                 anim_t: 0.0,
                                 attack_start: None,
-                attack_base: 192,
+                                attack_base: 192,
                             },
                             Sprite::default(),
                             Transform::default(),

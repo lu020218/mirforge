@@ -1101,7 +1101,10 @@ pub async fn migrate_skill_anim(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     if r.rows_affected() > 0 {
-        tracing::info!("技能动作回填: {} 个技能按职业设定挥砍/施法", r.rows_affected());
+        tracing::info!(
+            "技能动作回填: {} 个技能按职业设定挥砍/施法",
+            r.rows_affected()
+        );
     }
     Ok(())
 }

@@ -1152,9 +1152,8 @@ type PendingHit = (Instant, String, Vec<(String, i32)>);
 const SKILL_FLY_SPEED: f64 = 14.0;
 
 /// 起手段帧数实测缓存 (packs/magic 库 10 槽块, 与客户端 block_len 同判据)
-static FX_BLOCK_LEN: std::sync::Mutex<
-    Option<std::collections::HashMap<(u16, i64), u8>>,
-> = std::sync::Mutex::new(None);
+static FX_BLOCK_LEN: std::sync::Mutex<Option<std::collections::HashMap<(u16, i64), u8>>> =
+    std::sync::Mutex::new(None);
 
 fn fx_block_len(lib: u16, base: i64) -> u8 {
     if base < 0 {
