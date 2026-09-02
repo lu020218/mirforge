@@ -527,6 +527,7 @@ mod tests {
                 armour: None,
                 weapon: None,
                 image: None,
+                image_base: None,
             }],
             timestamp: 12345,
         };
