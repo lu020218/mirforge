@@ -61,6 +61,64 @@ pub mod fx {
     }
 }
 
+/// 怪物库自适应帧表(纯算法;帧存在性经 `real` 回调注入,便于表驱动测试)。
+/// 市售怪物库每库基址/跨度不一且一库多怪,寻址错段的历史事故
+/// (鸡死变鹿)由"段尾栅栏"拦截 —— 算法契约见各函数注释。
+pub mod mon {
+    /// 一只怪在库内的段元数据
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct Meta {
+        /// 段起始帧(首实帧)
+        pub base: i32,
+        /// 方向块跨度
+        pub stride: i32,
+        /// 段尾栅栏:首个 ≥ 跨度的空洞处 —— 越过它就是同库下一只怪
+        pub end: i32,
+    }
+
+    /// 自配置基址探测一只怪的段:首实帧为 base,块内实帧连跑 + 下一块
+    /// 起点推出 stride,首个 ≥ stride 的空洞定 end(上限 8 动作 × 8 向)。
+    pub fn detect(mut real: impl FnMut(i32) -> bool, cfg_base: i32) -> Option<Meta> {
+        let start = cfg_base;
+        let base = (start..start + 4000).find(|&i| real(i))?;
+        let run = (1..64).find(|&d| !real(base + d)).unwrap_or(64);
+        let stride = (run..64)
+            .find(|&d| real(base + d))
+            .unwrap_or(10)
+            .clamp(run, 32);
+        let cap = base + stride * 8 * 8;
+        let mut end = cap;
+        let mut gap = 0;
+        let mut i = base;
+        while i < cap {
+            if real(i) {
+                gap = 0;
+            } else {
+                gap += 1;
+                if gap >= stride {
+                    end = i - gap + 1;
+                    break;
+                }
+            }
+            i += 1;
+        }
+        Some(Meta { base, stride, end })
+    }
+
+    /// 方向块内连续实帧数(≤ stride)。动画相位对它取模,不踩空帧位
+    pub fn block_len(mut real: impl FnMut(i32) -> bool, base: i32, stride: i32) -> u8 {
+        let mut k = 0u8;
+        for i in 0..stride {
+            if real(base + i) {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        k
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::fx;
@@ -103,6 +161,41 @@ mod tests {
             let diff = (got - row).rem_euclid(16).min((row - got).rem_euclid(16));
             assert!(diff <= 1, "头向 {head_deg}° 应选行 {row}±1, 实选 {got}");
         }
+    }
+
+    use super::mon;
+
+    /// 合成一库两只怪: 甲 0..348 (10 跨度块, 每块 6 实帧), 空洞后乙自 360 起。
+    /// 这是"鸡死变鹿"的回归样例: 段尾栅栏必须落在空洞处, 绝不能到 360
+    #[test]
+    fn mon_detect_fences_entity_end() {
+        let real =
+            |i: i32| ((0..348).contains(&i) || (360..600).contains(&i)) && i % 10 < 6;
+        let a = mon::detect(real, 0).unwrap();
+        assert_eq!((a.base, a.stride), (0, 10));
+        assert!(a.end <= 348, "甲的段尾 {} 不得越进乙 (360 起)", a.end);
+        // 死亡块 (动作 4) 仍在甲段内
+        assert!(a.base + 4 * a.stride * 8 < a.end);
+        let b = mon::detect(real, 360).unwrap();
+        assert_eq!((b.base, b.stride), (360, 10));
+    }
+
+    /// 基址偏移的库 (Mon7 式: 前 440 帧全空)
+    #[test]
+    fn mon_detect_skips_leading_empties() {
+        let real = |i: i32| (440..800).contains(&i) && i % 8 < 5;
+        let m = mon::detect(real, 0).unwrap();
+        assert_eq!((m.base, m.stride), (440, 8));
+    }
+
+    /// 空库 → None; 块实帧数按跨度截断
+    #[test]
+    fn mon_detect_empty_and_block_len() {
+        assert!(mon::detect(|_| false, 0).is_none());
+        let real = |i: i32| i % 10 < 3;
+        assert_eq!(mon::block_len(real, 0, 10), 3);
+        assert_eq!(mon::block_len(real, 3, 10), 0);
+        assert_eq!(mon::block_len(|_| true, 0, 10), 10);
     }
 
     /// 段布局不重叠且在总帧位内 (const 断言, 编译期即验证)

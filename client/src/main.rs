@@ -313,15 +313,7 @@ struct Remotes(HashMap<String, Remote>);
 
 /// 帧标识：图层类别 + 库号 + 帧号
 /// 怪物库单实体的取帧元信息 (自适应探测)
-#[derive(Clone, Copy)]
-struct MonMeta {
-    /// 首实帧 (配置基址起往后找到的第一帧)
-    base: i32,
-    /// 方向块跨度
-    stride: i32,
-    /// 实体段尾 (越过即同库下一只怪, 取帧禁越)
-    end: i32,
-}
+use sim::layout::mon::Meta as MonMeta;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Layer {
@@ -493,37 +485,10 @@ impl World {
             return *m;
         }
         let layer = Layer::Mon(n);
-        let meta = (|| {
-            // 配置基址 = 一库多怪时该怪的段起始; 从这里往后找首实帧
-            let start = cfg_base as i32;
-            let base = (start..start + 4000).find(|&i| self.frame_dims(layer, i).is_some())?;
-            let run = (1..64)
-                .find(|&d| self.frame_dims(layer, base + d).is_none())
-                .unwrap_or(64);
-            let stride = (run..64)
-                .find(|&d| self.frame_dims(layer, base + d).is_some())
-                .unwrap_or(10)
-                .clamp(run, 32);
-            // 实体段尾: 首个 ≥ 跨度的空洞 = 本怪结束 (再往后是同库的下一只怪 —
-            // 鸡的死亡帧算过界取到鹿就是没这道栅栏)
-            let cap = base + stride * 8 * 8;
-            let mut end = cap;
-            let mut gap = 0;
-            let mut i = base;
-            while i < cap {
-                if self.frame_dims(layer, i).is_some() {
-                    gap = 0;
-                } else {
-                    gap += 1;
-                    if gap >= stride {
-                        end = i - gap + 1;
-                        break;
-                    }
-                }
-                i += 1;
-            }
-            Some(MonMeta { base, stride, end })
-        })();
+        // 算法在 sim::layout::mon (纯函数, 有"鸡死变鹿"回归测试);
+        // 这里只注入帧存在性探测与缓存
+        let meta =
+            sim::layout::mon::detect(|i| self.frame_dims(layer, i).is_some(), cfg_base as i32);
         self.mon_metas.insert((n, cfg_base), meta);
         meta
     }
