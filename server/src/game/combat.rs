@@ -129,8 +129,19 @@ impl Game {
                 return;
             };
             if p.level < def.level {
+                let msg = format!("等级不足, 《{}》需 Lv {}", def.name, def.level);
+                send_to(
+                    &self.sessions,
+                    conn_id,
+                    ServerMessage::Notification {
+                        message: msg,
+                        notification_type: "warn".into(),
+                    },
+                )
+                .await;
                 return;
             }
+            // 冷却中不提示 (高频按键会刷屏, 面板有冷却显示)
             if p.cooldowns.get(&def.id).is_some_and(|&t| now < t) {
                 return;
             }
@@ -155,10 +166,12 @@ impl Game {
             let Some(m) = self.monsters.iter().find(|m| {
                 Some(m.id.as_str()) == target_id.as_deref() && m.zone == zone && m.alive()
             }) else {
+                self.notify(conn_id, "目标无效").await;
                 return;
             };
             let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
             if d > def.range {
+                self.notify(conn_id, "目标太远了").await;
                 return;
             }
             (m.x, m.y)
