@@ -15,7 +15,9 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             if now.duration_since(p.last_attack) < PLAYER_ATTACK_CD {
                 return;
             }
@@ -34,7 +36,10 @@ impl Game {
             return;
         }
         let mon_id = m.id.clone();
-        let dmg = attack_for(level) + self.players[&char_id].equip_attack();
+        let Some(equip) = self.players.get(&char_id).map(|p| p.equip_attack()) else {
+            return;
+        };
+        let dmg = attack_for(level) + equip;
         self.hit_monster(&char_id, &mon_id, dmg).await;
     }
 
@@ -112,13 +117,17 @@ impl Game {
         else {
             return;
         };
-        let class = self.players[&char_id].character.class;
+        let Some(class) = self.players.get(&char_id).map(|p| p.character.class) else {
+            return;
+        };
         let skills = skills_for(class);
         let Some(def) = skills.iter().find(|s| s.id == skill_id) else {
             return;
         };
         {
-            let p = &self.players[&char_id];
+            let Some(p) = self.players.get(&char_id) else {
+                return;
+            };
             if p.level < def.level {
                 return;
             }
@@ -156,7 +165,9 @@ impl Game {
         };
         // 校验全过 → 扣蓝 + 进冷却; 顺带积累修炼度 (每次施放 +1, 到量升级)
         let (skill_level, leveled_to) = {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             p.mp -= def.mp;
             p.cooldowns.insert(def.id.clone(), now + def.cd());
             let sp = p.skills.entry(def.id.clone()).or_default();
@@ -173,10 +184,13 @@ impl Game {
         };
         // 结算: 技能按职业吃对应攻击系 —— 战士=物理, 法师=魔法, 道士=道术
         // (skills_for 已按职业过滤, 技能职业即角色职业)
-        let equip_bonus = match class {
-            protocol::CharacterClass::Warrior => self.players[&char_id].equip_attack(),
-            protocol::CharacterClass::Mage => self.players[&char_id].equip_magic(),
-            protocol::CharacterClass::Taoist => self.players[&char_id].equip_spirit(),
+        let equip_bonus = match self.players.get(&char_id) {
+            Some(p) => match class {
+                protocol::CharacterClass::Warrior => p.equip_attack(),
+                protocol::CharacterClass::Mage => p.equip_magic(),
+                protocol::CharacterClass::Taoist => p.equip_spirit(),
+            },
+            None => return,
         };
         let dmg_base = attack_for(level) + equip_bonus;
         // 修炼加成: 每级 +level_bonus (烈火 3 级 ×1.9, 私服 4/5 级更凶)
@@ -201,9 +215,10 @@ impl Game {
                 }
             }
             SkillKind::Heal => {
-                let p = self.players.get_mut(&char_id).unwrap();
-                let amount = ((30 + level as i32 * 5) as f64 * train_mult) as i32;
-                p.hp = (p.hp + amount).min(p.max_hp);
+                if let Some(p) = self.players.get_mut(&char_id) {
+                    let amount = ((30 + level as i32 * 5) as f64 * train_mult) as i32;
+                    p.hp = (p.hp + amount).min(p.max_hp);
+                }
             }
         }
         // 特效广播 (客户端按 skill_id 播放)
@@ -258,16 +273,17 @@ impl Game {
         }
         // 升级: 通知 + 重发技能表; 修炼度落库 (每次施放都存, 掉线不丢练度)
         if let Some(new_lv) = leveled_to {
-            let conn = self.players[&char_id].conn_id.clone();
-            send_to(
-                &self.sessions,
-                &conn,
-                ServerMessage::Notification {
-                    message: format!("《{}》修炼至 {} 级!", def.name, new_lv),
-                    notification_type: "levelup".into(),
-                },
-            )
-            .await;
+            if let Some(conn) = self.players.get(&char_id).map(|p| p.conn_id.clone()) {
+                send_to(
+                    &self.sessions,
+                    &conn,
+                    ServerMessage::Notification {
+                        message: format!("《{}》修炼至 {} 级!", def.name, new_lv),
+                        notification_type: "levelup".into(),
+                    },
+                )
+                .await;
+            }
         }
         self.send_skill_list(&char_id).await;
         if let Some(p) = self.players.get(&char_id) {
@@ -476,10 +492,11 @@ impl Game {
                     .get(&zone)
                     .map(|z| z.spawn)
                     .unwrap_or((330.5, 150.5));
-                let p = self.players.get_mut(&char_id).unwrap();
-                p.hp = p.max_hp;
-                p.x = spawn.0;
-                p.y = spawn.1;
+                if let Some(p) = self.players.get_mut(&char_id) {
+                    p.hp = p.max_hp;
+                    p.x = spawn.0;
+                    p.y = spawn.1;
+                }
                 send_to(
                     &self.sessions,
                     &conn,

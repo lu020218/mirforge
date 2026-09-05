@@ -101,7 +101,9 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             if p.quests.contains_key(quest_id) {
                 return;
             }
@@ -131,7 +133,9 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             let Some(prog) = p.quests.get_mut(quest_id) else {
                 return;
             };
@@ -147,7 +151,9 @@ impl Game {
                 return;
             }
         }
-        let conn = self.players[&char_id].conn_id.clone();
+        let Some(conn) = self.players.get(&char_id).map(|p| p.conn_id.clone()) else {
+            return;
+        };
         // 物品奖励先备好并占位检查 —— 位置不够就整单不发, 否则奖励会凭空消失
         let payout: Vec<protocol::ItemInfo> = def
             .rewards
@@ -155,7 +161,9 @@ impl Game {
             .flat_map(|rw| (0..rw.count).filter_map(|_| make_item(&rw.item)))
             .collect();
         {
-            let p = self.players.get(&char_id).unwrap();
+            let Some(p) = self.players.get(&char_id) else {
+                return;
+            };
             if p.inventory.len() + payout.len() > MAX_INVENTORY {
                 self.notify(
                     &conn,
@@ -166,8 +174,13 @@ impl Game {
             }
         }
         let gold = {
-            let p = self.players.get_mut(&char_id).unwrap();
-            p.quests.get_mut(quest_id).unwrap().state = 2;
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            let Some(q) = p.quests.get_mut(quest_id) else {
+                return;
+            };
+            q.state = 2;
             p.inventory.extend(payout.iter().cloned());
             p.gold = p.gold.saturating_add(def.gold_reward);
             p.gold
@@ -202,7 +215,9 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             match p.quests.get(quest_id) {
                 Some(q) if q.state == 1 => {
                     p.quests.remove(quest_id);

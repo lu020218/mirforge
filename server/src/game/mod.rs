@@ -1859,9 +1859,8 @@ impl Game {
                 skills: c_skills,
             },
         );
-        self.players.get_mut(&character_id).unwrap().recalc();
-        {
-            let p = self.players.get_mut(&character_id).unwrap();
+        if let Some(p) = self.players.get_mut(&character_id) {
+            p.recalc();
             p.hp = p.max_hp;
         }
         info!("进入游戏: {character_id} {zone} @({x:.1},{y:.1})");
@@ -1944,7 +1943,9 @@ impl Game {
     }
 
     async fn send_enter_payload(&self, conn_id: &str, character_id: &str, x: f64, y: f64) {
-        let p = &self.players[character_id];
+        let Some(p) = self.players.get(character_id) else {
+            return;
+        };
         let character = serde_json::json!({
             "id": p.character.id,
             "name": p.character.name,

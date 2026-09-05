@@ -191,7 +191,9 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             let Some(idx) = p.inventory.iter().position(|i| i.id == item_id) else {
                 return;
             };
@@ -216,7 +218,9 @@ impl Game {
             return;
         };
         {
-            let p = self.players.get_mut(&char_id).unwrap();
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
             let Some(item) = p.equipment.remove(slot) else {
                 return;
             };
