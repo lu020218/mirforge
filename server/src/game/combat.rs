@@ -248,7 +248,7 @@ impl Game {
                 },
                 targets: hit_ids.iter().map(|(id, _)| id.clone()).collect(),
                 level: skill_level,
-                fx_lib: def.fx_lib,
+                fx: def.fx.clone(),
                 fx_base: def.fx_base,
                 fx_frames: def.fx_frames,
                 anim: def.anim.clone(),
@@ -262,7 +262,7 @@ impl Game {
             let stages = def.stages.max(1);
             // 单技能标准文件: 起手固定 @0 (无起手帧则时长为 0)
             let cast_dur = if stages >= 2 {
-                fx_block_len(def.fx_lib, fxl::CAST as i64) as f64 * 0.1
+                fx_block_len(&def.fx, fxl::CAST as i64) as f64 * 0.1
             } else {
                 0.0
             };

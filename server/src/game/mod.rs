@@ -291,9 +291,9 @@ pub struct SkillDef {
     /// 技能类型: 1 一段(命中) / 2 二段(起手+命中) / 3 三段(起手+飞行+命中)
     #[serde(default)]
     pub stages: u8,
-    /// 特效: 库号 (magic/00N) / 起始帧 / 帧数 (帧数 0 = 无帧动画)
+    /// 特效名 (packs/magic/<名>.mfl, 通常与技能 id 同名; 纯数字 = 旧编号库)
     #[serde(default)]
-    pub fx_lib: u16,
+    pub fx: String,
     #[serde(default)]
     pub fx_base: u32,
     #[serde(default)]
@@ -1043,23 +1043,23 @@ pub struct Game {
 type PendingHit = (Instant, String, Vec<(String, i32)>);
 
 /// 起手段帧数实测缓存 (packs/magic 库 10 槽块, 与客户端 block_len 同判据)
-static FX_BLOCK_LEN: std::sync::Mutex<Option<std::collections::HashMap<(u16, i64), u8>>> =
+static FX_BLOCK_LEN: std::sync::Mutex<Option<std::collections::HashMap<(String, i64), u8>>> =
     std::sync::Mutex::new(None);
 
-fn fx_block_len(lib: u16, base: i64) -> u8 {
-    if base < 0 {
+fn fx_block_len(fx: &str, base: i64) -> u8 {
+    if base < 0 || fx.is_empty() {
         return 0;
     }
     let Ok(mut g) = FX_BLOCK_LEN.lock() else {
         return 0;
     };
     let cache = g.get_or_insert_with(Default::default);
-    if let Some(&k) = cache.get(&(lib, base)) {
+    if let Some(&k) = cache.get(&(fx.to_string(), base)) {
         return k;
     }
     let path = crate::admin::packs_root()
         .join("magic")
-        .join(format!("{lib:03}.mfl"));
+        .join(format!("{}.mfl", fxl::file_stem(fx)));
     let k = mir_formats::mfl::AnyLib::open(&path)
         .ok()
         .map(|l| {
@@ -1076,7 +1076,7 @@ fn fx_block_len(lib: u16, base: i64) -> u8 {
             k
         })
         .unwrap_or(0);
-    cache.insert((lib, base), k);
+    cache.insert((fx.to_string(), base), k);
     k
 }
 

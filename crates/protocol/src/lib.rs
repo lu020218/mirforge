@@ -249,9 +249,9 @@ pub enum ServerMessage {
         /// 施放者的技能修炼等级 (4 级起客户端播强化特效)
         #[serde(default)]
         level: u32,
-        /// 特效: 库号 (magic/00N) / 起始帧 / 帧数 (0 = 无帧动画, 客户端画扩散圈)
+        /// 特效名 (packs/magic/<名>.mfl, 通常与技能 id 同名; 纯数字 = 旧编号库)
         #[serde(default)]
-        fx_lib: u16,
+        fx: String,
         #[serde(default)]
         fx_base: u32,
         #[serde(default)]

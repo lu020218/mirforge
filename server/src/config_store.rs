@@ -51,6 +51,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             fx_frames INTEGER NOT NULL DEFAULT 0,
             anim TEXT NOT NULL DEFAULT '',
             stages INTEGER NOT NULL DEFAULT 0,
+            fx TEXT NOT NULL DEFAULT '',
             ord INTEGER NOT NULL DEFAULT 0
         )",
         "CREATE TABLE IF NOT EXISTS cfg_quests (
@@ -214,6 +215,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "fx_frames INTEGER NOT NULL DEFAULT 0",
         "anim TEXT NOT NULL DEFAULT ''",
         "stages INTEGER NOT NULL DEFAULT 0",
+        "fx TEXT NOT NULL DEFAULT ''",
     ] {
         let _ = sqlx::query(&format!("ALTER TABLE cfg_skills ADD COLUMN {col}"))
             .execute(pool)
@@ -263,7 +265,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
     };
     for r in sqlx::query(
         "SELECT id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames, anim, stages
+                max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages
          FROM cfg_skills ORDER BY class, ord, level",
     )
     .fetch_all(pool)
@@ -290,7 +292,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
             train_base: r.get::<i64, _>("train_base").max(1) as u32,
             level_bonus: r.get("level_bonus"),
             icon: r.get::<i64, _>("icon").max(0) as u32,
-            fx_lib: r.get::<i64, _>("fx_lib").max(0) as u16,
+            fx: r.get("fx"),
             fx_base: r.get::<i64, _>("fx_base").max(0) as u32,
             fx_frames: r.get::<i64, _>("fx_frames").clamp(0, 255) as u8,
             anim: r.get("anim"),
@@ -735,7 +737,7 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             sqlx::query(
                 "INSERT INTO cfg_skills
                  (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                  max_level, train_base, level_bonus, icon, fx_lib, fx_base, fx_frames, anim, stages, ord)
+                  max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages, ord)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
@@ -753,7 +755,7 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             .bind(s.train_base as i64)
             .bind(s.level_bonus)
             .bind(s.icon as i64)
-            .bind(s.fx_lib as i64)
+            .bind(&s.fx)
             .bind(s.fx_base as i64)
             .bind(s.fx_frames as i64)
             .bind(&s.anim)
@@ -1067,6 +1069,60 @@ pub async fn migrate_skill_fx_split(pool: &SqlitePool) -> Result<(), sqlx::Error
     }
     if hits > 0 {
         tracing::info!("技能特效迁移: {hits} 个技能切换到单技能标准文件");
+    }
+    Ok(())
+}
+
+/// 特效名字化: fx 为空时按旧数字 fx_lib 回填 —— 1xx 单技能文件映射为
+/// 技能英文名, 其余数字原样转字符串 (旧编号库继续可用)。幂等。
+/// 随后把道士三技能切到新购素材 (fx 不同名才切, 切过不再动)
+pub async fn migrate_skill_fx_named(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let named: [(i64, &str); 9] = [
+        (100, "huoqiu"),
+        (101, "zhiyu"),
+        (102, "shidu"),
+        (103, "huofu"),
+        (104, "leidian"),
+        (105, "bingpaoxiao"),
+        (106, "liehuo"),
+        (107, "shizihou"),
+        (108, "yeman"),
+    ];
+    let mut hits = 0;
+    // 新购道士素材先行切换 (必须在名字回填之前 —— 回填一旦占名,
+    // "fx 不同名才切"的幂等条件就再也不会命中, 新素材参数落不下去):
+    // 治愈 1 段 12 帧 / 施毒 2 段 10 帧 / 火符 3 段 10 帧
+    let fresh: [(&str, i64, i64); 3] = [("zhiyu", 12, 1), ("shidu", 10, 2), ("huofu", 10, 3)];
+    for (id, frames, stages) in fresh {
+        let r = sqlx::query(
+            "UPDATE cfg_skills SET fx = ?, fx_base = 170, fx_frames = ?, stages = ?
+             WHERE id = ? AND fx != ?",
+        )
+        .bind(id)
+        .bind(frames)
+        .bind(stages)
+        .bind(id)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        hits += r.rows_affected();
+    }
+    for (lib, name) in named {
+        let r = sqlx::query("UPDATE cfg_skills SET fx = ? WHERE fx = '' AND fx_lib = ?")
+            .bind(name)
+            .bind(lib)
+            .execute(pool)
+            .await?;
+        hits += r.rows_affected();
+    }
+    let r = sqlx::query(
+        "UPDATE cfg_skills SET fx = CAST(fx_lib AS TEXT) WHERE fx = '' AND fx_frames > 0",
+    )
+    .execute(pool)
+    .await?;
+    hits += r.rows_affected();
+    if hits > 0 {
+        tracing::info!("特效名字化迁移: {hits} 处配置切换");
     }
     Ok(())
 }

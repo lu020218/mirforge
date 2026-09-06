@@ -3,9 +3,9 @@
     {
       "anim": "cast",
       "cd_ms": 1500,
+      "fx": "huoqiu",
       "fx_base": 170,
       "fx_frames": 10,
-      "fx_lib": 100,
       "icon": 8,
       "id": "huoqiu",
       "kind": {
@@ -21,9 +21,9 @@
     {
       "anim": "cast",
       "cd_ms": 4000,
+      "fx": "leidian",
       "fx_base": 170,
       "fx_frames": 10,
-      "fx_lib": 104,
       "icon": 92,
       "id": "leidian",
       "kind": {
@@ -42,9 +42,9 @@
     {
       "anim": "cast",
       "cd_ms": 8000,
+      "fx": "bingpaoxiao",
       "fx_base": 170,
       "fx_frames": 8,
-      "fx_lib": 105,
       "icon": 534,
       "id": "bingpaoxiao",
       "kind": {
@@ -65,9 +65,9 @@
     {
       "anim": "cast",
       "cd_ms": 3000,
+      "fx": "zhiyu",
       "fx_base": 170,
-      "fx_frames": 20,
-      "fx_lib": 101,
+      "fx_frames": 12,
       "icon": 281,
       "id": "zhiyu",
       "kind": "heal",
@@ -81,9 +81,9 @@
     {
       "anim": "cast",
       "cd_ms": 4000,
+      "fx": "shidu",
       "fx_base": 170,
-      "fx_frames": 20,
-      "fx_lib": 102,
+      "fx_frames": 10,
       "icon": 161,
       "id": "shidu",
       "kind": {
@@ -94,14 +94,14 @@
       "name": "施毒术",
       "range": 7,
       "self_cast": false,
-      "stages": 1
+      "stages": 2
     },
     {
       "anim": "cast",
       "cd_ms": 2000,
+      "fx": "huofu",
       "fx_base": 170,
-      "fx_frames": 16,
-      "fx_lib": 103,
+      "fx_frames": 10,
       "icon": 125,
       "id": "huofu",
       "kind": {
@@ -119,9 +119,9 @@
     {
       "anim": "attack",
       "cd_ms": 3000,
+      "fx": "liehuo",
       "fx_base": 170,
       "fx_frames": 8,
-      "fx_lib": 106,
       "icon": 433,
       "id": "liehuo",
       "kind": {
@@ -137,9 +137,9 @@
     {
       "anim": "attack",
       "cd_ms": 6000,
+      "fx": "yeman",
       "fx_base": 170,
       "fx_frames": 18,
-      "fx_lib": 108,
       "icon": 399,
       "id": "yeman",
       "kind": {
@@ -155,9 +155,9 @@
     {
       "anim": "attack",
       "cd_ms": 10000,
+      "fx": "shizihou",
       "fx_base": 170,
       "fx_frames": 10,
-      "fx_lib": 107,
       "icon": 536,
       "id": "shizihou",
       "kind": {

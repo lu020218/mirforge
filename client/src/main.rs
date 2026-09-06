@@ -326,8 +326,8 @@ enum Layer {
     Weapon(u16),
     /// 怪物 (Monster/{n:03}.Lib)
     Mon(u16),
-    /// 技能特效 (0=Magic.Lib, 1=Magic2.Lib)
-    Fx(u8),
+    /// 技能特效 (值 = World::fx_handle 驻留的名字句柄)
+    Fx(u16),
     /// NPC (Data/NPC/{n:02}.Lib)
     Npc(u16),
 }
@@ -343,6 +343,9 @@ struct FrameRef {
 
 #[derive(Resource)]
 struct World {
+    /// 特效名驻留表: 名字 → Layer::Fx 句柄 (Layer 需 Copy, 名字放这里)
+    fx_names: Vec<String>,
+    fx_ids: HashMap<String, u16>,
     map: MirMap,
     /// 当前地图文件名 (小写; 与服务器 zone_id 对应)
     map_name: String,
@@ -367,13 +370,13 @@ struct World {
 impl World {
     /// 库号 → 相对 Data/Map 的库文件名 (Crystal Libraries.MapLibs 注册表完整移植;
     /// back/mid/front 三层共用同一索引空间, 逐格取 cell.*_lib)
-    fn lib_name(layer: Layer, lib: i16) -> Option<String> {
+    fn lib_name(&self, layer: Layer, lib: i16) -> Option<String> {
         match layer {
             Layer::Hum(n) => return Some(format!("CArmour/{n:02}")),
             Layer::Weapon(n) => return Some(format!("CWeapon/{n:02}")),
             Layer::Mon(n) => return Some(format!("Monster/{n:03}")),
             Layer::Npc(n) => return Some(format!("NPC/{n:02}")),
-            Layer::Fx(n) => return Some(format!("Fx/{n}")),
+            Layer::Fx(h) => return Some(format!("Fx/{}", self.fx_names.get(h as usize)?)),
             _ => {}
         }
         // 盛大格式地图 (私服市售图通用): 层基址 back=100/mid=110/front=120,
@@ -403,11 +406,13 @@ impl World {
     /// 淘汰路线: 每接入一类就在这里补一行; 全部类别被 packs 覆盖后
     /// Crystal 兜底即可整体移除。
     fn pack_path(&self, name: &str) -> Option<PathBuf> {
-        // 技能特效库: Fx/{n} → packs/magic/{n:03}.mfl (管理台特效库号即 n)
+        // 技能特效库: Fx/<名> → packs/magic/<名>.mfl (纯数字 = 旧编号库)
         if let Some(n) = name.strip_prefix("Fx/") {
-            if let Ok(n) = n.parse::<u32>() {
-                return Some(self.packs_root.join("magic").join(format!("{n:03}.mfl")));
-            }
+            return Some(
+                self.packs_root
+                    .join("magic")
+                    .join(format!("{}.mfl", fxl::file_stem(n))),
+            );
         }
         // 地图图库: 保持 Map/ 下相对路径
         if let Some(rest) = name.strip_prefix("Map/") {
@@ -454,7 +459,7 @@ impl World {
         if idx < 0 {
             return None;
         }
-        let name = Self::lib_name(layer, 0)?;
+        let name = self.lib_name(layer, 0)?;
         let lib = self.open_lib(&name)?;
         lib.dims(idx as usize).filter(|&(w, h)| w >= 5 && h >= 5)
     }
@@ -493,6 +498,17 @@ impl World {
         meta
     }
 
+    /// 特效名 → Layer 句柄 (驻留; 同名恒同句柄, Layer 保持 Copy)
+    fn fx_layer(&mut self, name: &str) -> Layer {
+        if let Some(&h) = self.fx_ids.get(name) {
+            return Layer::Fx(h);
+        }
+        let h = self.fx_names.len() as u16;
+        self.fx_names.push(name.to_string());
+        self.fx_ids.insert(name.to_string(), h);
+        Layer::Fx(h)
+    }
+
     /// blend=true: 加色混合帧 (灯光/法阵光晕)。Bevy Sprite 无逐精灵混合
     /// 模式, 用标准近似: alpha=像素亮度 (黑=全透明, 等效柔性 additive)
     fn frame_ex(
@@ -508,7 +524,7 @@ impl World {
         }
         let fref = (|| {
             let mut img = {
-                let name = Self::lib_name(layer, front_lib)?;
+                let name = self.lib_name(layer, front_lib)?;
                 let lib = self.open_lib(&name)?;
                 lib.image(idx as usize).ok().flatten()?
             };
@@ -899,6 +915,8 @@ fn setup(
         })
         .collect();
     commands.insert_resource(World {
+        fx_names: Vec::new(),
+        fx_ids: HashMap::new(),
         map,
         map_name: map_name.to_lowercase(),
         maps,

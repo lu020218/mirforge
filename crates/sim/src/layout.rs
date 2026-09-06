@@ -59,6 +59,18 @@ pub mod fx {
     pub fn fly_base(row: i32) -> i32 {
         FLY + row * SLOT
     }
+
+    /// 特效名 → packs/magic 下文件主名。
+    /// 特效以**技能英文名**为 id (如 "zhiyu" → magic/zhiyu.mfl, 与技能 id
+    /// 一致, 管理台配置一眼对应); 纯数字视为旧编号库 (如 "6" → magic/006.mfl,
+    /// 素材源合集仍可引用)。两端共用此规则。
+    pub fn file_stem(fx: &str) -> String {
+        if !fx.is_empty() && fx.bytes().all(|b| b.is_ascii_digit()) {
+            format!("{:03}", fx.parse::<u32>().unwrap_or(0))
+        } else {
+            fx.to_string()
+        }
+    }
 }
 
 /// 怪物库自适应帧表(纯算法;帧存在性经 `real` 回调注入,便于表驱动测试)。
@@ -169,8 +181,7 @@ mod tests {
     /// 这是"鸡死变鹿"的回归样例: 段尾栅栏必须落在空洞处, 绝不能到 360
     #[test]
     fn mon_detect_fences_entity_end() {
-        let real =
-            |i: i32| ((0..348).contains(&i) || (360..600).contains(&i)) && i % 10 < 6;
+        let real = |i: i32| ((0..348).contains(&i) || (360..600).contains(&i)) && i % 10 < 6;
         let a = mon::detect(real, 0).unwrap();
         assert_eq!((a.base, a.stride), (0, 10));
         assert!(a.end <= 348, "甲的段尾 {} 不得越进乙 (360 起)", a.end);
@@ -196,6 +207,16 @@ mod tests {
         assert_eq!(mon::block_len(real, 0, 10), 3);
         assert_eq!(mon::block_len(real, 3, 10), 0);
         assert_eq!(mon::block_len(|_| true, 0, 10), 10);
+    }
+
+    /// 特效名 → 文件主名: 名字原样, 纯数字补零成旧编号
+    #[test]
+    fn fx_file_stem_rule() {
+        assert_eq!(fx::file_stem("zhiyu"), "zhiyu");
+        assert_eq!(fx::file_stem("shidu_red"), "shidu_red");
+        assert_eq!(fx::file_stem("6"), "006");
+        assert_eq!(fx::file_stem("100"), "100");
+        assert_eq!(fx::file_stem(""), "");
     }
 
     /// 段布局不重叠且在总帧位内 (const 断言, 编译期即验证)

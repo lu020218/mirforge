@@ -232,7 +232,7 @@ pub(crate) fn net_pump(
                     position,
                     targets,
                     level,
-                    fx_lib,
+                    fx,
                     fx_base,
                     fx_frames,
                     anim,
@@ -261,18 +261,22 @@ pub(crate) fn net_pump(
                         }
                     }
                     // 特效帧段随广播下发 (管理台配置); 帧数 0 = 无帧动画画扩散圈
-                    let fx = (fx_frames > 0).then_some((fx_lib as u8, fx_base as i32, fx_frames));
+                    let fx = (fx_frames > 0 && !fx.is_empty()).then_some((
+                        fx,
+                        fx_base as i32,
+                        fx_frames,
+                    ));
                     // 二/三段: 起手特效在施放者脚下。单技能标准文件固定布局:
                     // 起手@0, 飞行@10 (16 向×10 槽), 命中@170; 帧数逐块实测
                     let src_pt = src.map(|sp| DVec2::new(sp.x, sp.y));
                     let now_s = time.elapsed_secs_f64();
                     // 二段: 命中段等起手块 (@0) 播完再开 (三段由弹体到达自然衔接)
-                    let hit_wait = match (stages, src_pt.is_some(), fx) {
+                    let hit_wait = match (stages, src_pt.is_some(), &fx) {
                         (2, true, Some(_)) => fxl::CAST,
                         _ => -1,
                     };
                     if stages >= 2 {
-                        if let (Some(sp), Some((lib, _, _))) = (src_pt, fx) {
+                        if let (Some(sp), Some((name, _, _))) = (src_pt, &fx) {
                             let cx = sp.x as f32 * CELL_W - CELL_W / 2.0;
                             let cy = sp.y as f32 * CELL_H - CELL_H / 2.0;
                             commands.spawn((
@@ -280,7 +284,7 @@ pub(crate) fn net_pump(
                                 Transform::from_xyz(cx, -cy, 700.0),
                                 Visibility::Hidden,
                                 EffectAnim {
-                                    lib,
+                                    fx: name.clone(),
                                     base: fxl::CAST,
                                     frames: 0,
                                     born: now_s,
@@ -296,7 +300,7 @@ pub(crate) fn net_pump(
                         let py = pt.y as f32 * CELL_H - CELL_H / 2.0;
                         // 三段: 飞行弹体压阵, 命中段等到达再播
                         if stages >= 3 {
-                            if let (Some(sp), Some((lib, base, frames))) = (src_pt, fx) {
+                            if let (Some(sp), Some((name, base, frames))) = (src_pt, &fx) {
                                 let d = pt - sp;
                                 if d.length() > 0.3 {
                                     // Mir 16 向: 0=上, 顺时针
@@ -308,14 +312,14 @@ pub(crate) fn net_pump(
                                         Transform::from_xyz(sx, -sy, 700.0),
                                         Visibility::Hidden,
                                         Projectile {
-                                            lib,
+                                            fx: name.clone(),
                                             row: fxl::fly_base(row),
                                             born: now_s,
                                             dur: (d.length() / fxl::FLY_SPEED).max(0.08),
                                             from: Vec2::new(sx, sy),
                                             to: Vec2::new(px, py),
-                                            hit_base: base,
-                                            hit_frames: frames,
+                                            hit_base: *base,
+                                            hit_frames: *frames,
                                             cast_base: fxl::CAST,
                                         },
                                     ));
@@ -336,17 +340,17 @@ pub(crate) fn net_pump(
                                 },
                             ));
                         }
-                        match fx {
+                        match &fx {
                             // 原版 Magic 库帧动画特效
-                            Some((lib, base, frames)) => {
+                            Some((name, base, frames)) => {
                                 commands.spawn((
                                     Sprite::default(),
                                     Transform::from_xyz(px, -py, 700.0),
                                     Visibility::Hidden,
                                     EffectAnim {
-                                        lib,
-                                        base,
-                                        frames,
+                                        fx: name.clone(),
+                                        base: *base,
+                                        frames: *frames,
                                         born: time.elapsed_secs_f64(),
                                         px,
                                         py,

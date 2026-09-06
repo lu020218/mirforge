@@ -10,7 +10,8 @@ pub(crate) struct Fx {
 /// 原版技能特效帧动画 (100ms/帧, 播完自毁; blend 亮度透明)
 #[derive(Component)]
 pub(crate) struct EffectAnim {
-    pub(crate) lib: u8,
+    /// 特效名 (magic/<名>.mfl)
+    pub(crate) fx: String,
     pub(crate) base: i32,
     /// 0 = 自适应: 按 10 槽块实测帧数 (起手段等按经典布局推导的段用)
     pub(crate) frames: u8,
@@ -24,7 +25,8 @@ pub(crate) struct EffectAnim {
 /// 技能飞行弹体: 从施放者直线飞向目标, 循环播 16 向飞行帧, 到达再播命中段
 #[derive(Component)]
 pub(crate) struct Projectile {
-    pub(crate) lib: u8,
+    /// 特效名 (magic/<名>.mfl)
+    pub(crate) fx: String,
     /// 本向飞行行基址 ([`fxl::fly_base`], 帧数逐块实测)
     pub(crate) row: i32,
     pub(crate) born: f64,
@@ -211,18 +213,14 @@ pub(crate) fn fx_step(
     }
     // 原版特效帧动画: 100ms/帧, blend (加色近似) 解码
     for (e, mut tf, mut sp, mut vis, fx) in q_anim.iter_mut() {
+        let layer = world.fx_layer(&fx.fx);
         let eff = if fx.frames == 0 {
-            world
-                .block_len(Layer::Fx(fx.lib), fx.base, fxl::SLOT)
-                .min(10)
+            world.block_len(layer, fx.base, fxl::SLOT).min(10)
         } else {
             fx.frames
         };
         let delay = if fx.wait_base >= 0 {
-            world
-                .block_len(Layer::Fx(fx.lib), fx.wait_base, fxl::SLOT)
-                .min(10) as f64
-                * 0.1
+            world.block_len(layer, fx.wait_base, fxl::SLOT).min(10) as f64 * 0.1
         } else {
             0.0
         };
@@ -235,7 +233,7 @@ pub(crate) fn fx_step(
             commands.entity(e).despawn();
             continue;
         }
-        if let Some(f) = world.frame_ex(Layer::Fx(fx.lib), 0, fx.base + k, true) {
+        if let Some(f) = world.frame_ex(layer, 0, fx.base + k, true) {
             world.ensure_pages(&mut images);
             sp.image = world.pages[f.page].clone();
             sp.rect = Some(f.rect);
@@ -263,11 +261,9 @@ pub(crate) fn projectile_step(
 ) {
     let now = time.elapsed_secs_f64();
     for (e, mut tf, mut sp, mut vis, pj) in q.iter_mut() {
+        let layer = world.fx_layer(&pj.fx);
         let cast_dur = if pj.cast_base >= 0 {
-            world
-                .block_len(Layer::Fx(pj.lib), pj.cast_base, fxl::SLOT)
-                .min(10) as f64
-                * 0.1
+            world.block_len(layer, pj.cast_base, fxl::SLOT).min(10) as f64 * 0.1
         } else {
             0.0
         };
@@ -276,9 +272,7 @@ pub(crate) fn projectile_step(
             continue; // 起手未播完, 弹体待发
         }
         let t = (tt / pj.dur).min(1.0);
-        let k = world
-            .block_len(Layer::Fx(pj.lib), pj.row, fxl::SLOT)
-            .min(10);
+        let k = world.block_len(layer, pj.row, fxl::SLOT).min(10);
         if t >= 1.0 || k == 0 {
             commands.entity(e).despawn();
             commands.spawn((
@@ -286,7 +280,7 @@ pub(crate) fn projectile_step(
                 Transform::from_xyz(pj.to.x, -pj.to.y, 700.0),
                 Visibility::Hidden,
                 EffectAnim {
-                    lib: pj.lib,
+                    fx: pj.fx.clone(),
                     base: pj.hit_base,
                     frames: pj.hit_frames,
                     born: now,
@@ -298,7 +292,7 @@ pub(crate) fn projectile_step(
             continue;
         }
         let fi = pj.row + ((tt / 0.09) as i32) % k as i32;
-        if let Some(f) = world.frame_ex(Layer::Fx(pj.lib), 0, fi, true) {
+        if let Some(f) = world.frame_ex(layer, 0, fi, true) {
             world.ensure_pages(&mut images);
             sp.image = world.pages[f.page].clone();
             sp.rect = Some(f.rect);
