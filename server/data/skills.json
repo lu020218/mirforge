@@ -87,7 +87,10 @@
       "icon": 161,
       "id": "shidu",
       "kind": {
-        "damage": 1.5
+        "dot": {
+          "secs": 10.0,
+          "tick_mult": 0.6
+        }
       },
       "level": 3,
       "mp": 10,

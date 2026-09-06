@@ -74,6 +74,7 @@ pub(super) fn materialize_monsters(
                 corpse_until: None,
                 respawn_at: None,
                 removed_sent: false,
+                poison: None,
             });
         }
     }
@@ -120,6 +121,7 @@ pub(super) fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monst
                 corpse_until: None,
                 respawn_at: None,
                 removed_sent: false,
+                poison: None,
             }
         })
         .collect()
@@ -147,6 +149,7 @@ impl Game {
                 weapon: None,
                 image: None,
                 image_base: None,
+                poisoned: None,
             })
             .collect();
         self.monsters.retain(|m| m.boss);
@@ -191,6 +194,7 @@ impl Game {
                 weapon: None,
                 image: None,
                 image_base: None,
+                poisoned: None,
             })
             .collect();
         self.monsters.retain(|m| !m.boss);

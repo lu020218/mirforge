@@ -209,6 +209,7 @@ impl Game {
         // 修炼加成: 每级 +level_bonus (烈火 3 级 ×1.9, 私服 4/5 级更凶)
         let train_mult = 1.0 + def.level_bonus * skill_level as f64;
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
+        let mut dot_target: Option<(String, i32, f64)> = None;
         match def.kind {
             SkillKind::Damage(mult) => {
                 if let Some(tid) = &target_id {
@@ -233,6 +234,13 @@ impl Game {
                     p.hp = (p.hp + amount).min(p.max_hp);
                 }
             }
+            SkillKind::Dot { tick_mult, secs } => {
+                // 命中不打直伤, 到点上毒 (走与命中特效同步的延迟通道)
+                if let Some(tid) = &target_id {
+                    let tick_dmg = (dmg_base as f64 * tick_mult * train_mult).max(1.0) as i32;
+                    dot_target = Some((tid.clone(), tick_dmg, secs));
+                }
+            }
         }
         // 特效广播 (客户端按 skill_id 播放)
         let conns = self.zone_conns(&zone);
@@ -246,7 +254,11 @@ impl Game {
                     x: center.0,
                     y: center.1,
                 },
-                targets: hit_ids.iter().map(|(id, _)| id.clone()).collect(),
+                targets: hit_ids
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .chain(dot_target.iter().map(|(id, _, _)| id.clone()))
+                    .collect(),
                 level: skill_level,
                 fx: def.fx.clone(),
                 fx_base: def.fx_base,
@@ -257,6 +269,22 @@ impl Game {
             },
         )
         .await;
+        // 延迟上毒: 与命中特效同步 (起手播完才上毒)
+        if let Some((tid, tick_dmg, secs)) = dot_target {
+            let stages = def.stages.max(1);
+            let cast_dur = if stages >= 2 {
+                fx_block_len(&def.fx, fxl::CAST as i64) as f64 * 0.1
+            } else {
+                0.0
+            };
+            self.pending_poisons.push((
+                Instant::now() + Duration::from_secs_f64(cast_dur),
+                char_id.clone(),
+                tid,
+                tick_dmg,
+                secs,
+            ));
+        }
         // 延迟结算: 与客户端特效编排同步 (起手播完、弹体到达才掉血)
         if !hit_ids.is_empty() {
             let stages = def.stages.max(1);
@@ -479,6 +507,88 @@ impl Game {
     }
 
     /// 怪物命中玩家: 扣血/飘字/死亡回城
+    /// 上毒 (重复施毒刷新时长; 首跳在一个间隔后)
+    pub(super) async fn apply_poison(
+        &mut self,
+        attacker: &str,
+        mon_id: &str,
+        tick_dmg: i32,
+        secs: f64,
+    ) {
+        let now = Instant::now();
+        let mut zone = None;
+        if let Some(m) = self
+            .monsters
+            .iter_mut()
+            .find(|m| m.id == mon_id && m.alive())
+        {
+            m.poison = Some(Poison {
+                until: now + Duration::from_secs_f64(secs.max(0.1)),
+                next_tick: now + POISON_TICK,
+                tick_dmg,
+                attacker: attacker.to_string(),
+            });
+            zone = Some((m.zone.clone(), m.id.clone()));
+        }
+        // 立即广播中毒状态 (客户端变绿)
+        if let Some((zone, id)) = zone {
+            self.broadcast_poison(&zone, &id, true).await;
+        }
+    }
+
+    pub(super) async fn broadcast_poison(&self, zone: &str, mon_id: &str, on: bool) {
+        let conns = self.zone_conns(zone);
+        broadcast_to(
+            &self.sessions,
+            &conns,
+            ServerMessage::StateUpdate {
+                entities: vec![EntityUpdate {
+                    id: mon_id.to_string(),
+                    position: None,
+                    hp: None,
+                    animation: None,
+                    dir: None,
+                    removed: None,
+                    armour: None,
+                    weapon: None,
+                    image: None,
+                    image_base: None,
+                    poisoned: Some(on),
+                }],
+                timestamp: now_ms(),
+            },
+        )
+        .await;
+    }
+
+    /// 毒伤步进 (tick 驱动): 到点跳伤, 到期/死亡清毒
+    pub(super) async fn tick_poisons(&mut self, now: Instant) {
+        let mut ticks: Vec<(String, String, i32)> = Vec::new();
+        let mut expired: Vec<(String, String)> = Vec::new();
+        for m in self.monsters.iter_mut() {
+            if m.poison.is_none() {
+                continue;
+            }
+            let alive = m.alive();
+            let p = m.poison.as_mut().unwrap();
+            if !alive || now >= p.until {
+                expired.push((m.zone.clone(), m.id.clone()));
+                m.poison = None;
+                continue;
+            }
+            if now >= p.next_tick {
+                p.next_tick = now + POISON_TICK;
+                ticks.push((p.attacker.clone(), m.id.clone(), p.tick_dmg));
+            }
+        }
+        for (attacker, mon_id, dmg) in ticks {
+            self.hit_monster(&attacker, &mon_id, dmg).await;
+        }
+        for (zone, id) in expired {
+            self.broadcast_poison(&zone, &id, false).await;
+        }
+    }
+
     pub(super) async fn apply_monster_hits(&mut self, hits: Vec<(String, i32)>) {
         for (char_id, dmg) in hits {
             let Some(p) = self.players.get_mut(&char_id) else {

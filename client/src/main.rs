@@ -304,6 +304,8 @@ struct Remote {
     /// 攻击/施法动作开始时刻与段基址 (SkillEffect 驱动, 单次播放)
     act_start: Option<f64>,
     act_base: usize,
+    /// 中毒 (施毒术 DoT): 精灵叠绿色染色
+    poisoned: bool,
 }
 
 #[derive(Resource, Default)]

@@ -157,6 +157,9 @@ pub struct EntityUpdate {
     /// 怪物库内外观基址 (一库多怪时选中段的起始帧; 0/缺省 = 库首)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_base: Option<u32>,
+    /// 中毒状态 (施毒术 DoT; 客户端据此给精灵叠绿色染色)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poisoned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -528,6 +531,7 @@ mod tests {
                 weapon: None,
                 image: None,
                 image_base: None,
+                poisoned: None,
             }],
             timestamp: 12345,
         };

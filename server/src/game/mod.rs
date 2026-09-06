@@ -261,6 +261,21 @@ pub enum SkillKind {
     Aoe { radius: f64, mult: f64 },
     /// 治疗自身
     Heal,
+    /// 持续毒伤 (施毒术): 每 [`POISON_TICK`] 跳一次, 每跳 = 攻击 × 倍率
+    Dot { tick_mult: f64, secs: f64 },
+}
+
+/// 毒伤跳间隔 (经典绿毒节奏)
+pub const POISON_TICK: Duration = Duration::from_secs(2);
+
+/// 怪物中毒状态 (施毒术上毒; 重复施毒刷新时长)
+#[derive(Clone)]
+pub(super) struct Poison {
+    pub(super) until: Instant,
+    pub(super) next_tick: Instant,
+    pub(super) tick_dmg: i32,
+    /// 跳伤/击杀归属 (经验/掉落/任务)
+    pub(super) attacker: String,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -883,6 +898,8 @@ struct Monster {
     respawn_at: Option<Instant>,
     /// removed=true 是否已广播过
     removed_sent: bool,
+    /// 中毒状态 (None = 无毒)
+    poison: Option<Poison>,
 }
 
 impl Monster {
@@ -1037,6 +1054,8 @@ pub struct Game {
     last_regen: Instant,
     /// 技能延迟结算队列: 与客户端起手/飞行编排对齐 (到点才掉血)
     pending_hits: Vec<PendingHit>,
+    /// 延迟上毒队列 (到点时刻, 施毒者, 目标怪, 每跳伤害, 持续秒)
+    pending_poisons: Vec<(Instant, String, String, i32, f64)>,
 }
 
 /// 延迟结算条目: (到点时刻, 施放者, 命中列表)
@@ -1119,6 +1138,7 @@ impl Game {
             last_save: Instant::now(),
             last_regen: Instant::now(),
             pending_hits: Vec::new(),
+            pending_poisons: Vec::new(),
         }
     }
 
@@ -1216,6 +1236,7 @@ impl Game {
                     weapon: None,
                     image: None,
                     image_base: None,
+                    poisoned: None,
                 })
                 .collect();
             broadcast_to(

@@ -472,6 +472,9 @@ pub(crate) fn net_pump(
                         if let Some(b) = e.image_base {
                             r.image_base = b;
                         }
+                        if let Some(p) = e.poisoned {
+                            r.poisoned = p;
+                        }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;
                         }

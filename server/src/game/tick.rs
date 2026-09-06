@@ -21,6 +21,23 @@ impl Game {
                 }
             }
         }
+        // 延迟上毒到点
+        if self.pending_poisons.iter().any(|(at, ..)| now >= *at) {
+            let mut due = Vec::new();
+            let mut i = 0;
+            while i < self.pending_poisons.len() {
+                if now >= self.pending_poisons[i].0 {
+                    due.push(self.pending_poisons.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+            for (_, attacker, mon_id, tick_dmg, secs) in due {
+                self.apply_poison(&attacker, &mon_id, tick_dmg, secs).await;
+            }
+        }
+        // 毒伤步进
+        self.tick_poisons(now).await;
         // 地面物品过期清理 (按区广播变化)
         if self.ground.iter().any(|g| now >= g.expire) {
             let zones: Vec<String> = self
@@ -154,6 +171,7 @@ impl Game {
                     weapon: p.equipment.get("weapon").map(|i| i.shape),
                     image: None, // 玩家走 CArmour/CWeapon, 不用怪物图库
                     image_base: None,
+                    poisoned: None,
                 })
                 .collect();
             if entities.is_empty() {
@@ -181,6 +199,7 @@ impl Game {
                                 weapon: None,
                                 image: None,
                                 image_base: None,
+                                poisoned: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
@@ -203,6 +222,7 @@ impl Game {
                             weapon: None,
                             image: Some(m.image),
                             image_base: Some(m.image_base),
+                            poisoned: None,
                         })
                     }),
             );

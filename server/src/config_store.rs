@@ -286,6 +286,10 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
                     radius: p1,
                     mult: p2,
                 },
+                "dot" => SkillKind::Dot {
+                    tick_mult: p1,
+                    secs: p2,
+                },
                 _ => SkillKind::Damage(p1),
             },
             max_level: r.get::<i64, _>("max_level").max(0) as u32,
@@ -733,6 +737,7 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
                 SkillKind::Heal => ("heal", 0.0, 0.0),
                 SkillKind::Damage(m) => ("damage", *m, 0.0),
                 SkillKind::Aoe { radius, mult } => ("aoe", *radius, *mult),
+                SkillKind::Dot { tick_mult, secs } => ("dot", *tick_mult, *secs),
             };
             sqlx::query(
                 "INSERT INTO cfg_skills
@@ -1069,6 +1074,21 @@ pub async fn migrate_skill_fx_split(pool: &SqlitePool) -> Result<(), sqlx::Error
     }
     if hits > 0 {
         tracing::info!("技能特效迁移: {hits} 个技能切换到单技能标准文件");
+    }
+    Ok(())
+}
+
+/// 施毒术改持续毒伤 (仅当仍是单体伤害时切换, 幂等):
+/// 每跳 = 攻击 × 0.6 × 修炼加成, 2 秒/跳, 持续 10 秒
+pub async fn migrate_shidu_dot(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let r = sqlx::query(
+        "UPDATE cfg_skills SET kind_type = 'dot', p1 = 0.6, p2 = 10
+         WHERE id = 'shidu' AND kind_type = 'damage'",
+    )
+    .execute(pool)
+    .await?;
+    if r.rows_affected() > 0 {
+        tracing::info!("施毒术已切换为持续毒伤");
     }
     Ok(())
 }

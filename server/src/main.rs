@@ -110,6 +110,9 @@ async fn main() {
     config_store::migrate_skill_fx_named(db.pool())
         .await
         .expect("特效名字化迁移失败");
+    config_store::migrate_shidu_dot(db.pool())
+        .await
+        .expect("施毒 DoT 迁移失败");
 
     // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
     if config_store::is_empty(db.pool()).await.unwrap_or(false) {

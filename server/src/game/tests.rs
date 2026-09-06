@@ -299,6 +299,42 @@ async fn monster_moves_along_dir8() {
 }
 
 #[tokio::test]
+async fn dot_ticks_expires_and_kills() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    let mon_id = g.monsters[0].id.clone();
+    let hp0 = g.monsters[0].hp;
+    // 上毒: 每跳 3, 持续 10 秒
+    g.apply_poison("char1", &mon_id, 3, 10.0).await;
+    assert!(g.monsters[0].poison.is_some());
+    // 首跳未到点: 不掉血
+    g.tick_poisons(Instant::now()).await;
+    assert_eq!(g.monsters[0].hp, hp0);
+    // 拨快到跳点: 掉一跳
+    g.monsters[0].poison.as_mut().unwrap().next_tick = Instant::now();
+    g.tick_poisons(Instant::now()).await;
+    assert_eq!(g.monsters[0].hp, hp0 - 3, "到点应跳一次毒伤");
+    // 重复施毒刷新时长
+    let until1 = g.monsters[0].poison.as_ref().unwrap().until;
+    g.apply_poison("char1", &mon_id, 3, 10.0).await;
+    assert!(g.monsters[0].poison.as_ref().unwrap().until >= until1);
+    // 到期清毒
+    g.monsters[0].poison.as_mut().unwrap().until = Instant::now();
+    g.tick_poisons(Instant::now()).await;
+    assert!(g.monsters[0].poison.is_none(), "到期应清毒");
+    // 毒可以跳死: 大伤害一跳致死, 击杀归施毒者
+    g.apply_poison("char1", &mon_id, 1000, 10.0).await;
+    g.monsters[0].poison.as_mut().unwrap().next_tick = Instant::now();
+    g.tick_poisons(Instant::now()).await;
+    assert!(g.monsters[0].dying_until.is_some(), "毒应能跳死怪");
+    assert_eq!(g.players["char1"].exp, 20, "毒杀归施毒者");
+    // 死亡后清毒 (下一次步进)
+    g.tick_poisons(Instant::now()).await;
+    assert!(g.monsters[0].poison.is_none());
+}
+
+#[tokio::test]
 async fn kill_awards_exp_and_drops() {
     let mut g = test_game().await;
     g.players
