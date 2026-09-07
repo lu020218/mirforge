@@ -387,6 +387,181 @@ fn card() -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, EDGE))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
+        .shadow(egui::Shadow {
+            offset: [0, 3],
+            blur: 14,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(110),
+        })
+}
+
+/// 垂直渐变矩形 (Mesh 顶点色)
+fn vgrad(painter: &egui::Painter, rect: egui::Rect, top: egui::Color32, bottom: egui::Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// 窗口四角金饰 (传奇 UI 常见的 L 形角线 + 内衬细线)
+fn corner_ornaments(painter: &egui::Painter, rect: egui::Rect) {
+    let len = 22.0;
+    let g = egui::Stroke::new(1.6, GOLD_DIM);
+    let corners = [
+        (rect.left_top(), 1.0, 1.0),
+        (rect.right_top(), -1.0, 1.0),
+        (rect.left_bottom(), 1.0, -1.0),
+        (rect.right_bottom(), -1.0, -1.0),
+    ];
+    for (p, sx, sy) in corners {
+        let p = egui::pos2(p.x + sx * 10.0, p.y + sy * 10.0);
+        painter.line_segment([p, egui::pos2(p.x + sx * len, p.y)], g);
+        painter.line_segment([p, egui::pos2(p.x, p.y + sy * len)], g);
+    }
+}
+
+/// 居中装饰分隔线: ── ◆ ──
+fn ornament_divider(ui: &mut egui::Ui, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
+    let p = ui.painter();
+    let c = rect.center();
+    let half = width / 2.0 - 12.0;
+    p.line_segment(
+        [egui::pos2(c.x - half, c.y), egui::pos2(c.x - 12.0, c.y)],
+        egui::Stroke::new(1.0, EDGE),
+    );
+    p.line_segment(
+        [egui::pos2(c.x + 12.0, c.y), egui::pos2(c.x + half, c.y)],
+        egui::Stroke::new(1.0, EDGE),
+    );
+    // 菱形
+    let d = 3.5;
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(c.x, c.y - d),
+            egui::pos2(c.x + d, c.y),
+            egui::pos2(c.x, c.y + d),
+            egui::pos2(c.x - d, c.y),
+        ],
+        GOLD_DIM,
+        egui::Stroke::NONE,
+    ));
+}
+
+/// 渐变金主按钮 (hover 提亮 / 按下微沉 / 禁用暗金)
+fn gold_button(ui: &mut egui::Ui, label: &str, size: egui::Vec2, enabled: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hovered = enabled && resp.hovered();
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    let (top, bot, edge) = if !enabled {
+        (
+            egui::Color32::from_rgb(110, 90, 52),
+            egui::Color32::from_rgb(88, 71, 40),
+            egui::Color32::from_rgb(120, 98, 58),
+        )
+    } else if pressed {
+        (
+            egui::Color32::from_rgb(178, 138, 66),
+            egui::Color32::from_rgb(150, 115, 54),
+            GOLD,
+        )
+    } else if hovered {
+        (
+            egui::Color32::from_rgb(238, 196, 116),
+            egui::Color32::from_rgb(204, 158, 76),
+            egui::Color32::from_rgb(248, 216, 150),
+        )
+    } else {
+        (
+            egui::Color32::from_rgb(222, 178, 98),
+            egui::Color32::from_rgb(186, 142, 64),
+            egui::Color32::from_rgb(236, 200, 128),
+        )
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, bot);
+    // 上半高光渐变 (内缩避开圆角)
+    let top_half = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 4.0, rect.top() + 1.5),
+        egui::pos2(rect.right() - 4.0, rect.center().y),
+    );
+    vgrad(p, top_half, top, bot.gamma_multiply(1.0));
+    p.rect_stroke(
+        rect,
+        8.0,
+        egui::Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
+    let text_c = if enabled {
+        BG
+    } else {
+        egui::Color32::from_rgb(40, 33, 22)
+    };
+    p.text(
+        rect.center() + egui::vec2(0.0, if pressed { 1.0 } else { 0.0 }),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(16.0),
+        text_c,
+    );
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// 分段式页签 (整条圆角槽 + 选中金块)
+fn segmented(ui: &mut egui::Ui, width: f32, items: &[&str], sel: &mut usize) -> bool {
+    let h = 32.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::click());
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, egui::Color32::from_rgb(15, 12, 8));
+    p.rect_stroke(
+        rect,
+        8.0,
+        egui::Stroke::new(1.0, EDGE),
+        egui::StrokeKind::Inside,
+    );
+    let seg_w = width / items.len() as f32;
+    let mut changed = false;
+    if let (true, Some(pos)) = (resp.clicked(), resp.interact_pointer_pos()) {
+        let idx = (((pos.x - rect.left()) / seg_w) as usize).min(items.len() - 1);
+        if idx != *sel {
+            *sel = idx;
+            changed = true;
+        }
+    }
+    for (i, label) in items.iter().enumerate() {
+        let seg = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + i as f32 * seg_w, rect.top()),
+            egui::vec2(seg_w, h),
+        );
+        if i == *sel {
+            let inner = seg.shrink(3.0);
+            p.rect_filled(inner, 6.0, egui::Color32::from_rgb(88, 68, 34));
+            p.rect_stroke(
+                inner,
+                6.0,
+                egui::Stroke::new(1.0, GOLD_DIM),
+                egui::StrokeKind::Inside,
+            );
+        }
+        p.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(13.5),
+            if i == *sel { GOLD } else { INK_WEAK },
+        );
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    changed
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -613,14 +788,31 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                // 窗体: 圆角深底 + 金边
+                // 窗体: 圆角深底 + 垂直渐变 + 顶部金色氛围光 + 金边 + 角饰
                 painter.rect_filled(rect, 14.0, BG);
+                vgrad(
+                    painter,
+                    rect.shrink(2.0),
+                    egui::Color32::from_rgb(28, 23, 15),
+                    egui::Color32::from_rgb(16, 13, 9),
+                );
+                let glow = egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + 4.0, rect.top() + 2.0),
+                    egui::pos2(rect.right() - 4.0, rect.top() + 120.0),
+                );
+                vgrad(
+                    painter,
+                    glow,
+                    egui::Color32::from_rgba_unmultiplied(208, 163, 82, 26),
+                    egui::Color32::TRANSPARENT,
+                );
                 painter.rect_stroke(
                     rect.shrink(0.5),
                     14.0,
-                    egui::Stroke::new(1.2, EDGE),
+                    egui::Stroke::new(1.2, egui::Color32::from_rgb(84, 68, 42)),
                     egui::StrokeKind::Inside,
                 );
+                corner_ornaments(painter, rect);
                 let inner = rect.shrink(16.0);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 self.draw_header(ctx, &mut ui);
@@ -652,11 +844,36 @@ impl App {
         let bar = ui
             .horizontal(|ui| {
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new("Mir").size(24.0).strong().color(GOLD));
-                ui.label(egui::RichText::new("Forge").size(24.0).strong().color(INK));
-                ui.add_space(2.0);
-                ui.label(egui::RichText::new("登 录 器").size(12.0).color(INK_WEAK));
-                ui.add_space(18.0);
+                // logo 发光重影
+                let (r, _) = ui.allocate_exact_size(egui::vec2(176.0, 34.0), egui::Sense::hover());
+                let p = ui.painter();
+                let f = egui::FontId::proportional(26.0);
+                let base = egui::pos2(r.left(), r.center().y);
+                p.text(
+                    base + egui::vec2(1.0, 1.0),
+                    egui::Align2::LEFT_CENTER,
+                    "MirForge",
+                    f.clone(),
+                    egui::Color32::from_rgba_unmultiplied(208, 163, 82, 60),
+                );
+                let w = p
+                    .text(base, egui::Align2::LEFT_CENTER, "Mir", f.clone(), GOLD)
+                    .width();
+                p.text(
+                    base + egui::vec2(w, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    "Forge",
+                    f,
+                    INK,
+                );
+                p.text(
+                    egui::pos2(r.left() + 2.0, r.bottom() + 1.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    "L A U N C H E R",
+                    egui::FontId::proportional(9.0),
+                    GOLD_DIM,
+                );
+                ui.add_space(16.0);
                 ui.label(egui::RichText::new("线路").color(INK_WEAK));
                 let mut sel = self.settings.last_server;
                 egui::ComboBox::from_id_salt("srv")
@@ -673,25 +890,39 @@ impl App {
                     self.news.clear();
                     self.refresh_remote();
                 }
-                // 右侧窗控
+                // 右侧窗控 (圆形 hover 底)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = |ui: &mut egui::Ui, t: &str| {
-                        ui.add(
-                            egui::Button::new(egui::RichText::new(t).size(15.0).color(INK_WEAK))
-                                .frame(false)
-                                .min_size(egui::vec2(30.0, 26.0)),
-                        )
+                    let win_btn = |ui: &mut egui::Ui, t: &str, danger: bool| {
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(30.0, 28.0), egui::Sense::click());
+                        let p = ui.painter();
+                        if resp.hovered() {
+                            let c = if danger {
+                                egui::Color32::from_rgb(140, 52, 40)
+                            } else {
+                                egui::Color32::from_rgb(58, 48, 32)
+                            };
+                            p.circle_filled(rect.center(), 13.0, c);
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        p.text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            t,
+                            egui::FontId::proportional(15.0),
+                            if resp.hovered() { INK } else { INK_WEAK },
+                        );
+                        resp
                     };
-                    if btn(ui, "×").clicked() {
+                    if win_btn(ui, "×", true).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                    if btn(ui, "—").clicked() {
+                    if win_btn(ui, "—", false).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
                 });
             })
             .response;
-        // 标题栏空白拖动窗口
         let drag = ui.interact(
             bar.rect,
             egui::Id::new("titlebar-drag"),
@@ -700,65 +931,109 @@ impl App {
         if drag.drag_started() {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
-        ui.add_space(6.0);
-        // 金色分隔线
+        ui.add_space(8.0);
+        // 渐变分隔线 (中亮两端隐)
         let r = ui.max_rect();
         let y = ui.cursor().top();
-        ui.painter().line_segment(
-            [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
-            egui::Stroke::new(1.0, EDGE),
-        );
+        let p = ui.painter();
+        let mid = (r.left() + r.right()) / 2.0;
+        let mut mesh = egui::Mesh::default();
+        let ce = egui::Color32::TRANSPARENT;
+        let cm = egui::Color32::from_rgba_unmultiplied(208, 163, 82, 140);
+        mesh.colored_vertex(egui::pos2(r.left(), y), ce);
+        mesh.colored_vertex(egui::pos2(mid, y), cm);
+        mesh.colored_vertex(egui::pos2(r.left(), y + 1.0), ce);
+        mesh.colored_vertex(egui::pos2(mid, y + 1.0), cm);
+        mesh.colored_vertex(egui::pos2(r.right(), y), ce);
+        mesh.colored_vertex(egui::pos2(r.right(), y + 1.0), ce);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        mesh.add_triangle(1, 4, 3);
+        mesh.add_triangle(4, 5, 3);
+        p.add(egui::Shape::mesh(mesh));
     }
 
     fn draw_news(&mut self, ui: &mut egui::Ui, h: f32) {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(4.0, 16.0), egui::Sense::hover());
+                ui.painter().rect_filled(r, 2.0, GOLD);
                 ui.label(
                     egui::RichText::new("新闻公告")
-                        .size(17.0)
+                        .size(16.0)
                         .strong()
-                        .color(GOLD),
+                        .color(INK),
                 );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(&self.servers[self.settings.last_server].name)
+                            .small()
+                            .color(INK_WEAK),
+                    );
+                });
             });
-            ui.add_space(2.0);
+            ui.add_space(4.0);
             egui::ScrollArea::vertical()
-                .max_height(h - 30.0)
+                .max_height(h - 34.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     if self.news.is_empty() {
-                        ui.add_space(12.0);
-                        ui.label(egui::RichText::new("暂无公告").color(INK_WEAK));
+                        ui.add_space(24.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("暂无公告").color(INK_WEAK));
+                        });
                     }
                     for n in &self.news {
                         card().show(ui, |ui| {
-                            ui.set_width(ui.available_width() - 6.0);
+                            ui.set_width(ui.available_width() - 8.0);
                             ui.horizontal(|ui| {
                                 if n.pinned {
-                                    ui.label(
-                                        egui::RichText::new("置顶")
-                                            .size(11.0)
-                                            .color(BG)
-                                            .background_color(GOLD),
+                                    let (r, _) = ui.allocate_exact_size(
+                                        egui::vec2(34.0, 17.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    let p = ui.painter();
+                                    p.rect_filled(r, 4.0, egui::Color32::from_rgb(88, 68, 34));
+                                    p.rect_stroke(
+                                        r,
+                                        4.0,
+                                        egui::Stroke::new(1.0, GOLD_DIM),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    p.text(
+                                        r.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "置顶",
+                                        egui::FontId::proportional(10.5),
+                                        GOLD,
                                     );
                                 }
-                                ui.label(egui::RichText::new(&n.title).strong().color(INK));
+                                ui.label(
+                                    egui::RichText::new(&n.title)
+                                        .size(14.5)
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(240, 228, 200)),
+                                );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         ui.label(
-                                            egui::RichText::new(&n.created_at)
-                                                .small()
-                                                .color(INK_WEAK),
+                                            egui::RichText::new(
+                                                n.created_at.split(' ').next().unwrap_or(""),
+                                            )
+                                            .size(11.0)
+                                            .color(INK_WEAK),
                                         );
                                     },
                                 );
                             });
                             if !n.body.is_empty() {
-                                ui.add_space(2.0);
-                                ui.label(egui::RichText::new(&n.body).size(13.0).color(INK_WEAK));
+                                ui.add_space(3.0);
+                                ui.label(egui::RichText::new(&n.body).size(12.5).color(INK_WEAK));
                             }
                         });
-                        ui.add_space(6.0);
+                        ui.add_space(8.0);
                     }
                 });
         });
@@ -768,45 +1043,27 @@ impl App {
         card().show(ui, |ui| {
             ui.set_width(238.0);
             ui.vertical(|ui| {
-                // 页签
-                ui.horizontal(|ui| {
-                    for (t, name) in [
-                        (Tab::Login, "登录"),
-                        (Tab::Register, "注册"),
-                        (Tab::Reset, "找回密码"),
-                    ] {
-                        let sel = self.tab == t;
-                        let text = egui::RichText::new(name).size(14.5).color(if sel {
-                            GOLD
-                        } else {
-                            INK_WEAK
-                        });
-                        if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                            self.tab = t;
-                            self.status.clear();
-                        }
-                        if sel {
-                            let r = ui.min_rect();
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(r.right() - 34.0, r.bottom() + 2.0),
-                                    egui::pos2(r.right() - 6.0, r.bottom() + 2.0),
-                                ],
-                                egui::Stroke::new(2.0, GOLD),
-                            );
-                        }
-                    }
-                });
-                ui.add_space(8.0);
+                let mut sel = match self.tab {
+                    Tab::Login => 0usize,
+                    Tab::Register => 1,
+                    Tab::Reset => 2,
+                };
+                if segmented(ui, 238.0, &["登录", "注册", "找回密码"], &mut sel) {
+                    self.tab = [Tab::Login, Tab::Register, Tab::Reset][sel];
+                    self.status.clear();
+                }
+                ui.add_space(10.0);
                 let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, pw: bool| {
-                    ui.label(egui::RichText::new(label).size(12.5).color(INK_WEAK));
+                    ui.label(egui::RichText::new(label).size(12.0).color(INK_WEAK));
+                    ui.add_space(1.0);
                     ui.add(
                         egui::TextEdit::singleline(buf)
                             .password(pw)
                             .desired_width(f32::INFINITY)
-                            .margin(egui::Margin::symmetric(8, 6)),
+                            .font(egui::FontId::proportional(14.0))
+                            .margin(egui::Margin::symmetric(10, 7)),
                     );
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                 };
                 field(ui, "账号", &mut self.user, false);
                 match self.tab {
@@ -831,12 +1088,9 @@ impl App {
                     Tab::Reset => "重 设 密 码",
                 };
                 let can = !self.busy && !self.user.is_empty();
-                let btn =
-                    egui::Button::new(egui::RichText::new(label).size(16.0).strong().color(BG))
-                        .fill(if can { GOLD } else { GOLD_DIM })
-                        .corner_radius(8.0)
-                        .min_size(egui::vec2(ui.available_width(), 38.0));
-                if ui.add_enabled(can, btn).clicked() {
+                if gold_button(ui, label, egui::vec2(ui.available_width(), 40.0), can).clicked()
+                    && can
+                {
                     match self.tab {
                         Tab::Login => self.auth(AuthAction::Login {
                             user: self.user.clone(),
@@ -862,31 +1116,24 @@ impl App {
                     }
                 }
                 if self.busy {
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("处理中...").color(INK_WEAK));
+                        ui.label(egui::RichText::new("处理中...").size(12.5).color(INK_WEAK));
                     });
                 } else if !self.status.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(&self.status).color(GOLD));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(&self.status).size(12.5).color(GOLD));
                 }
                 ui.add_space(10.0);
-                let r = ui.min_rect();
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(r.left(), ui.cursor().top()),
-                        egui::pos2(r.right(), ui.cursor().top()),
-                    ],
-                    egui::Stroke::new(1.0, EDGE),
-                );
+                ornament_divider(ui, 238.0);
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new("游戏设置").size(13.0).color(INK_WEAK));
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("分辨率").size(12.5).color(INK_WEAK));
+                    ui.add_space(4.0);
                     egui::ComboBox::from_id_salt("res")
-                        .selected_text(&self.settings.window)
-                        .width(110.0)
+                        .selected_text(egui::RichText::new(&self.settings.window).size(12.5))
+                        .width(104.0)
                         .show_ui(ui, |ui| {
                             for r in ["1280x720", "1600x900", "1920x1080"] {
                                 if ui.selectable_label(self.settings.window == r, r).clicked() {
@@ -895,13 +1142,18 @@ impl App {
                                 }
                             }
                         });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .checkbox(
+                                &mut self.settings.fullscreen,
+                                egui::RichText::new("全屏").size(12.5),
+                            )
+                            .changed()
+                        {
+                            save_settings(&self.settings);
+                        }
+                    });
                 });
-                if ui
-                    .checkbox(&mut self.settings.fullscreen, "全屏 (无边框)")
-                    .changed()
-                {
-                    save_settings(&self.settings);
-                }
             });
         });
     }
@@ -909,29 +1161,43 @@ impl App {
     fn draw_update_bar(&mut self, ui: &mut egui::Ui) {
         let mut do_update = false;
         let mut do_retry = false;
-        card().show(ui, |ui| {
-            ui.set_width(ui.available_width() - 6.0);
-            ui.horizontal(|ui| match &self.update_state {
+        let r = ui.max_rect();
+        let y = ui.cursor().top();
+        ui.painter().line_segment(
+            [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
+            egui::Stroke::new(1.0, EDGE),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            match &self.update_state {
                 UpdateState::Checking => {
                     ui.spinner();
-                    ui.label(egui::RichText::new("检查更新中...").color(INK_WEAK));
+                    ui.label(
+                        egui::RichText::new("检查更新中...")
+                            .size(12.5)
+                            .color(INK_WEAK),
+                    );
                 }
                 UpdateState::UpToDate => {
-                    ui.label(egui::RichText::new("✔").color(GOLD));
-                    ui.label(egui::RichText::new("客户端已是最新").color(INK_WEAK));
+                    ui.label(egui::RichText::new("●").size(11.0).color(GOLD));
+                    ui.label(
+                        egui::RichText::new("客户端已是最新版本")
+                            .size(12.5)
+                            .color(INK_WEAK),
+                    );
                 }
                 UpdateState::Available(n, bytes) => {
+                    ui.label(egui::RichText::new("●").size(11.0).color(GOLD));
                     ui.label(
                         egui::RichText::new(format!(
-                            "发现更新: {n} 个文件, {:.1} MB",
+                            "发现新版本 — {n} 个文件 · {:.1} MB",
                             *bytes as f64 / 1048576.0
                         ))
+                        .size(12.5)
                         .color(INK),
                     );
-                    let b = egui::Button::new(egui::RichText::new("立即更新").color(BG).strong())
-                        .fill(GOLD)
-                        .corner_radius(6.0);
-                    if ui.add(b).clicked() {
+                    ui.add_space(6.0);
+                    if gold_button(ui, "立即更新", egui::vec2(96.0, 28.0), true).clicked() {
                         do_update = true;
                     }
                 }
@@ -943,29 +1209,39 @@ impl App {
                     };
                     ui.add(
                         egui::ProgressBar::new(frac)
-                            .desired_width(320.0)
-                            .fill(GOLD_DIM)
-                            .text(
-                                egui::RichText::new(format!("{done}/{total}  {file}")).size(12.0),
-                            ),
+                            .desired_width(300.0)
+                            .desired_height(16.0)
+                            .corner_radius(8.0)
+                            .fill(GOLD_DIM),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{done}/{total}  {file}"))
+                            .size(11.5)
+                            .color(INK_WEAK),
                     );
                     ui.ctx()
                         .request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 UpdateState::Failed(e) => {
-                    ui.label(egui::RichText::new(e).color(DANGER));
-                    if ui.button("重试").clicked() {
+                    ui.label(egui::RichText::new("●").size(11.0).color(DANGER));
+                    ui.label(egui::RichText::new(e).size(12.5).color(DANGER));
+                    ui.add_space(4.0);
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("重试").size(12.5)))
+                        .clicked()
+                    {
                         do_retry = true;
                     }
                 }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new("MirForge · 开源引擎")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(96, 86, 70)),
+                );
             });
         });
-        if do_update {
-            self.start_update();
-        }
-        if do_retry {
-            self.refresh_remote();
-        }
     }
 }
 
