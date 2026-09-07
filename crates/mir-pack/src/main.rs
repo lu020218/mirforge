@@ -29,6 +29,10 @@ fn main() {
         }
         Some("pack-wil") if args.len() == 3 => pack_wil(Path::new(&args[1]), Path::new(&args[2])),
         Some("pack-wzl") if args.len() == 3 => pack_wzl(Path::new(&args[1]), Path::new(&args[2])),
+        Some("make-manifest") if args.len() >= 2 => make_manifest(
+            Path::new(&args[1]),
+            args.get(2).map(|s| s.as_str()).unwrap_or("0.1.0"),
+        ),
         Some("remap") if args.len() >= 4 => remap(
             Path::new(&args[1]),
             Path::new(&args[2]),
@@ -400,6 +404,58 @@ fn pack_split(src: &Path, outdir: &Path, stride: usize) -> Result<(), AnyErr> {
     println!(
         "切分完成: {blocks} 段 × {stride} 帧, 写出 {written} 个库 → {}",
         outdir.display()
+    );
+    Ok(())
+}
+
+/// 生成游戏更新清单: 扫描发布目录, 逐文件记 路径/大小/SHA256 →
+/// <目录>/manifest.json。登录器对照该清单做按文件增量更新
+fn make_manifest(dir: &Path, version: &str) -> Result<(), AnyErr> {
+    use sha2::{Digest, Sha256};
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, u64, String)>) -> Result<(), AnyErr> {
+        for e in std::fs::read_dir(dir)? {
+            let p = e?.path();
+            if p.is_dir() {
+                walk(&p, base, out)?;
+                continue;
+            }
+            let rel = p.strip_prefix(base)?.to_string_lossy().replace('\\', "/");
+            if rel == "manifest.json" {
+                continue;
+            }
+            let bytes = std::fs::read(&p)?;
+            let hash = format!("{:x}", Sha256::digest(&bytes));
+            out.push((rel, bytes.len() as u64, hash));
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files)?;
+    files.sort();
+    let entries: Vec<String> = files
+        .iter()
+        .map(|(p, sz, h)| {
+            format!("    {{ \"path\": \"{p}\", \"size\": {sz}, \"sha256\": \"{h}\" }}")
+        })
+        .collect();
+    let json = format!(
+        "{{
+  \"version\": \"{version}\",
+  \"files\": [
+{}
+  ]
+}}
+",
+        entries.join(
+            ",
+"
+        )
+    );
+    std::fs::write(dir.join("manifest.json"), &json)?;
+    println!(
+        "清单生成: {} 个文件, 版本 {version} → {}",
+        files.len(),
+        dir.join("manifest.json").display()
     );
     Ok(())
 }

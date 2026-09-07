@@ -124,6 +124,7 @@
       <a id="nav-maps" onclick="go('maps')"><span class="ico">▦</span>地图设置</a>
       <a id="nav-bosses" onclick="go('bosses')"><span class="ico">☠</span>BOSS 设置</a>
       <div class="sec">运维</div>
+      <a id="nav-news" onclick="go('news')"><span class="ico">📰</span>公告管理</a>
       <a id="nav-resources" onclick="go('resources')"><span class="ico">▤</span>资源查看</a>
       <a id="nav-server" onclick="go('server')"><span class="ico">⚙</span>服务器设置</a>
     </div>
@@ -316,6 +317,16 @@
     </section>
 
     <!-- ═══ 服务器 ═══ -->
+    <section id="page-news" class="page">
+      <div class="head"><h2>公告管理</h2><span class="desc">登录器新闻栏内容 (置顶优先, 新的在前)</span></div>
+      <div class="toolbar" style="margin-top:0">
+        <button onclick="addNewsRow()">+ 新增公告</button>
+        <button onclick="saveNews()">保存公告</button>
+        <span class="hint">正文支持多行; 登录器最多显示 20 条</span>
+      </div>
+      <div id="news-list" style="display:flex;flex-direction:column;gap:10px;margin-top:12px;max-width:860px"></div>
+    </section>
+
     <section id="page-resources" class="page">
       <div class="head"><h2>资源查看</h2><span class="desc">浏览 packs/ 图库内容</span></div>
       <div style="display:flex;gap:14px;align-items:flex-start">
@@ -481,7 +492,7 @@ const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
 
 // ── 页面路由 ──
-const PAGES = ['dashboard', 'items', 'skills', 'monsters', 'npcs', 'quests', 'maps', 'bosses', 'resources', 'server'];
+const PAGES = ['dashboard', 'items', 'skills', 'monsters', 'npcs', 'quests', 'maps', 'bosses', 'news', 'resources', 'server'];
 let curPage = 'dashboard';
 /// NPC 表是否已载入 (只首次进页自动载, 见 go)
 let npcLoaded = false;
@@ -502,6 +513,7 @@ function go(p, silent) {
   if (p === 'items' || p === 'skills' || p === 'quests' || p === 'monsters') loadCfg(p);
   if (p === 'maps' && !document.querySelector('#mon-table tbody tr')) loadCfg('monsters');
   if (p === 'resources' && !window._packsLoaded) loadPackList();
+  if (p === 'news' && !window._newsLoaded) loadNews();
   // NPC 页涉及跨页取点, 只在首次进入时载入 —— 每次进页都重载会冲掉未保存的行
   // (含刚取到的坐标和还没保存的新增 NPC); 要放弃编辑请点「重新载入」。
   // 地图下拉依赖区域列表, 所以先取 zones 再取配置。
@@ -569,6 +581,49 @@ async function kick(name) {
 async function saveAll() {
   await fetch('/api/save', { method: 'POST', headers: hdr });
   flash('已存档');
+}
+
+// ── 公告管理 ──
+function newsRow(n) {
+  const d = document.createElement('div');
+  d.className = 'card-box';
+  d.style.padding = '12px 16px';
+  d.innerHTML = `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+      <input data-n="title" value="${(n.title || '').replace(/"/g, '&quot;')}" placeholder="标题" style="flex:1">
+      <label class="hint"><input type="checkbox" data-n="pinned" ${n.pinned ? 'checked' : ''}> 置顶</label>
+      <span class="hint">${n.created_at || ''}</span>
+      <button class="ghost" onclick="this.closest('.card-box').remove()">删</button>
+    </div>
+    <textarea data-n="body" rows="3" placeholder="正文…" style="width:100%;resize:vertical">${(n.body || '')}</textarea>
+    <input type="hidden" data-n="created_at" value="${n.created_at || ''}">`;
+  return d;
+}
+async function loadNews() {
+  window._newsLoaded = true;
+  const r = await fetch('/api/news', { headers: hdr });
+  if (!r.ok) { showErr('公告读取失败'); return; }
+  const list = document.getElementById('news-list');
+  list.innerHTML = '';
+  for (const n of await r.json()) list.appendChild(newsRow(n));
+}
+function addNewsRow() {
+  document.getElementById('news-list').prepend(newsRow({ pinned: false }));
+}
+async function saveNews() {
+  const items = [...document.querySelectorAll('#news-list .card-box')].map(d => ({
+    id: 0,
+    title: d.querySelector('[data-n=title]').value.trim(),
+    body: d.querySelector('[data-n=body]').value,
+    pinned: d.querySelector('[data-n=pinned]').checked,
+    created_at: d.querySelector('[data-n=created_at]').value,
+  })).filter(n => n.title);
+  const r = await fetch('/api/news', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...hdr },
+    body: JSON.stringify(items),
+  });
+  if (r.ok) { showOk('公告已保存'); loadNews(); } else showErr('保存失败');
 }
 
 // ── 资源查看器 ──

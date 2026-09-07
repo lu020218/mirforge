@@ -80,10 +80,27 @@ fn main() {
                     primary_window: Some(Window {
                         title: "MirForge".into(),
                         present_mode: PresentMode::AutoVsync,
+                        // 登录器设置: MIRFORGE_WINDOW=宽x高, MIRFORGE_FULLSCREEN=1
+                        mode: if std::env::var("MIRFORGE_FULLSCREEN").is_ok_and(|v| v == "1") {
+                            bevy::window::WindowMode::BorderlessFullscreen(
+                                bevy::window::MonitorSelection::Primary,
+                            )
+                        } else {
+                            bevy::window::WindowMode::Windowed
+                        },
                         // 覆盖系统 DPI: adapt_scale 按窗口高动态设缩放系数,
                         // UI 恒以 1080 逻辑高适配 (设计稿 1:1 基准)
-                        resolution: bevy::window::WindowResolution::new(1600.0, 900.0)
-                            .with_scale_factor_override(1.0),
+                        resolution: {
+                            let (w, h) = std::env::var("MIRFORGE_WINDOW")
+                                .ok()
+                                .and_then(|v| {
+                                    let (a, b) = v.split_once('x')?;
+                                    Some((a.parse().ok()?, b.parse().ok()?))
+                                })
+                                .unwrap_or((1600.0, 900.0));
+                            bevy::window::WindowResolution::new(w, h)
+                                .with_scale_factor_override(1.0)
+                        },
                         position: bevy::window::WindowPosition::Centered(
                             bevy::window::MonitorSelection::Primary,
                         ),

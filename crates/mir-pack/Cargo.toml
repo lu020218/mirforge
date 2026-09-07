@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sha2 = "0.10"
 mir-formats = { path = "../mir-formats" }
 image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
 

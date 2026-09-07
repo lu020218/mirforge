@@ -1056,6 +1056,8 @@ pub struct Game {
     pending_hits: Vec<PendingHit>,
     /// 延迟上毒队列 (到点时刻, 施毒者, 目标怪, 每跳伤害, 持续秒)
     pending_poisons: Vec<(Instant, String, String, i32, f64)>,
+    /// 登录器一次性启动票据: ticket → (account_id, 过期时刻)。60 秒 TTL, 用后即焚
+    launch_tickets: HashMap<String, (String, Instant)>,
 }
 
 /// 延迟结算条目: (到点时刻, 施放者, 命中列表)
@@ -1139,6 +1141,7 @@ impl Game {
             last_regen: Instant::now(),
             pending_hits: Vec::new(),
             pending_poisons: Vec::new(),
+            launch_tickets: HashMap::new(),
         }
     }
 
@@ -1528,9 +1531,20 @@ impl Game {
             ClientMessage::Heartbeat => {
                 send_to(&self.sessions, &conn_id, ServerMessage::HeartbeatAck).await;
             }
-            ClientMessage::Register { username, password } => {
+            ClientMessage::Register {
+                username,
+                password,
+                security_question,
+                security_answer,
+            } => {
                 let reply = match self.db.register(&username, &password).await {
                     Ok(Some(account_id)) => {
+                        // 密保可选: 注册时一并落库 (找回密码用)
+                        if let (Some(q), Some(a)) = (&security_question, &security_answer) {
+                            if !q.trim().is_empty() && !a.trim().is_empty() {
+                                let _ = self.db.set_security(&account_id, q, a).await;
+                            }
+                        }
                         self.conns.entry(conn_id.clone()).or_default().account_id =
                             Some(account_id.clone());
                         self.issue_token(&conn_id, &account_id).await;
@@ -1588,6 +1602,87 @@ impl Game {
                     }
                     Err(e) => warn!("登录失败: {e}"),
                 }
+            }
+            ClientMessage::RequestTicket => {
+                // 已登录连接才可申请; 票据 60 秒有效
+                let Some(account_id) = self.account_of(&conn_id) else {
+                    return;
+                };
+                let ticket = uuid::Uuid::new_v4().to_string();
+                self.launch_tickets.insert(
+                    ticket.clone(),
+                    (account_id, Instant::now() + Duration::from_secs(60)),
+                );
+                // 顺手清过期票
+                let now = Instant::now();
+                self.launch_tickets.retain(|_, (_, exp)| *exp > now);
+                send_to(
+                    &self.sessions,
+                    &conn_id,
+                    ServerMessage::LaunchTicket { ticket },
+                )
+                .await;
+            }
+            ClientMessage::TicketAuth { ticket } => {
+                let hit = self
+                    .launch_tickets
+                    .remove(&ticket)
+                    .filter(|(_, exp)| *exp > Instant::now());
+                match hit {
+                    Some((account_id, _)) => {
+                        self.conns.entry(conn_id.clone()).or_default().account_id =
+                            Some(account_id.clone());
+                        self.issue_token(&conn_id, &account_id).await;
+                        send_to(
+                            &self.sessions,
+                            &conn_id,
+                            ServerMessage::LoginResult {
+                                success: true,
+                                account_id: Some(account_id.clone()),
+                                message: "登录成功".into(),
+                            },
+                        )
+                        .await;
+                        self.send_character_list(&conn_id, &account_id).await;
+                    }
+                    None => {
+                        send_to(
+                            &self.sessions,
+                            &conn_id,
+                            ServerMessage::LoginResult {
+                                success: false,
+                                account_id: None,
+                                message: "启动票据无效或已过期, 请回登录器重新登录".into(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+            ClientMessage::ResetPassword {
+                username,
+                security_answer,
+                new_password,
+            } => {
+                let ok = self
+                    .db
+                    .reset_password(&username, &security_answer, &new_password)
+                    .await
+                    .unwrap_or(false);
+                send_to(
+                    &self.sessions,
+                    &conn_id,
+                    ServerMessage::LoginResult {
+                        success: ok,
+                        account_id: None,
+                        message: if ok {
+                            "密码已重设, 请用新密码登录".into()
+                        } else {
+                            "重设失败: 用户不存在/未设密保/答案错误".into()
+                        },
+                    },
+                )
+                .await;
             }
             ClientMessage::CreateCharacter {
                 name,

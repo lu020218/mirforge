@@ -30,3 +30,7 @@ design/mirforge-ui-design.html
 *.db-shm
 *.db-wal
 admin-audit.log
+/updates/
+/launcher.json
+/servers.json
+/installed.json

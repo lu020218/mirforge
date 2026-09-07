@@ -767,6 +767,74 @@ async fn api_mon_bases(
     Ok(Json(out))
 }
 
+/// 公告: 管理台读 (鉴权)
+async fn api_news_get(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::config_store::NewsItem>>, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    crate::config_store::load_news(st.db.pool())
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// 公告: 管理台全量保存 (鉴权)
+async fn api_news_put(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(items): Json<Vec<crate::config_store::NewsItem>>,
+) -> Result<StatusCode, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    audit("news", &format!("{} 条公告", items.len()));
+    crate::config_store::save_news(st.db.pool(), &items)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// 公告: 登录器公开只读 (无鉴权, 最多 20 条)
+async fn api_public_news(
+    State(st): State<AppState>,
+) -> Result<Json<Vec<crate::config_store::NewsItem>>, StatusCode> {
+    let mut items = crate::config_store::load_news(st.db.pool())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    items.truncate(20);
+    Ok(Json(items))
+}
+
+/// 游戏更新静态目录 (登录器下载 manifest.json 与文件)。
+/// MIRFORGE_UPDATES 可配, 默认工作目录 updates/; 路径白名单防穿越
+async fn api_update_file(
+    AxPath(path): AxPath<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    if path.contains("..") || path.contains('\\') || path.starts_with('/') {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let root = std::env::var("MIRFORGE_UPDATES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("updates"));
+    let full = root.join(&path);
+    let bytes = tokio::fs::read(&full)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let ctype = if path.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    };
+    Ok(axum::response::Response::builder()
+        .header("content-type", ctype)
+        .header("cache-control", "no-cache")
+        .body(axum::body::Body::from(bytes))
+        .unwrap())
+}
+
 /// 任意 packs 库的段候选 (帧段空洞切分) — 技能特效选段等通用
 /// 返回 [起始帧, 段内实帧估数] 列表
 async fn api_packs_bases(
@@ -1305,6 +1373,9 @@ pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         .route("/api/kick", post(api_kick))
         .route("/api/save", post(api_save))
         .route("/api/config", get(api_config_get).put(api_config_put))
+        .route("/api/news", get(api_news_get).put(api_news_put))
+        .route("/api/public/news", get(api_public_news))
+        .route("/updates/*path", get(api_update_file))
         .route(
             "/api/zones",
             get(api_zones_get)

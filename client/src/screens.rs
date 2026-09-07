@@ -418,6 +418,8 @@ pub fn login_update(
         net.send(ClientMessage::Register {
             username: user,
             password: pass,
+            security_question: None,
+            security_answer: None,
         });
     }
     for (mut t, mut color) in q_status.iter_mut() {

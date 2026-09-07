@@ -8,6 +8,7 @@ members = [
     "crates/sim",
     "server",
     "client",
+    "launcher",
 ]
 
 [workspace.package]

@@ -44,6 +44,12 @@ pub(crate) fn net_pump(
                             token,
                             character_id: cid,
                         });
+                    } else if let Ok(ticket) = std::env::var("MIRFORGE_TICKET") {
+                        // 登录器拉起: 一次性票据免密进选角 (票据用后即焚,
+                        // 之后的断线重连走 Resume 令牌, 与普通登录无异)
+                        std::env::remove_var("MIRFORGE_TICKET");
+                        net.status = "验证启动票据...".into();
+                        net.send(ClientMessage::TicketAuth { ticket });
                     } else {
                         net.status = "请登录".into();
                     }

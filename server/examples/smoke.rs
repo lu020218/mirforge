@@ -80,6 +80,8 @@ async fn main() {
         &ClientMessage::Register {
             username: user.clone(),
             password: "pw123".into(),
+            security_question: None,
+            security_answer: None,
         },
     )
     .await;

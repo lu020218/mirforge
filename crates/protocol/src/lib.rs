@@ -53,7 +53,28 @@ pub enum ClientMessage {
     #[serde(rename = "login")]
     Login { username: String, password: String },
     #[serde(rename = "register")]
-    Register { username: String, password: String },
+    Register {
+        username: String,
+        password: String,
+        /// 密保问题/答案 (可选, 密码找回用; 登录器注册页填写)
+        #[serde(default)]
+        security_question: Option<String>,
+        #[serde(default)]
+        security_answer: Option<String>,
+    },
+    /// 登录器: 登录成功后申请一次性启动票据 (60 秒有效, 用后即焚)
+    #[serde(rename = "requestTicket")]
+    RequestTicket,
+    /// 客户端: 凭登录器签发的票据免密进入 (等效登录成功)
+    #[serde(rename = "ticketAuth")]
+    TicketAuth { ticket: String },
+    /// 凭密保答案重设密码
+    #[serde(rename = "resetPassword")]
+    ResetPassword {
+        username: String,
+        security_answer: String,
+        new_password: String,
+    },
     #[serde(rename = "createCharacter")]
     CreateCharacter {
         name: String,
@@ -190,6 +211,9 @@ pub enum ServerMessage {
     /// 重连恢复用的会话令牌（客户端保存，Resume 时回放）
     #[serde(rename = "sessionToken")]
     SessionToken { token: String },
+    /// 一次性启动票据 (RequestTicket 应答; 登录器转交客户端)
+    #[serde(rename = "launchTicket")]
+    LaunchTicket { ticket: String },
     #[serde(rename = "resumeFailed")]
     ResumeFailed { message: String },
     #[serde(rename = "heartbeatAck")]

@@ -54,6 +54,13 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             fx TEXT NOT NULL DEFAULT '',
             ord INTEGER NOT NULL DEFAULT 0
         )",
+        "CREATE TABLE IF NOT EXISTS cfg_news (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        )",
         "CREATE TABLE IF NOT EXISTS cfg_quests (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -1076,6 +1083,61 @@ pub async fn migrate_skill_fx_split(pool: &SqlitePool) -> Result<(), sqlx::Error
         tracing::info!("技能特效迁移: {hits} 个技能切换到单技能标准文件");
     }
     Ok(())
+}
+
+/// 公告条目 (登录器新闻栏与管理台共用)
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct NewsItem {
+    #[serde(default)]
+    pub id: i64,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// 公告全量 (置顶优先, 新的在前)
+pub async fn load_news(pool: &SqlitePool) -> Result<Vec<NewsItem>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, title, body, pinned, created_at FROM cfg_news
+         ORDER BY pinned DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| NewsItem {
+            id: r.get("id"),
+            title: r.get("title"),
+            body: r.get("body"),
+            pinned: r.get::<i64, _>("pinned") != 0,
+            created_at: r.get("created_at"),
+        })
+        .collect())
+}
+
+/// 公告全量替换 (管理台保存; 保留原 id 无意义, 重建即可)
+pub async fn save_news(pool: &SqlitePool, items: &[NewsItem]) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM cfg_news")
+        .execute(&mut *tx)
+        .await?;
+    for n in items {
+        sqlx::query(
+            "INSERT INTO cfg_news (title, body, pinned, created_at)
+             VALUES (?, ?, ?, COALESCE(NULLIF(?, ''), datetime('now', 'localtime')))",
+        )
+        .bind(&n.title)
+        .bind(&n.body)
+        .bind(n.pinned as i64)
+        .bind(&n.created_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
 }
 
 /// 施毒术改持续毒伤 (仅当仍是单体伤害时切换, 幂等):

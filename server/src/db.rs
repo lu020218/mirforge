@@ -75,11 +75,19 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL
+                password_hash TEXT NOT NULL,
+                security_question TEXT,
+                security_answer_hash TEXT
             )",
         )
         .execute(&pool)
         .await?;
+        // 存量库补密保列 (幂等)
+        for col in ["security_question TEXT", "security_answer_hash TEXT"] {
+            let _ = sqlx::query(&format!("ALTER TABLE accounts ADD COLUMN {col}"))
+                .execute(&pool)
+                .await;
+        }
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS characters (
                 id TEXT PRIMARY KEY,
@@ -144,6 +152,58 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok((r.rows_affected() > 0).then_some(id))
+    }
+
+    /// 注册时补密保 (答案哈希存储)
+    pub async fn set_security(
+        &self,
+        account_id: &str,
+        question: &str,
+        answer: &str,
+    ) -> Result<(), sqlx::Error> {
+        let hash = bcrypt::hash(answer.trim(), bcrypt::DEFAULT_COST)
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+        sqlx::query(
+            "UPDATE accounts SET security_question = ?, security_answer_hash = ? WHERE id = ?",
+        )
+        .bind(question)
+        .bind(hash)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 凭密保答案重设密码。返回 false = 用户不存在/未设密保/答案错误
+    pub async fn reset_password(
+        &self,
+        username: &str,
+        answer: &str,
+        new_password: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let Some(row) =
+            sqlx::query("SELECT id, security_answer_hash FROM accounts WHERE username = ?")
+                .bind(username)
+                .fetch_optional(&self.pool)
+                .await?
+        else {
+            return Ok(false);
+        };
+        let Some(hash) = row.get::<Option<String>, _>("security_answer_hash") else {
+            return Ok(false);
+        };
+        if !bcrypt::verify(answer.trim(), &hash).unwrap_or(false) {
+            return Ok(false);
+        }
+        let id: String = row.get("id");
+        let new_hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST)
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+        sqlx::query("UPDATE accounts SET password_hash = ? WHERE id = ?")
+            .bind(new_hash)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(true)
     }
 
     /// 校验口令。成功返回 account_id。

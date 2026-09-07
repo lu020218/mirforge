@@ -97,6 +97,8 @@ pub(crate) fn dev_autologin(
                 net.send(ClientMessage::Register {
                     username: user.into(),
                     password: pass.into(),
+                    security_question: None,
+                    security_answer: None,
                 });
             } else if *stage == 1 && net.status == "用户名已存在" {
                 *stage = 2;
