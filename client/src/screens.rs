@@ -249,10 +249,6 @@ fn spawn_ghost_btn(
 #[derive(Component)]
 pub struct LoginRoot;
 #[derive(Component)]
-pub struct LoginBtn;
-#[derive(Component)]
-pub struct RegisterBtn;
-#[derive(Component)]
 pub struct StatusText;
 
 pub fn login_setup(mut commands: Commands, skin: Res<Skin>, wood: Res<crate::panels::WoodTex>) {
@@ -331,30 +327,23 @@ pub fn login_setup(mut commands: Commands, skin: Res<Skin>, wood: Res<crate::pan
             .with_children(|card| {
                 crate::panels::wood_bg(card, &wood);
                 crate::panels::metal_frame(card, &wood);
-                for (label, ph, pw, order) in [
-                    ("账 号", "输入账号", false, 0u8),
-                    ("密 码", "输入密码", true, 1u8),
-                ] {
-                    card.spawn(Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(8.0),
-                        ..default()
-                    })
-                    .with_children(|field| {
-                        field.spawn(text(&skin.font, label, 12.0, TEXT_DIM));
-                        spawn_input(field, &skin, ph, pw, order);
-                    });
-                }
-                card.spawn((text(&skin.font, "", 12.0, TEXT_DIM), StatusText));
+                // 账号体系全在登录器 (登录/注册/找回/更新), 客户端不再有
+                // 登录表单 —— 本卡只承载启动票据的验证状态与引导文案
                 card.spawn(Node {
                     flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(12.0),
-                    margin: UiRect::top(Val::Px(6.0)),
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(14.0),
                     ..default()
                 })
-                .with_children(|btns| {
-                    spawn_gold_btn(btns, &skin, "进 入 游 戏", 52.0, None, LoginBtn);
-                    spawn_ghost_btn(btns, &skin, "注 册 账 号", 46.0, None, RegisterBtn);
+                .with_children(|tip| {
+                    tip.spawn(text(&skin.font, "请通过登录器启动游戏", 20.0, TEXT_MAIN));
+                    tip.spawn(text(
+                        &skin.font,
+                        "账号登录、注册与游戏更新均在登录器完成",
+                        13.0,
+                        TEXT_DIM,
+                    ));
+                    tip.spawn((text(&skin.font, "", 13.0, TEXT_DIM), StatusText));
                 });
             });
             // 底部信息
@@ -385,46 +374,17 @@ pub fn login_teardown(mut commands: Commands, q: Query<Entity, With<LoginRoot>>)
     }
 }
 
-/// 登录页交互: 按钮点击 / Enter 提交 / 状态行
-#[allow(clippy::type_complexity)]
+/// 引导页状态行: 显示票据验证/连接进度; 票据无效时提示回登录器
 pub fn login_update(
     net: Res<Net>,
-    q_login: Query<&Interaction, (With<LoginBtn>, Changed<Interaction>)>,
-    q_reg: Query<&Interaction, (With<RegisterBtn>, Changed<Interaction>)>,
-    q_input: Query<&TextInput>,
     mut q_status: Query<(&mut Text, &mut TextColor), With<StatusText>>,
-    mut keys: EventReader<KeyboardInput>,
 ) {
-    let (mut user, mut pass) = (String::new(), String::new());
-    for inp in &q_input {
-        if inp.order == 0 {
-            user = inp.value.clone();
-        } else {
-            pass = inp.value.clone();
-        }
-    }
-    let ready = net.connected && !user.is_empty() && !pass.is_empty();
-    let enter = keys
-        .read()
-        .any(|e| e.state.is_pressed() && e.logical_key == Key::Enter);
-    let login = enter || q_login.iter().any(|it| *it == Interaction::Pressed);
-    let register = q_reg.iter().any(|it| *it == Interaction::Pressed);
-    if ready && login {
-        net.send(ClientMessage::Login {
-            username: user,
-            password: pass,
-        });
-    } else if ready && register {
-        net.send(ClientMessage::Register {
-            username: user,
-            password: pass,
-            security_question: None,
-            security_answer: None,
-        });
-    }
     for (mut t, mut color) in q_status.iter_mut() {
         **t = net.status.clone();
-        color.0 = if net.status.contains("失败") || net.status.contains("错误") {
+        color.0 = if net.status.contains("失败")
+            || net.status.contains("错误")
+            || net.status.contains("无效")
+        {
             HP_RED
         } else {
             TEXT_DIM

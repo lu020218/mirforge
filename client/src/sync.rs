@@ -51,7 +51,7 @@ pub(crate) fn net_pump(
                         net.status = "验证启动票据...".into();
                         net.send(ClientMessage::TicketAuth { ticket });
                     } else {
-                        net.status = "请登录".into();
+                        net.status = "等待登录器启动票据".into();
                     }
                 }
                 ServerMessage::Error { message } => net.status = message,

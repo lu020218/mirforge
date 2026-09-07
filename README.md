@@ -40,11 +40,12 @@ packs（格式与命令见 [packs/README.md](packs/README.md)）；`resources/`
 ```powershell
 # 联机 (两个窗口)
 tools\dev-server.ps1                 # 窗口 1: 服务器
-tools\dev-client.ps1                 # 窗口 2: 客户端 (注册→建角→进游戏)
-
-# 离线单机漫游 (不需要服务器)
-tools\dev-client.ps1 -Offline
+tools\dev-launcher.ps1               # 窗口 2: 登录器 (登录/注册/更新 → 拉起客户端)
 ```
+
+客户端不再内置登录界面 —— 账号与更新统一走登录器。
+自动化/无登录器直连客户端用环境变量: `MIRFORGE_SERVER` +
+`MIRFORGE_AUTOLOGIN=user:pass[:class]` (dev 钩子, 详见 client 源码)。
 
 **bash / CI：**
 
