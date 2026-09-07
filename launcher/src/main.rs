@@ -407,6 +407,68 @@ fn vgrad(painter: &egui::Painter, rect: egui::Rect, top: egui::Color32, bottom: 
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// 颜色线性插值 (Color32 内部为预乘, 直接插分量)
+fn lerp_c(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgba_premultiplied(
+        f(a.r(), b.r()),
+        f(a.g(), b.g()),
+        f(a.b(), b.b()),
+        f(a.a(), b.a()),
+    )
+}
+
+/// 带圆角帽的垂直渐变: 上下各留一段圆角矩形, 中间走 mesh 渐变。
+/// 直接用方角 mesh 会盖住窗口圆角 (四角露出直角色块) —— 这是它存在的原因。
+fn vgrad_rounded(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    top: egui::Color32,
+    bottom: egui::Color32,
+    r_top: f32,
+    r_bot: f32,
+) {
+    let h = rect.height().max(1.0);
+    let (r_top, r_bot) = (r_top.min(h * 0.5), r_bot.min(h * 0.5));
+    if r_top > 0.5 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + r_top)),
+            egui::CornerRadius {
+                nw: r_top as u8,
+                ne: r_top as u8,
+                sw: 0,
+                se: 0,
+            },
+            lerp_c(top, bottom, r_top * 0.5 / h),
+        );
+    }
+    if r_bot > 0.5 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - r_bot), rect.max),
+            egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: r_bot as u8,
+                se: r_bot as u8,
+            },
+            lerp_c(top, bottom, (h - r_bot * 0.5) / h),
+        );
+    }
+    let mid = egui::Rect::from_min_max(
+        egui::pos2(rect.min.x, rect.min.y + r_top),
+        egui::pos2(rect.max.x, rect.max.y - r_bot),
+    );
+    if mid.height() > 0.5 {
+        vgrad(
+            painter,
+            mid,
+            lerp_c(top, bottom, r_top / h),
+            lerp_c(top, bottom, (h - r_bot) / h),
+        );
+    }
+}
+
 /// 窗口四角金饰 (传奇 UI 常见的 L 形角线 + 内衬细线)
 fn corner_ornaments(painter: &egui::Painter, rect: egui::Rect) {
     // 内缩必须大于窗口圆角半径 (14), 否则 L 角会压在圆弧上 / 视觉溢出边框
@@ -585,6 +647,10 @@ struct App {
     status: String,
     news: Vec<NewsItem>,
     busy: bool,
+    /// 已登录账号 (None = 未登录; 登录后才可选区服/进入游戏)
+    logged: Option<String>,
+    /// 本次认证成功后是否直接启动游戏 ("进入游戏" 按钮置位)
+    pending_launch: bool,
     ticket: Option<String>,
     update_state: UpdateState,
     tx: Sender<Report>,
@@ -635,6 +701,8 @@ impl App {
             status: String::new(),
             news: Vec::new(),
             busy: false,
+            logged: None,
+            pending_launch: false,
             ticket: None,
             update_state: UpdateState::Checking,
             tx,
@@ -757,16 +825,26 @@ impl eframe::App for App {
                 Report::Auth(ok, msg, ticket) => {
                     self.busy = false;
                     self.status = msg;
-                    if ok {
-                        if let Some(t) = ticket {
+                    match (ok, ticket) {
+                        // 登录/注册成功: 驻留登录器 (显示账号与区服),
+                        // 只有点了「进入游戏」才拿票据拉起客户端
+                        (true, Some(t)) => {
+                            self.logged = Some(self.user.clone());
                             self.settings.username = self.user.clone();
                             save_settings(&self.settings);
-                            self.ticket = Some(t.clone());
-                            self.launch_game(&t);
-                        } else {
-                            self.tab = Tab::Login; // 找回成功回登录页
+                            self.pass2.clear();
+                            if self.pending_launch {
+                                self.ticket = Some(t.clone());
+                                self.launch_game(&t);
+                            } else {
+                                self.status = format!("欢迎回来, {}", self.user);
+                            }
                         }
+                        // 找回密码成功: 回登录页
+                        (true, None) => self.tab = Tab::Login,
+                        _ => {}
                     }
+                    self.pending_launch = false;
                 }
                 Report::News(n) => self.news = n,
                 Report::UpdatePlan(Some((0, _))) => self.update_state = UpdateState::UpToDate,
@@ -792,21 +870,25 @@ impl eframe::App for App {
                 let painter = ui.painter();
                 // 窗体: 圆角深底 + 垂直渐变 + 顶部金色氛围光 + 金边 + 角饰
                 painter.rect_filled(rect, 14.0, BG);
-                vgrad(
+                vgrad_rounded(
                     painter,
-                    rect.shrink(2.0),
+                    rect.shrink(1.5),
                     egui::Color32::from_rgb(28, 23, 15),
                     egui::Color32::from_rgb(16, 13, 9),
+                    12.5,
+                    12.5,
                 );
                 let glow = egui::Rect::from_min_max(
-                    egui::pos2(rect.left() + 4.0, rect.top() + 2.0),
-                    egui::pos2(rect.right() - 4.0, rect.top() + 120.0),
+                    egui::pos2(rect.left() + 1.5, rect.top() + 1.5),
+                    egui::pos2(rect.right() - 1.5, rect.top() + 120.0),
                 );
-                vgrad(
+                vgrad_rounded(
                     painter,
                     glow,
                     egui::Color32::from_rgba_unmultiplied(208, 163, 82, 26),
                     egui::Color32::TRANSPARENT,
+                    12.5,
+                    0.0,
                 );
                 painter.rect_stroke(
                     rect.shrink(0.5),
@@ -889,16 +971,29 @@ impl App {
                 GOLD_DIM,
             );
             ui.add_space(16.0);
+            let signed_in = self.logged.is_some();
             ui.label(egui::RichText::new("线路").color(INK_WEAK));
             let mut sel = self.settings.last_server;
-            egui::ComboBox::from_id_salt("srv")
-                .selected_text(egui::RichText::new(&self.servers[sel].name).color(GOLD))
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for (i, s) in self.servers.iter().enumerate() {
-                        ui.selectable_value(&mut sel, i, &s.name);
-                    }
-                });
+            // 区服选择需先登录 (默认停在上次选择的区服)
+            let combo = ui.add_enabled_ui(signed_in, |ui| {
+                egui::ComboBox::from_id_salt("srv")
+                    .selected_text(
+                        egui::RichText::new(&self.servers[sel].name).color(if signed_in {
+                            GOLD
+                        } else {
+                            INK_WEAK
+                        }),
+                    )
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for (i, s) in self.servers.iter().enumerate() {
+                            ui.selectable_value(&mut sel, i, &s.name);
+                        }
+                    });
+            });
+            if !signed_in {
+                combo.response.on_hover_text("登录后可切换区服");
+            }
             if sel != self.settings.last_server {
                 self.settings.last_server = sel;
                 save_settings(&self.settings);
@@ -1049,87 +1144,9 @@ impl App {
         card().show(ui, |ui| {
             ui.set_width(238.0);
             ui.vertical(|ui| {
-                let mut sel = match self.tab {
-                    Tab::Login => 0usize,
-                    Tab::Register => 1,
-                    Tab::Reset => 2,
-                };
-                if segmented(ui, 238.0, &["登录", "注册", "找回密码"], &mut sel) {
-                    self.tab = [Tab::Login, Tab::Register, Tab::Reset][sel];
-                    self.status.clear();
-                }
-                ui.add_space(10.0);
-                let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, pw: bool| {
-                    ui.label(egui::RichText::new(label).size(12.0).color(INK_WEAK));
-                    ui.add_space(1.0);
-                    ui.add(
-                        egui::TextEdit::singleline(buf)
-                            .password(pw)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::FontId::proportional(14.0))
-                            .margin(egui::Margin::symmetric(10, 7)),
-                    );
-                    ui.add_space(4.0);
-                };
-                field(ui, "账号", &mut self.user, false);
-                match self.tab {
-                    Tab::Login => {
-                        field(ui, "密码", &mut self.pass, true);
-                    }
-                    Tab::Register => {
-                        field(ui, "密码", &mut self.pass, true);
-                        field(ui, "确认密码", &mut self.pass2, true);
-                        field(ui, "密保问题 (选填, 找回用)", &mut self.question, false);
-                        field(ui, "密保答案", &mut self.answer, false);
-                    }
-                    Tab::Reset => {
-                        field(ui, "密保答案", &mut self.answer, false);
-                        field(ui, "新密码", &mut self.pass, true);
-                    }
-                }
-                ui.add_space(8.0);
-                let label = match self.tab {
-                    Tab::Login => "进 入 游 戏",
-                    Tab::Register => "注 册 并 进 入",
-                    Tab::Reset => "重 设 密 码",
-                };
-                let can = !self.busy && !self.user.is_empty();
-                if gold_button(ui, label, egui::vec2(ui.available_width(), 40.0), can).clicked()
-                    && can
-                {
-                    match self.tab {
-                        Tab::Login => self.auth(AuthAction::Login {
-                            user: self.user.clone(),
-                            pass: self.pass.clone(),
-                        }),
-                        Tab::Register => {
-                            if self.pass != self.pass2 {
-                                self.status = "两次密码不一致".into();
-                            } else {
-                                self.auth(AuthAction::Register {
-                                    user: self.user.clone(),
-                                    pass: self.pass.clone(),
-                                    question: self.question.clone(),
-                                    answer: self.answer.clone(),
-                                });
-                            }
-                        }
-                        Tab::Reset => self.auth(AuthAction::Reset {
-                            user: self.user.clone(),
-                            answer: self.answer.clone(),
-                            new_pass: self.pass.clone(),
-                        }),
-                    }
-                }
-                if self.busy {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(egui::RichText::new("处理中...").size(12.5).color(INK_WEAK));
-                    });
-                } else if !self.status.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(&self.status).size(12.5).color(GOLD));
+                match self.logged.clone() {
+                    Some(user) => self.draw_account(ui, &user),
+                    None => self.draw_form(ui),
                 }
                 ui.add_space(10.0);
                 ornament_divider(ui, 238.0);
@@ -1162,6 +1179,183 @@ impl App {
                 });
             });
         });
+    }
+
+    /// 已登录: 账号与区服信息 + 进入游戏
+    fn draw_account(&mut self, ui: &mut egui::Ui, user: &str) {
+        let (srv_name, srv_game) = {
+            let s = self.server();
+            (s.name.clone(), s.game.clone())
+        };
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            // 头像位: 账号首字母金圈
+            let (r, _) = ui.allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::hover());
+            let p = ui.painter();
+            p.circle_filled(r.center(), 18.0, egui::Color32::from_rgb(58, 46, 26));
+            p.circle_stroke(r.center(), 18.0, egui::Stroke::new(1.2, GOLD_DIM));
+            p.text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                user.chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default(),
+                egui::FontId::proportional(18.0),
+                GOLD,
+            );
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(user).size(15.5).strong().color(INK));
+                ui.label(egui::RichText::new("已登录").size(11.5).color(GOLD_DIM));
+            });
+        });
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("当前区服").size(12.0).color(INK_WEAK));
+        ui.add_space(1.0);
+        ui.label(
+            egui::RichText::new(&srv_name)
+                .size(14.5)
+                .strong()
+                .color(GOLD),
+        );
+        ui.label(egui::RichText::new(&srv_game).size(11.0).color(INK_WEAK));
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new("顶部「线路」可切换区服")
+                .size(11.0)
+                .color(egui::Color32::from_rgb(110, 99, 80)),
+        );
+        ui.add_space(10.0);
+        let can = !self.busy;
+        if gold_button(
+            ui,
+            "进 入 游 戏",
+            egui::vec2(ui.available_width(), 42.0),
+            can,
+        )
+        .clicked()
+            && can
+        {
+            // 票据 60 秒即失效, 故点击时才重新登录换取新票据
+            self.pending_launch = true;
+            self.auth(AuthAction::Login {
+                user: self.user.clone(),
+                pass: self.pass.clone(),
+            });
+        }
+        ui.add_space(4.0);
+        if ui
+            .add_sized(
+                egui::vec2(ui.available_width(), 26.0),
+                egui::Button::new(egui::RichText::new("切换账号").size(12.5).color(INK_WEAK))
+                    .frame(false),
+            )
+            .clicked()
+        {
+            self.logged = None;
+            self.pass.clear();
+            self.status.clear();
+            self.tab = Tab::Login;
+        }
+        if self.busy {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new("正在进入...")
+                        .size(12.5)
+                        .color(INK_WEAK),
+                );
+            });
+        } else if !self.status.is_empty() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&self.status).size(12.5).color(GOLD));
+        }
+    }
+
+    /// 未登录: 登录 / 注册 / 找回密码
+    fn draw_form(&mut self, ui: &mut egui::Ui) {
+        let mut sel = match self.tab {
+            Tab::Login => 0usize,
+            Tab::Register => 1,
+            Tab::Reset => 2,
+        };
+        if segmented(ui, 238.0, &["登录", "注册", "找回密码"], &mut sel) {
+            self.tab = [Tab::Login, Tab::Register, Tab::Reset][sel];
+            self.status.clear();
+        }
+        ui.add_space(10.0);
+        let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, pw: bool| {
+            ui.label(egui::RichText::new(label).size(12.0).color(INK_WEAK));
+            ui.add_space(1.0);
+            ui.add(
+                egui::TextEdit::singleline(buf)
+                    .password(pw)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::FontId::proportional(14.0))
+                    .margin(egui::Margin::symmetric(10, 7)),
+            );
+            ui.add_space(4.0);
+        };
+        field(ui, "账号", &mut self.user, false);
+        match self.tab {
+            Tab::Login => {
+                field(ui, "密码", &mut self.pass, true);
+            }
+            Tab::Register => {
+                field(ui, "密码", &mut self.pass, true);
+                field(ui, "确认密码", &mut self.pass2, true);
+                field(ui, "密保问题 (选填, 找回用)", &mut self.question, false);
+                field(ui, "密保答案", &mut self.answer, false);
+            }
+            Tab::Reset => {
+                field(ui, "密保答案", &mut self.answer, false);
+                field(ui, "新密码", &mut self.pass, true);
+            }
+        }
+        ui.add_space(8.0);
+        let label = match self.tab {
+            Tab::Login => "登 录",
+            Tab::Register => "注 册",
+            Tab::Reset => "重 设 密 码",
+        };
+        let can = !self.busy && !self.user.is_empty();
+        if gold_button(ui, label, egui::vec2(ui.available_width(), 40.0), can).clicked() && can {
+            match self.tab {
+                Tab::Login => self.auth(AuthAction::Login {
+                    user: self.user.clone(),
+                    pass: self.pass.clone(),
+                }),
+                Tab::Register => {
+                    if self.pass != self.pass2 {
+                        self.status = "两次密码不一致".into();
+                    } else {
+                        self.auth(AuthAction::Register {
+                            user: self.user.clone(),
+                            pass: self.pass.clone(),
+                            question: self.question.clone(),
+                            answer: self.answer.clone(),
+                        });
+                    }
+                }
+                Tab::Reset => self.auth(AuthAction::Reset {
+                    user: self.user.clone(),
+                    answer: self.answer.clone(),
+                    new_pass: self.pass.clone(),
+                }),
+            }
+        }
+        if self.busy {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new("处理中...").size(12.5).color(INK_WEAK));
+            });
+        } else if !self.status.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(&self.status).size(12.5).color(GOLD));
+        }
     }
 
     fn draw_update_bar(&mut self, ui: &mut egui::Ui) {
