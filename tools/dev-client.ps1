@@ -2,12 +2,16 @@
 # 用法:
 #   tools\dev-client.ps1              # 联机模式, 连 ws://127.0.0.1:4000
 #   tools\dev-client.ps1 -Offline    # 离线单机漫游 (不需要服务器)
+#   tools\dev-client.ps1 -Window 1280x720 [-Fullscreen]   # 指定窗口
+# 正式玩家入口是登录器 (tools\dev-launcher.ps1), 本脚本是免登录器的开发直连
 #
 # 引擎唯一资源根 = 仓库根 packs/ (图库 .mfl + 地图 .map, 见 packs/README.md)。
 # resources/ 只是素材原始文件的开发态堆场, 引擎不读。
 param(
     [string]$Server = "ws://127.0.0.1:4000",
-    [switch]$Offline
+    [switch]$Offline,
+    [string]$Window = "",      # 如 1280x720 (登录器同款 MIRFORGE_WINDOW)
+    [switch]$Fullscreen
 )
 
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -21,6 +25,8 @@ if (-not (Get-ChildItem (Join-Path $Packs "map") -Filter *.map -ErrorAction Sile
     exit 2
 }
 $env:MIRFORGE_PACKS = $Packs
+if ($Window) { $env:MIRFORGE_WINDOW = $Window } else { Remove-Item Env:MIRFORGE_WINDOW -ErrorAction SilentlyContinue }
+if ($Fullscreen) { $env:MIRFORGE_FULLSCREEN = "1" } else { Remove-Item Env:MIRFORGE_FULLSCREEN -ErrorAction SilentlyContinue }
 if ($Offline) {
     Remove-Item Env:MIRFORGE_SERVER -ErrorAction SilentlyContinue
     Write-Host "资源包: $Packs   模式: 离线单机"
