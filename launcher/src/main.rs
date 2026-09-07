@@ -433,41 +433,46 @@ fn vgrad_rounded(
     r_bot: f32,
 ) {
     let h = rect.height().max(1.0);
-    let (r_top, r_bot) = (r_top.min(h * 0.5), r_bot.min(h * 0.5));
+    let (r_top, r_bot) = (r_top.min(h * 0.25), r_bot.min(h * 0.25));
+    // 圆角帽高度必须 >= 2×半径: egui 会把圆角半径钳到矩形短边的一半,
+    // 帽子太矮圆角就被削掉一半, 填充的弧比描边的弧小一圈 (四角看着像
+    // 内圈多了一条棕线)。帽内用该段中点色填充 —— 本渐变跨度极小,
+    // 这点阶跃肉眼不可见。
+    let (cap_t, cap_b) = (r_top * 2.0, r_bot * 2.0);
     if r_top > 0.5 {
         painter.rect_filled(
-            egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + r_top)),
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + cap_t)),
             egui::CornerRadius {
                 nw: r_top as u8,
                 ne: r_top as u8,
                 sw: 0,
                 se: 0,
             },
-            lerp_c(top, bottom, r_top * 0.5 / h),
+            lerp_c(top, bottom, cap_t * 0.5 / h),
         );
     }
     if r_bot > 0.5 {
         painter.rect_filled(
-            egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - r_bot), rect.max),
+            egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - cap_b), rect.max),
             egui::CornerRadius {
                 nw: 0,
                 ne: 0,
                 sw: r_bot as u8,
                 se: r_bot as u8,
             },
-            lerp_c(top, bottom, (h - r_bot * 0.5) / h),
+            lerp_c(top, bottom, (h - cap_b * 0.5) / h),
         );
     }
     let mid = egui::Rect::from_min_max(
-        egui::pos2(rect.min.x, rect.min.y + r_top),
-        egui::pos2(rect.max.x, rect.max.y - r_bot),
+        egui::pos2(rect.min.x, rect.min.y + cap_t),
+        egui::pos2(rect.max.x, rect.max.y - cap_b),
     );
     if mid.height() > 0.5 {
         vgrad(
             painter,
             mid,
-            lerp_c(top, bottom, r_top / h),
-            lerp_c(top, bottom, (h - r_bot) / h),
+            lerp_c(top, bottom, cap_t / h),
+            lerp_c(top, bottom, (h - cap_b) / h),
         );
     }
 }
@@ -893,8 +898,10 @@ impl eframe::App for App {
                     WIN_RADIUS,
                     0.0,
                 );
+                // 描边必须与填充同 rect 同半径: shrink 后半径不变会让拐角
+                // 曲率错位, 描边在四角缩进成"内圈第二条圆线"
                 painter.rect_stroke(
-                    rect.shrink(0.5),
+                    rect,
                     WIN_RADIUS,
                     egui::Stroke::new(1.2, egui::Color32::from_rgb(84, 68, 42)),
                     egui::StrokeKind::Inside,
