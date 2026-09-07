@@ -409,8 +409,10 @@ fn vgrad(painter: &egui::Painter, rect: egui::Rect, top: egui::Color32, bottom: 
 
 /// 窗口四角金饰 (传奇 UI 常见的 L 形角线 + 内衬细线)
 fn corner_ornaments(painter: &egui::Painter, rect: egui::Rect) {
-    let len = 22.0;
-    let g = egui::Stroke::new(1.6, GOLD_DIM);
+    // 内缩必须大于窗口圆角半径 (14), 否则 L 角会压在圆弧上 / 视觉溢出边框
+    let inset = 20.0;
+    let len = 16.0;
+    let g = egui::Stroke::new(1.4, GOLD_DIM);
     let corners = [
         (rect.left_top(), 1.0, 1.0),
         (rect.right_top(), -1.0, 1.0),
@@ -418,7 +420,7 @@ fn corner_ornaments(painter: &egui::Painter, rect: egui::Rect) {
         (rect.right_bottom(), -1.0, -1.0),
     ];
     for (p, sx, sy) in corners {
-        let p = egui::pos2(p.x + sx * 10.0, p.y + sy * 10.0);
+        let p = egui::pos2(p.x + sx * inset, p.y + sy * inset);
         painter.line_segment([p, egui::pos2(p.x + sx * len, p.y)], g);
         painter.line_segment([p, egui::pos2(p.x, p.y + sy * len)], g);
     }
@@ -841,96 +843,100 @@ impl eframe::App for App {
 impl App {
     /// 自绘标题栏: 左 logo + 服务器选择, 右最小化/关闭; 空白区可拖动
     fn draw_header(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let bar = ui
-            .horizontal(|ui| {
-                ui.add_space(2.0);
-                // logo 发光重影
-                let (r, _) = ui.allocate_exact_size(egui::vec2(176.0, 34.0), egui::Sense::hover());
-                let p = ui.painter();
-                let f = egui::FontId::proportional(26.0);
-                let base = egui::pos2(r.left(), r.center().y);
-                p.text(
-                    base + egui::vec2(1.0, 1.0),
-                    egui::Align2::LEFT_CENTER,
-                    "MirForge",
-                    f.clone(),
-                    egui::Color32::from_rgba_unmultiplied(208, 163, 82, 60),
-                );
-                let w = p
-                    .text(base, egui::Align2::LEFT_CENTER, "Mir", f.clone(), GOLD)
-                    .width();
-                p.text(
-                    base + egui::vec2(w, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    "Forge",
-                    f,
-                    INK,
-                );
-                p.text(
-                    egui::pos2(r.left() + 2.0, r.bottom() + 1.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    "L A U N C H E R",
-                    egui::FontId::proportional(9.0),
-                    GOLD_DIM,
-                );
-                ui.add_space(16.0);
-                ui.label(egui::RichText::new("线路").color(INK_WEAK));
-                let mut sel = self.settings.last_server;
-                egui::ComboBox::from_id_salt("srv")
-                    .selected_text(egui::RichText::new(&self.servers[sel].name).color(GOLD))
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for (i, s) in self.servers.iter().enumerate() {
-                            ui.selectable_value(&mut sel, i, &s.name);
-                        }
-                    });
-                if sel != self.settings.last_server {
-                    self.settings.last_server = sel;
-                    save_settings(&self.settings);
-                    self.news.clear();
-                    self.refresh_remote();
-                }
-                // 右侧窗控 (圆形 hover 底)
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let win_btn = |ui: &mut egui::Ui, t: &str, danger: bool| {
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(30.0, 28.0), egui::Sense::click());
-                        let p = ui.painter();
-                        if resp.hovered() {
-                            let c = if danger {
-                                egui::Color32::from_rgb(140, 52, 40)
-                            } else {
-                                egui::Color32::from_rgb(58, 48, 32)
-                            };
-                            p.circle_filled(rect.center(), 13.0, c);
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        p.text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            t,
-                            egui::FontId::proportional(15.0),
-                            if resp.hovered() { INK } else { INK_WEAK },
-                        );
-                        resp
-                    };
-                    if win_btn(ui, "×", true).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    if win_btn(ui, "—", false).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
-                });
-            })
-            .response;
-        let drag = ui.interact(
-            bar.rect,
-            egui::Id::new("titlebar-drag"),
-            egui::Sense::click_and_drag(),
-        );
-        if drag.drag_started() {
+        // 拖动层必须先于控件注册: egui 命中测试取最后注册的控件, 拖动层若在
+        // 控件之后注册就会盖住它们 (线路下拉曾因此点不开)
+        let bar_rect =
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 38.0));
+        if ui
+            .interact(
+                bar_rect,
+                egui::Id::new("titlebar-drag"),
+                egui::Sense::drag(),
+            )
+            .drag_started()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            // logo 发光重影
+            let (r, _) = ui.allocate_exact_size(egui::vec2(176.0, 34.0), egui::Sense::hover());
+            let p = ui.painter();
+            let f = egui::FontId::proportional(26.0);
+            let base = egui::pos2(r.left(), r.center().y);
+            p.text(
+                base + egui::vec2(1.0, 1.0),
+                egui::Align2::LEFT_CENTER,
+                "MirForge",
+                f.clone(),
+                egui::Color32::from_rgba_unmultiplied(208, 163, 82, 60),
+            );
+            let w = p
+                .text(base, egui::Align2::LEFT_CENTER, "Mir", f.clone(), GOLD)
+                .width();
+            p.text(
+                base + egui::vec2(w, 0.0),
+                egui::Align2::LEFT_CENTER,
+                "Forge",
+                f,
+                INK,
+            );
+            p.text(
+                egui::pos2(r.left() + 2.0, r.bottom() + 1.0),
+                egui::Align2::LEFT_BOTTOM,
+                "L A U N C H E R",
+                egui::FontId::proportional(9.0),
+                GOLD_DIM,
+            );
+            ui.add_space(16.0);
+            ui.label(egui::RichText::new("线路").color(INK_WEAK));
+            let mut sel = self.settings.last_server;
+            egui::ComboBox::from_id_salt("srv")
+                .selected_text(egui::RichText::new(&self.servers[sel].name).color(GOLD))
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for (i, s) in self.servers.iter().enumerate() {
+                        ui.selectable_value(&mut sel, i, &s.name);
+                    }
+                });
+            if sel != self.settings.last_server {
+                self.settings.last_server = sel;
+                save_settings(&self.settings);
+                self.news.clear();
+                self.refresh_remote();
+            }
+            // 右侧窗控 (圆形 hover 底)
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let win_btn = |ui: &mut egui::Ui, t: &str, danger: bool| {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(38.0, 32.0), egui::Sense::click());
+                    let p = ui.painter();
+                    if resp.hovered() {
+                        let c = if danger {
+                            egui::Color32::from_rgb(140, 52, 40)
+                        } else {
+                            egui::Color32::from_rgb(58, 48, 32)
+                        };
+                        p.circle_filled(rect.center(), 16.0, c);
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    p.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        t,
+                        egui::FontId::proportional(19.0),
+                        if resp.hovered() { INK } else { INK_WEAK },
+                    );
+                    resp
+                };
+                if win_btn(ui, "×", true).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if win_btn(ui, "—", false).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            });
+        });
         ui.add_space(8.0);
         // 渐变分隔线 (中亮两端隐)
         let r = ui.max_rect();
