@@ -408,6 +408,9 @@ fn vgrad(painter: &egui::Painter, rect: egui::Rect, top: egui::Color32, bottom: 
 }
 
 /// 颜色线性插值 (Color32 内部为预乘, 直接插分量)
+/// 窗口圆角半径: 底色/渐变/光晕/描边必须共用, 不同心就会在四角露出色环
+const WIN_RADIUS: f32 = 14.0;
+
 fn lerp_c(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
@@ -471,8 +474,8 @@ fn vgrad_rounded(
 
 /// 窗口四角金饰 (传奇 UI 常见的 L 形角线 + 内衬细线)
 fn corner_ornaments(painter: &egui::Painter, rect: egui::Rect) {
-    // 内缩必须大于窗口圆角半径 (14), 否则 L 角会压在圆弧上 / 视觉溢出边框
-    let inset = 20.0;
+    // 内缩必须大于窗口圆角半径, 否则 L 角会压在圆弧上 / 视觉溢出边框
+    let inset = WIN_RADIUS + 6.0;
     let len = 16.0;
     let g = egui::Stroke::new(1.4, GOLD_DIM);
     let corners = [
@@ -869,30 +872,30 @@ impl eframe::App for App {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
                 // 窗体: 圆角深底 + 垂直渐变 + 顶部金色氛围光 + 金边 + 角饰
-                painter.rect_filled(rect, 14.0, BG);
+                painter.rect_filled(rect, WIN_RADIUS, BG);
                 vgrad_rounded(
                     painter,
-                    rect.shrink(1.5),
+                    rect,
                     egui::Color32::from_rgb(28, 23, 15),
                     egui::Color32::from_rgb(16, 13, 9),
-                    12.5,
-                    12.5,
+                    WIN_RADIUS,
+                    WIN_RADIUS,
                 );
                 let glow = egui::Rect::from_min_max(
-                    egui::pos2(rect.left() + 1.5, rect.top() + 1.5),
-                    egui::pos2(rect.right() - 1.5, rect.top() + 120.0),
+                    rect.left_top(),
+                    egui::pos2(rect.right(), rect.top() + 120.0),
                 );
                 vgrad_rounded(
                     painter,
                     glow,
                     egui::Color32::from_rgba_unmultiplied(208, 163, 82, 26),
                     egui::Color32::TRANSPARENT,
-                    12.5,
+                    WIN_RADIUS,
                     0.0,
                 );
                 painter.rect_stroke(
                     rect.shrink(0.5),
-                    14.0,
+                    WIN_RADIUS,
                     egui::Stroke::new(1.2, egui::Color32::from_rgb(84, 68, 42)),
                     egui::StrokeKind::Inside,
                 );
