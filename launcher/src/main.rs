@@ -1242,6 +1242,12 @@ impl App {
                 );
             });
         });
+        if do_update {
+            self.start_update();
+        }
+        if do_retry {
+            self.refresh_remote();
+        }
     }
 }
 
