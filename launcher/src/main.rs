@@ -325,6 +325,70 @@ fn run_update(http: String, need: Vec<ManifestFile>, tx: Sender<Report>) {
 
 // ─────────── UI ───────────
 
+// ─────────── 主题 (与游戏 HUD 同风格: 暗底描金) ───────────
+
+const BG: egui::Color32 = egui::Color32::from_rgb(20, 17, 12);
+const PANEL: egui::Color32 = egui::Color32::from_rgb(31, 26, 18);
+const PANEL_2: egui::Color32 = egui::Color32::from_rgb(38, 32, 22);
+const EDGE: egui::Color32 = egui::Color32::from_rgb(66, 55, 36);
+const GOLD: egui::Color32 = egui::Color32::from_rgb(208, 163, 82);
+const GOLD_DIM: egui::Color32 = egui::Color32::from_rgb(140, 112, 60);
+const INK: egui::Color32 = egui::Color32::from_rgb(232, 224, 208);
+const INK_WEAK: egui::Color32 = egui::Color32::from_rgb(150, 138, 118);
+const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 120, 100);
+
+fn apply_theme(ctx: &egui::Context) {
+    let mut v = egui::Visuals::dark();
+    v.override_text_color = Some(INK);
+    v.panel_fill = egui::Color32::TRANSPARENT;
+    v.window_fill = PANEL;
+    v.extreme_bg_color = egui::Color32::from_rgb(14, 12, 8); // 输入框底
+    v.faint_bg_color = PANEL_2;
+    v.widgets.inactive.bg_fill = PANEL_2;
+    v.widgets.inactive.weak_bg_fill = PANEL_2;
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, EDGE);
+    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, INK);
+    v.widgets.hovered.bg_fill = egui::Color32::from_rgb(52, 43, 28);
+    v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(52, 43, 28);
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, GOLD_DIM);
+    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.2, INK);
+    v.widgets.active.bg_fill = egui::Color32::from_rgb(64, 52, 32);
+    v.widgets.active.weak_bg_fill = egui::Color32::from_rgb(64, 52, 32);
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.2, GOLD);
+    v.widgets.open.bg_fill = PANEL_2;
+    v.widgets.open.weak_bg_fill = PANEL_2;
+    v.selection.bg_fill = egui::Color32::from_rgb(90, 70, 36);
+    v.selection.stroke = egui::Stroke::new(1.0, GOLD);
+    v.hyperlink_color = GOLD;
+    ctx.set_visuals(v);
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    use egui::{FontId, TextStyle};
+    style
+        .text_styles
+        .insert(TextStyle::Heading, FontId::proportional(21.0));
+    style
+        .text_styles
+        .insert(TextStyle::Body, FontId::proportional(14.5));
+    style
+        .text_styles
+        .insert(TextStyle::Button, FontId::proportional(14.5));
+    style
+        .text_styles
+        .insert(TextStyle::Small, FontId::proportional(12.0));
+    ctx.set_style(style);
+}
+
+/// 卡片容器 (面板底 + 细金边 + 圆角)
+fn card() -> egui::Frame {
+    egui::Frame::default()
+        .fill(PANEL)
+        .stroke(egui::Stroke::new(1.0, EDGE))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+}
+
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Login,
@@ -378,6 +442,7 @@ impl App {
                 break;
             }
         }
+        apply_theme(&ctx.egui_ctx);
         let servers = load_servers();
         let settings = load_settings();
         let (tx, rx) = channel();
@@ -504,6 +569,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0] // 透明底: 圆角窗口四角不留黑块
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 后台回报
         while let Ok(r) = self.rx.try_recv() {
@@ -539,14 +608,60 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
 
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("MirForge");
-                ui.separator();
-                ui.label("服务器:");
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                let painter = ui.painter();
+                // 窗体: 圆角深底 + 金边
+                painter.rect_filled(rect, 14.0, BG);
+                painter.rect_stroke(
+                    rect.shrink(0.5),
+                    14.0,
+                    egui::Stroke::new(1.2, EDGE),
+                    egui::StrokeKind::Inside,
+                );
+                let inner = rect.shrink(16.0);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                self.draw_header(ctx, &mut ui);
+                ui.add_space(10.0);
+                // 主区: 左公告 / 右账号卡
+                let body_h = ui.available_height() - 52.0; // 底部更新条预留
+                ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
+                    ui.horizontal_top(|ui| {
+                        let right_w = 268.0;
+                        let left_w = ui.available_width() - right_w - 12.0;
+                        ui.allocate_ui(egui::vec2(left_w, body_h), |ui| {
+                            self.draw_news(ui, body_h);
+                        });
+                        ui.add_space(6.0);
+                        ui.allocate_ui(egui::vec2(right_w, body_h), |ui| {
+                            self.draw_auth(ui);
+                        });
+                    });
+                });
+                ui.add_space(8.0);
+                self.draw_update_bar(&mut ui);
+            });
+    }
+}
+
+impl App {
+    /// 自绘标题栏: 左 logo + 服务器选择, 右最小化/关闭; 空白区可拖动
+    fn draw_header(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let bar = ui
+            .horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("Mir").size(24.0).strong().color(GOLD));
+                ui.label(egui::RichText::new("Forge").size(24.0).strong().color(INK));
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("登 录 器").size(12.0).color(INK_WEAK));
+                ui.add_space(18.0);
+                ui.label(egui::RichText::new("线路").color(INK_WEAK));
                 let mut sel = self.settings.last_server;
                 egui::ComboBox::from_id_salt("srv")
-                    .selected_text(&self.servers[sel].name)
+                    .selected_text(egui::RichText::new(&self.servers[sel].name).color(GOLD))
+                    .width(150.0)
                     .show_ui(ui, |ui| {
                         for (i, s) in self.servers.iter().enumerate() {
                             ui.selectable_value(&mut sel, i, &s.name);
@@ -558,51 +673,170 @@ impl eframe::App for App {
                     self.news.clear();
                     self.refresh_remote();
                 }
-            });
-        });
-
-        egui::SidePanel::right("auth")
-            .exact_width(280.0)
-            .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.tab, Tab::Login, "登录");
-                    ui.selectable_value(&mut self.tab, Tab::Register, "注册");
-                    ui.selectable_value(&mut self.tab, Tab::Reset, "找回密码");
+                // 右侧窗控
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = |ui: &mut egui::Ui, t: &str| {
+                        ui.add(
+                            egui::Button::new(egui::RichText::new(t).size(15.0).color(INK_WEAK))
+                                .frame(false)
+                                .min_size(egui::vec2(30.0, 26.0)),
+                        )
+                    };
+                    if btn(ui, "×").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if btn(ui, "—").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
                 });
-                ui.separator();
-                ui.label("账号");
-                ui.text_edit_singleline(&mut self.user);
+            })
+            .response;
+        // 标题栏空白拖动窗口
+        let drag = ui.interact(
+            bar.rect,
+            egui::Id::new("titlebar-drag"),
+            egui::Sense::click_and_drag(),
+        );
+        if drag.drag_started() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        ui.add_space(6.0);
+        // 金色分隔线
+        let r = ui.max_rect();
+        let y = ui.cursor().top();
+        ui.painter().line_segment(
+            [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
+            egui::Stroke::new(1.0, EDGE),
+        );
+    }
+
+    fn draw_news(&mut self, ui: &mut egui::Ui, h: f32) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("新闻公告")
+                        .size(17.0)
+                        .strong()
+                        .color(GOLD),
+                );
+            });
+            ui.add_space(2.0);
+            egui::ScrollArea::vertical()
+                .max_height(h - 30.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if self.news.is_empty() {
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new("暂无公告").color(INK_WEAK));
+                    }
+                    for n in &self.news {
+                        card().show(ui, |ui| {
+                            ui.set_width(ui.available_width() - 6.0);
+                            ui.horizontal(|ui| {
+                                if n.pinned {
+                                    ui.label(
+                                        egui::RichText::new("置顶")
+                                            .size(11.0)
+                                            .color(BG)
+                                            .background_color(GOLD),
+                                    );
+                                }
+                                ui.label(egui::RichText::new(&n.title).strong().color(INK));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(&n.created_at)
+                                                .small()
+                                                .color(INK_WEAK),
+                                        );
+                                    },
+                                );
+                            });
+                            if !n.body.is_empty() {
+                                ui.add_space(2.0);
+                                ui.label(egui::RichText::new(&n.body).size(13.0).color(INK_WEAK));
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
+        });
+    }
+
+    fn draw_auth(&mut self, ui: &mut egui::Ui) {
+        card().show(ui, |ui| {
+            ui.set_width(238.0);
+            ui.vertical(|ui| {
+                // 页签
+                ui.horizontal(|ui| {
+                    for (t, name) in [
+                        (Tab::Login, "登录"),
+                        (Tab::Register, "注册"),
+                        (Tab::Reset, "找回密码"),
+                    ] {
+                        let sel = self.tab == t;
+                        let text = egui::RichText::new(name).size(14.5).color(if sel {
+                            GOLD
+                        } else {
+                            INK_WEAK
+                        });
+                        if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                            self.tab = t;
+                            self.status.clear();
+                        }
+                        if sel {
+                            let r = ui.min_rect();
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(r.right() - 34.0, r.bottom() + 2.0),
+                                    egui::pos2(r.right() - 6.0, r.bottom() + 2.0),
+                                ],
+                                egui::Stroke::new(2.0, GOLD),
+                            );
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, pw: bool| {
+                    ui.label(egui::RichText::new(label).size(12.5).color(INK_WEAK));
+                    ui.add(
+                        egui::TextEdit::singleline(buf)
+                            .password(pw)
+                            .desired_width(f32::INFINITY)
+                            .margin(egui::Margin::symmetric(8, 6)),
+                    );
+                    ui.add_space(2.0);
+                };
+                field(ui, "账号", &mut self.user, false);
                 match self.tab {
                     Tab::Login => {
-                        ui.label("密码");
-                        ui.add(egui::TextEdit::singleline(&mut self.pass).password(true));
+                        field(ui, "密码", &mut self.pass, true);
                     }
                     Tab::Register => {
-                        ui.label("密码");
-                        ui.add(egui::TextEdit::singleline(&mut self.pass).password(true));
-                        ui.label("确认密码");
-                        ui.add(egui::TextEdit::singleline(&mut self.pass2).password(true));
-                        ui.label("密保问题 (选填, 找回密码用)");
-                        ui.text_edit_singleline(&mut self.question);
-                        ui.label("密保答案");
-                        ui.text_edit_singleline(&mut self.answer);
+                        field(ui, "密码", &mut self.pass, true);
+                        field(ui, "确认密码", &mut self.pass2, true);
+                        field(ui, "密保问题 (选填, 找回用)", &mut self.question, false);
+                        field(ui, "密保答案", &mut self.answer, false);
                     }
                     Tab::Reset => {
-                        ui.label("密保答案");
-                        ui.text_edit_singleline(&mut self.answer);
-                        ui.label("新密码");
-                        ui.add(egui::TextEdit::singleline(&mut self.pass).password(true));
+                        field(ui, "密保答案", &mut self.answer, false);
+                        field(ui, "新密码", &mut self.pass, true);
                     }
                 }
                 ui.add_space(8.0);
                 let label = match self.tab {
-                    Tab::Login => "登录并开始游戏",
-                    Tab::Register => "注册并开始游戏",
-                    Tab::Reset => "重设密码",
+                    Tab::Login => "进 入 游 戏",
+                    Tab::Register => "注 册 并 进 入",
+                    Tab::Reset => "重 设 密 码",
                 };
                 let can = !self.busy && !self.user.is_empty();
-                if ui.add_enabled(can, egui::Button::new(label)).clicked() {
+                let btn =
+                    egui::Button::new(egui::RichText::new(label).size(16.0).strong().color(BG))
+                        .fill(if can { GOLD } else { GOLD_DIM })
+                        .corner_radius(8.0)
+                        .min_size(egui::vec2(ui.available_width(), 38.0));
+                if ui.add_enabled(can, btn).clicked() {
                     match self.tab {
                         Tab::Login => self.auth(AuthAction::Login {
                             user: self.user.clone(),
@@ -627,16 +861,32 @@ impl eframe::App for App {
                         }),
                     }
                 }
-                if !self.status.is_empty() {
+                if self.busy {
                     ui.add_space(4.0);
-                    ui.colored_label(egui::Color32::from_rgb(230, 180, 90), &self.status);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("处理中...").color(INK_WEAK));
+                    });
+                } else if !self.status.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(&self.status).color(GOLD));
                 }
-                ui.separator();
-                ui.label("游戏设置");
+                ui.add_space(10.0);
+                let r = ui.min_rect();
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(r.left(), ui.cursor().top()),
+                        egui::pos2(r.right(), ui.cursor().top()),
+                    ],
+                    egui::Stroke::new(1.0, EDGE),
+                );
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("游戏设置").size(13.0).color(INK_WEAK));
                 ui.horizontal(|ui| {
-                    ui.label("分辨率:");
+                    ui.label(egui::RichText::new("分辨率").size(12.5).color(INK_WEAK));
                     egui::ComboBox::from_id_salt("res")
                         .selected_text(&self.settings.window)
+                        .width(110.0)
                         .show_ui(ui, |ui| {
                             for r in ["1280x720", "1600x900", "1920x1080"] {
                                 if ui.selectable_label(self.settings.window == r, r).clicked() {
@@ -653,24 +903,36 @@ impl eframe::App for App {
                     save_settings(&self.settings);
                 }
             });
+        });
+    }
 
-        egui::TopBottomPanel::bottom("update").show(ctx, |ui| {
-            ui.add_space(6.0);
+    fn draw_update_bar(&mut self, ui: &mut egui::Ui) {
+        let mut do_update = false;
+        let mut do_retry = false;
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width() - 6.0);
             ui.horizontal(|ui| match &self.update_state {
                 UpdateState::Checking => {
                     ui.spinner();
-                    ui.label("检查更新中...");
+                    ui.label(egui::RichText::new("检查更新中...").color(INK_WEAK));
                 }
                 UpdateState::UpToDate => {
-                    ui.label("✔ 客户端已是最新");
+                    ui.label(egui::RichText::new("✔").color(GOLD));
+                    ui.label(egui::RichText::new("客户端已是最新").color(INK_WEAK));
                 }
                 UpdateState::Available(n, bytes) => {
-                    ui.label(format!(
-                        "发现更新: {n} 个文件, {:.1} MB",
-                        *bytes as f64 / 1048576.0
-                    ));
-                    if ui.button("立即更新").clicked() {
-                        self.start_update();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "发现更新: {n} 个文件, {:.1} MB",
+                            *bytes as f64 / 1048576.0
+                        ))
+                        .color(INK),
+                    );
+                    let b = egui::Button::new(egui::RichText::new("立即更新").color(BG).strong())
+                        .fill(GOLD)
+                        .corner_radius(6.0);
+                    if ui.add(b).clicked() {
+                        do_update = true;
                     }
                 }
                 UpdateState::Downloading(done, total, file) => {
@@ -681,56 +943,39 @@ impl eframe::App for App {
                     };
                     ui.add(
                         egui::ProgressBar::new(frac)
-                            .desired_width(260.0)
-                            .text(format!("{done}/{total} {file}")),
+                            .desired_width(320.0)
+                            .fill(GOLD_DIM)
+                            .text(
+                                egui::RichText::new(format!("{done}/{total}  {file}")).size(12.0),
+                            ),
                     );
-                    ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 UpdateState::Failed(e) => {
-                    ui.colored_label(egui::Color32::from_rgb(220, 120, 100), e);
+                    ui.label(egui::RichText::new(e).color(DANGER));
                     if ui.button("重试").clicked() {
-                        self.refresh_remote();
+                        do_retry = true;
                     }
                 }
             });
-            ui.add_space(6.0);
         });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("新闻公告");
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.news.is_empty() {
-                    ui.weak("暂无公告 (服务器未发布或不可达)");
-                }
-                for n in &self.news {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if n.pinned {
-                                ui.colored_label(egui::Color32::from_rgb(230, 170, 60), "[置顶]");
-                            }
-                            ui.strong(&n.title);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| ui.weak(&n.created_at),
-                            );
-                        });
-                        if !n.body.is_empty() {
-                            ui.label(&n.body);
-                        }
-                    });
-                    ui.add_space(6.0);
-                }
-            });
-        });
+        if do_update {
+            self.start_update();
+        }
+        if do_retry {
+            self.refresh_remote();
+        }
     }
 }
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([860.0, 540.0])
-            .with_min_inner_size([720.0, 480.0])
+            .with_inner_size([880.0, 560.0])
+            .with_min_inner_size([760.0, 500.0])
+            .with_decorations(false)
+            .with_transparent(true)
             .with_title("MirForge 登录器"),
         ..Default::default()
     };
