@@ -477,53 +477,6 @@ fn vgrad_rounded(
     }
 }
 
-/// 窗口四角金饰 (传奇 UI 常见的 L 形角线 + 内衬细线)
-fn corner_ornaments(painter: &egui::Painter, rect: egui::Rect) {
-    // 内缩必须大于窗口圆角半径, 否则 L 角会压在圆弧上 / 视觉溢出边框
-    let inset = WIN_RADIUS + 6.0;
-    let len = 16.0;
-    let g = egui::Stroke::new(1.4, GOLD_DIM);
-    let corners = [
-        (rect.left_top(), 1.0, 1.0),
-        (rect.right_top(), -1.0, 1.0),
-        (rect.left_bottom(), 1.0, -1.0),
-        (rect.right_bottom(), -1.0, -1.0),
-    ];
-    for (p, sx, sy) in corners {
-        let p = egui::pos2(p.x + sx * inset, p.y + sy * inset);
-        painter.line_segment([p, egui::pos2(p.x + sx * len, p.y)], g);
-        painter.line_segment([p, egui::pos2(p.x, p.y + sy * len)], g);
-    }
-}
-
-/// 居中装饰分隔线: ── ◆ ──
-fn ornament_divider(ui: &mut egui::Ui, width: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
-    let p = ui.painter();
-    let c = rect.center();
-    let half = width / 2.0 - 12.0;
-    p.line_segment(
-        [egui::pos2(c.x - half, c.y), egui::pos2(c.x - 12.0, c.y)],
-        egui::Stroke::new(1.0, EDGE),
-    );
-    p.line_segment(
-        [egui::pos2(c.x + 12.0, c.y), egui::pos2(c.x + half, c.y)],
-        egui::Stroke::new(1.0, EDGE),
-    );
-    // 菱形
-    let d = 3.5;
-    p.add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(c.x, c.y - d),
-            egui::pos2(c.x + d, c.y),
-            egui::pos2(c.x, c.y + d),
-            egui::pos2(c.x - d, c.y),
-        ],
-        GOLD_DIM,
-        egui::Stroke::NONE,
-    ));
-}
-
 /// 渐变金主按钮 (hover 提亮 / 按下微沉 / 禁用暗金)
 fn gold_button(ui: &mut egui::Ui, label: &str, size: egui::Vec2, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -657,6 +610,10 @@ struct App {
     busy: bool,
     /// 已登录账号 (None = 未登录; 登录后才可选区服/进入游戏)
     logged: Option<String>,
+    /// 设置弹层 (齿轮按钮)
+    show_settings: bool,
+    /// 区服选择弹层 (账号卡区服行点击)
+    show_server_pick: bool,
     /// 本次认证成功后是否直接启动游戏 ("进入游戏" 按钮置位)
     pending_launch: bool,
     ticket: Option<String>,
@@ -710,6 +667,8 @@ impl App {
             news: Vec::new(),
             busy: false,
             logged: None,
+            show_settings: false,
+            show_server_pick: false,
             pending_launch: false,
             ticket: None,
             update_state: UpdateState::Checking,
@@ -906,7 +865,6 @@ impl eframe::App for App {
                     egui::Stroke::new(1.2, egui::Color32::from_rgb(84, 68, 42)),
                     egui::StrokeKind::Inside,
                 );
-                corner_ornaments(painter, rect);
                 let inner = rect.shrink(16.0);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 self.draw_header(ctx, &mut ui);
@@ -929,11 +887,18 @@ impl eframe::App for App {
                 ui.add_space(8.0);
                 self.draw_update_bar(&mut ui);
             });
+
+        if self.show_settings {
+            self.draw_settings_popup(ctx);
+        }
+        if self.show_server_pick {
+            self.draw_server_popup(ctx);
+        }
     }
 }
 
 impl App {
-    /// 自绘标题栏: 左 logo + 服务器选择, 右最小化/关闭; 空白区可拖动
+    /// 自绘标题栏: 左 logo, 右设置/最小化/关闭; 空白区可拖动
     fn draw_header(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         // 拖动层必须先于控件注册: egui 命中测试取最后注册的控件, 拖动层若在
         // 控件之后注册就会盖住它们 (线路下拉曾因此点不开)
@@ -980,65 +945,69 @@ impl App {
                 egui::FontId::proportional(9.0),
                 GOLD_DIM,
             );
-            ui.add_space(16.0);
-            let signed_in = self.logged.is_some();
-            ui.label(egui::RichText::new("线路").color(INK_WEAK));
-            let mut sel = self.settings.last_server;
-            // 区服选择需先登录 (默认停在上次选择的区服)
-            let combo = ui.add_enabled_ui(signed_in, |ui| {
-                egui::ComboBox::from_id_salt("srv")
-                    .selected_text(
-                        egui::RichText::new(&self.servers[sel].name).color(if signed_in {
-                            GOLD
-                        } else {
-                            INK_WEAK
-                        }),
-                    )
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for (i, s) in self.servers.iter().enumerate() {
-                            ui.selectable_value(&mut sel, i, &s.name);
-                        }
-                    });
-            });
-            if !signed_in {
-                combo.response.on_hover_text("登录后可切换区服");
-            }
-            if sel != self.settings.last_server {
-                self.settings.last_server = sel;
-                save_settings(&self.settings);
-                self.news.clear();
-                self.refresh_remote();
-            }
-            // 右侧窗控 (圆形 hover 底)
+            // 右侧窗控: 自绘线条图标 (齿轮 / 横线 / 交叉), 圆角矩形 hover 底
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let win_btn = |ui: &mut egui::Ui, t: &str, danger: bool| {
+                let win_btn = |ui: &mut egui::Ui, kind: u8, danger: bool| {
                     let (rect, resp) =
-                        ui.allocate_exact_size(egui::vec2(38.0, 32.0), egui::Sense::click());
+                        ui.allocate_exact_size(egui::vec2(36.0, 28.0), egui::Sense::click());
                     let p = ui.painter();
-                    if resp.hovered() {
-                        let c = if danger {
-                            egui::Color32::from_rgb(140, 52, 40)
+                    let hovered = resp.hovered();
+                    if hovered {
+                        let bg = if danger {
+                            egui::Color32::from_rgb(158, 56, 42)
                         } else {
-                            egui::Color32::from_rgb(58, 48, 32)
+                            egui::Color32::from_rgb(56, 46, 30)
                         };
-                        p.circle_filled(rect.center(), 16.0, c);
+                        p.rect_filled(rect, 6.0, bg);
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    p.text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        t,
-                        egui::FontId::proportional(19.0),
-                        if resp.hovered() { INK } else { INK_WEAK },
-                    );
+                    let ic = if hovered {
+                        egui::Color32::from_rgb(244, 236, 220)
+                    } else {
+                        INK_WEAK
+                    };
+                    let st = egui::Stroke::new(1.4, ic);
+                    let c = rect.center();
+                    match kind {
+                        // 齿轮: 外圈 + 轴心 + 8 齿
+                        0 => {
+                            p.circle_stroke(c, 5.2, st);
+                            p.circle_stroke(c, 1.8, st);
+                            for k in 0..8 {
+                                let a = k as f32 * std::f32::consts::TAU / 8.0;
+                                let d = egui::vec2(a.cos(), a.sin());
+                                p.line_segment([c + d * 5.2, c + d * 7.4], st);
+                            }
+                        }
+                        // 最小化: 横线
+                        1 => {
+                            p.line_segment(
+                                [c + egui::vec2(-5.0, 0.0), c + egui::vec2(5.0, 0.0)],
+                                st,
+                            );
+                        }
+                        // 关闭: 交叉线
+                        _ => {
+                            p.line_segment(
+                                [c + egui::vec2(-4.6, -4.6), c + egui::vec2(4.6, 4.6)],
+                                st,
+                            );
+                            p.line_segment(
+                                [c + egui::vec2(-4.6, 4.6), c + egui::vec2(4.6, -4.6)],
+                                st,
+                            );
+                        }
+                    }
                     resp
                 };
-                if win_btn(ui, "×", true).clicked() {
+                if win_btn(ui, 2, true).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if win_btn(ui, "—", false).clicked() {
+                if win_btn(ui, 1, false).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                if win_btn(ui, 0, false).clicked() {
+                    self.show_settings = !self.show_settings;
                 }
             });
         });
@@ -1153,50 +1122,17 @@ impl App {
     fn draw_auth(&mut self, ui: &mut egui::Ui) {
         card().show(ui, |ui| {
             ui.set_width(238.0);
-            ui.vertical(|ui| {
-                match self.logged.clone() {
-                    Some(user) => self.draw_account(ui, &user),
-                    None => self.draw_form(ui),
-                }
-                ui.add_space(10.0);
-                ornament_divider(ui, 238.0);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("分辨率").size(12.5).color(INK_WEAK));
-                    ui.add_space(4.0);
-                    egui::ComboBox::from_id_salt("res")
-                        .selected_text(egui::RichText::new(&self.settings.window).size(12.5))
-                        .width(104.0)
-                        .show_ui(ui, |ui| {
-                            for r in ["1280x720", "1600x900", "1920x1080"] {
-                                if ui.selectable_label(self.settings.window == r, r).clicked() {
-                                    self.settings.window = r.into();
-                                    save_settings(&self.settings);
-                                }
-                            }
-                        });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .checkbox(
-                                &mut self.settings.fullscreen,
-                                egui::RichText::new("全屏").size(12.5),
-                            )
-                            .changed()
-                        {
-                            save_settings(&self.settings);
-                        }
-                    });
-                });
+            ui.vertical(|ui| match self.logged.clone() {
+                Some(user) => self.draw_account(ui, &user),
+                None => self.draw_form(ui),
             });
         });
     }
 
-    /// 已登录: 账号与区服信息 + 进入游戏
+    /// 已登录: 用户信息 + 可点击的区服行 + 进入游戏/立即更新
     fn draw_account(&mut self, ui: &mut egui::Ui, user: &str) {
-        let (srv_name, srv_game) = {
-            let s = self.server();
-            (s.name.clone(), s.game.clone())
-        };
+        let srv_name = self.server().name.clone();
+        let srv_game = self.server().game.clone();
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             // 头像位: 账号首字母金圈
@@ -1221,38 +1157,123 @@ impl App {
             });
         });
         ui.add_space(10.0);
-        ui.label(egui::RichText::new("当前区服").size(12.0).color(INK_WEAK));
-        ui.add_space(1.0);
-        ui.label(
-            egui::RichText::new(&srv_name)
-                .size(14.5)
-                .strong()
-                .color(GOLD),
-        );
-        ui.label(egui::RichText::new(&srv_game).size(11.0).color(INK_WEAK));
-        ui.add_space(2.0);
-        ui.label(
-            egui::RichText::new("顶部「线路」可切换区服")
-                .size(11.0)
-                .color(egui::Color32::from_rgb(110, 99, 80)),
-        );
-        ui.add_space(10.0);
-        let can = !self.busy;
-        if gold_button(
-            ui,
-            "进 入 游 戏",
-            egui::vec2(ui.available_width(), 42.0),
-            can,
-        )
-        .clicked()
-            && can
+        // 区服行: 整行可点, 弹出服务器列表
         {
-            // 票据 60 秒即失效, 故点击时才重新登录换取新票据
-            self.pending_launch = true;
-            self.auth(AuthAction::Login {
-                user: self.user.clone(),
-                pass: self.pass.clone(),
-            });
+            let (rect, resp) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 52.0), egui::Sense::click());
+            let p = ui.painter();
+            let hovered = resp.hovered();
+            p.rect_filled(
+                rect,
+                8.0,
+                if hovered {
+                    egui::Color32::from_rgb(48, 40, 26)
+                } else {
+                    PANEL_2
+                },
+            );
+            p.rect_stroke(
+                rect,
+                8.0,
+                egui::Stroke::new(1.0, if hovered { GOLD_DIM } else { EDGE }),
+                egui::StrokeKind::Inside,
+            );
+            p.text(
+                egui::pos2(rect.left() + 12.0, rect.top() + 14.0),
+                egui::Align2::LEFT_CENTER,
+                "当前区服",
+                egui::FontId::proportional(11.0),
+                INK_WEAK,
+            );
+            p.text(
+                egui::pos2(rect.left() + 12.0, rect.bottom() - 15.0),
+                egui::Align2::LEFT_CENTER,
+                &srv_name,
+                egui::FontId::proportional(14.5),
+                GOLD,
+            );
+            let hint = if hovered { GOLD } else { INK_WEAK };
+            p.text(
+                egui::pos2(rect.right() - 22.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "切换",
+                egui::FontId::proportional(11.5),
+                hint,
+            );
+            // 右箭头 (msyh 无 ▸ 字形, 画三角代替)
+            let ac = egui::pos2(rect.right() - 14.0, rect.center().y);
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    ac + egui::vec2(-2.0, -4.0),
+                    ac + egui::vec2(3.0, 0.0),
+                    ac + egui::vec2(-2.0, 4.0),
+                ],
+                hint,
+                egui::Stroke::NONE,
+            ));
+            if hovered {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                self.show_server_pick = true;
+            }
+        }
+        ui.label(egui::RichText::new(&srv_game).size(10.5).color(INK_WEAK));
+        ui.add_space(10.0);
+        // 主按钮: 所选区服需要更新时变身「立即更新」
+        let mut do_update = false;
+        match &self.update_state {
+            UpdateState::Available(n, bytes) => {
+                if gold_button(
+                    ui,
+                    "立 即 更 新",
+                    egui::vec2(ui.available_width(), 42.0),
+                    true,
+                )
+                .clicked()
+                {
+                    do_update = true;
+                }
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "新版本: {n} 个文件 · {:.1} MB",
+                        *bytes as f64 / 1048576.0
+                    ))
+                    .size(11.0)
+                    .color(INK_WEAK),
+                );
+            }
+            UpdateState::Downloading(..) => {
+                let _ = gold_button(
+                    ui,
+                    "更 新 中 ...",
+                    egui::vec2(ui.available_width(), 42.0),
+                    false,
+                );
+            }
+            _ => {
+                let can = !self.busy;
+                if gold_button(
+                    ui,
+                    "进 入 游 戏",
+                    egui::vec2(ui.available_width(), 42.0),
+                    can,
+                )
+                .clicked()
+                    && can
+                {
+                    // 票据 60 秒即失效, 故点击时才重新登录换取新票据
+                    self.pending_launch = true;
+                    self.auth(AuthAction::Login {
+                        user: self.user.clone(),
+                        pass: self.pass.clone(),
+                    });
+                }
+            }
+        }
+        if do_update {
+            self.start_update();
         }
         ui.add_space(4.0);
         if ui
@@ -1284,7 +1305,6 @@ impl App {
         }
     }
 
-    /// 未登录: 登录 / 注册 / 找回密码
     fn draw_form(&mut self, ui: &mut egui::Ui) {
         let mut sel = match self.tab {
             Tab::Login => 0usize,
@@ -1365,6 +1385,208 @@ impl App {
         } else if !self.status.is_empty() {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(&self.status).size(12.5).color(GOLD));
+        }
+    }
+
+    /// 弹层公共壳: 半透明遮罩 (点击关闭) + 居中金边卡片
+    fn popup_shell(
+        ctx: &egui::Context,
+        id: &str,
+        size: egui::Vec2,
+        add: impl FnOnce(&mut egui::Ui) -> bool,
+    ) -> bool {
+        let mut close = false;
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new(id))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.left_top())
+            .show(ctx, |ui| {
+                // 遮罩: 圆角同窗体, 点击空白处关闭
+                let mask = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter().rect_filled(
+                    screen,
+                    WIN_RADIUS,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+                );
+                if mask.clicked() {
+                    close = true;
+                }
+                let rect = egui::Rect::from_center_size(screen.center(), size);
+                let card = ui.allocate_rect(rect, egui::Sense::click()); // 挡住遮罩点击
+                let _ = card;
+                let p = ui.painter();
+                p.rect_filled(rect, 12.0, PANEL);
+                p.rect_stroke(
+                    rect,
+                    12.0,
+                    egui::Stroke::new(1.2, GOLD_DIM),
+                    egui::StrokeKind::Inside,
+                );
+                let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(18.0)));
+                if add(&mut inner) {
+                    close = true;
+                }
+            });
+        close
+    }
+
+    /// 设置弹层: 分辨率 + 全屏
+    fn draw_settings_popup(&mut self, ctx: &egui::Context) {
+        let mut window = self.settings.window.clone();
+        let mut fullscreen = self.settings.fullscreen;
+        let mut changed = false;
+        let close = Self::popup_shell(ctx, "settings-pop", egui::vec2(300.0, 170.0), |ui| {
+            let mut done = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("设 置").size(16.0).strong().color(GOLD));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("×").size(15.0)).frame(false))
+                        .clicked()
+                    {
+                        done = true;
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("分辨率").size(13.0).color(INK_WEAK));
+                ui.add_space(8.0);
+                egui::ComboBox::from_id_salt("res")
+                    .selected_text(egui::RichText::new(&window).size(13.0))
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        for r in ["1280x720", "1600x900", "1920x1080"] {
+                            if ui.selectable_label(window == r, r).clicked() {
+                                window = r.into();
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("显示").size(13.0).color(INK_WEAK));
+                ui.add_space(22.0);
+                if ui
+                    .checkbox(&mut fullscreen, egui::RichText::new("全屏运行").size(13.0))
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            done
+        });
+        if changed {
+            self.settings.window = window;
+            self.settings.fullscreen = fullscreen;
+            save_settings(&self.settings);
+        }
+        if close {
+            self.show_settings = false;
+        }
+    }
+
+    /// 区服选择弹层: 列出全部服务器, 点选即切换
+    fn draw_server_popup(&mut self, ctx: &egui::Context) {
+        let servers = self.servers.clone();
+        let cur = self.settings.last_server;
+        let mut picked: Option<usize> = None;
+        let h = 92.0 + servers.len().min(6) as f32 * 54.0;
+        let close = Self::popup_shell(ctx, "server-pop", egui::vec2(340.0, h), |ui| {
+            let mut done = false;
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("选 择 区 服")
+                        .size(16.0)
+                        .strong()
+                        .color(GOLD),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("×").size(15.0)).frame(false))
+                        .clicked()
+                    {
+                        done = true;
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .max_height(6.0 * 54.0)
+                .show(ui, |ui| {
+                    for (idx, srv) in servers.iter().enumerate() {
+                        let selected = idx == cur;
+                        let (rect, resp) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 48.0),
+                            egui::Sense::click(),
+                        );
+                        let p = ui.painter();
+                        let hov = resp.hovered();
+                        p.rect_filled(
+                            rect,
+                            8.0,
+                            if selected {
+                                egui::Color32::from_rgb(52, 42, 24)
+                            } else if hov {
+                                egui::Color32::from_rgb(46, 38, 25)
+                            } else {
+                                PANEL_2
+                            },
+                        );
+                        p.rect_stroke(
+                            rect,
+                            8.0,
+                            egui::Stroke::new(1.0, if selected { GOLD_DIM } else { EDGE }),
+                            egui::StrokeKind::Inside,
+                        );
+                        p.text(
+                            egui::pos2(rect.left() + 12.0, rect.top() + 14.0),
+                            egui::Align2::LEFT_CENTER,
+                            &srv.name,
+                            egui::FontId::proportional(13.5),
+                            if selected { GOLD } else { INK },
+                        );
+                        p.text(
+                            egui::pos2(rect.left() + 12.0, rect.bottom() - 13.0),
+                            egui::Align2::LEFT_CENTER,
+                            &srv.game,
+                            egui::FontId::proportional(10.5),
+                            INK_WEAK,
+                        );
+                        if selected {
+                            p.text(
+                                egui::pos2(rect.right() - 12.0, rect.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                "✔ 当前",
+                                egui::FontId::proportional(11.5),
+                                GOLD,
+                            );
+                        }
+                        if hov {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.clicked() {
+                            picked = Some(idx);
+                            done = true;
+                        }
+                        ui.add_space(6.0);
+                    }
+                });
+            done
+        });
+        if let Some(idx) = picked {
+            if idx != self.settings.last_server {
+                self.settings.last_server = idx;
+                save_settings(&self.settings);
+                // 切服后重取该服公告与更新计划
+                self.news.clear();
+                self.update_state = UpdateState::Checking;
+                self.refresh_remote();
+            }
+        }
+        if close {
+            self.show_server_pick = false;
         }
     }
 
