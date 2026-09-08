@@ -866,12 +866,12 @@ impl eframe::App for App {
                     egui::Stroke::new(1.2, egui::Color32::from_rgb(84, 68, 42)),
                     egui::StrokeKind::Inside,
                 );
-                let inner = rect.shrink(16.0);
+                let inner = rect.shrink2(egui::vec2(16.0, 9.0));
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 self.draw_header(ctx, &mut ui);
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 // 主区: 左公告 / 右账号卡
-                let body_h = ui.available_height() - 52.0; // 底部更新条预留
+                let body_h = ui.available_height() - 40.0; // 底部更新条预留
                 ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                     ui.horizontal_top(|ui| {
                         let right_w = 268.0;
@@ -895,7 +895,7 @@ impl eframe::App for App {
                         });
                     });
                 });
-                ui.add_space(8.0);
+                ui.add_space(5.0);
                 self.draw_update_bar(&mut ui);
             });
 
@@ -1620,7 +1620,7 @@ impl App {
             [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
             egui::Stroke::new(1.0, EDGE),
         );
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             match &self.update_state {
                 UpdateState::Checking => {
