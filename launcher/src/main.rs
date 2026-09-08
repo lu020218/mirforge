@@ -848,7 +848,7 @@ impl eframe::App for App {
                 );
                 let glow = egui::Rect::from_min_max(
                     rect.left_top(),
-                    egui::pos2(rect.right(), rect.top() + 120.0),
+                    egui::pos2(rect.right(), rect.top() + 90.0),
                 );
                 vgrad_rounded(
                     painter,
@@ -869,7 +869,7 @@ impl eframe::App for App {
                 let inner = rect.shrink(16.0);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 self.draw_header(ctx, &mut ui);
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 // 主区: 左公告 / 右账号卡
                 let body_h = ui.available_height() - 52.0; // 底部更新条预留
                 ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
@@ -914,7 +914,7 @@ impl App {
         // 拖动层必须先于控件注册: egui 命中测试取最后注册的控件, 拖动层若在
         // 控件之后注册就会盖住它们 (线路下拉曾因此点不开)
         let bar_rect =
-            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 38.0));
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 28.0));
         if ui
             .interact(
                 bar_rect,
@@ -928,9 +928,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(2.0);
             // logo 发光重影
-            let (r, _) = ui.allocate_exact_size(egui::vec2(176.0, 34.0), egui::Sense::hover());
+            let (r, _) = ui.allocate_exact_size(egui::vec2(150.0, 26.0), egui::Sense::hover());
             let p = ui.painter();
-            let f = egui::FontId::proportional(26.0);
+            let f = egui::FontId::proportional(21.0);
             let base = egui::pos2(r.left(), r.center().y);
             p.text(
                 base + egui::vec2(1.0, 1.0),
@@ -953,7 +953,7 @@ impl App {
                 egui::pos2(r.left() + 2.0, r.bottom() + 1.0),
                 egui::Align2::LEFT_BOTTOM,
                 "L A U N C H E R",
-                egui::FontId::proportional(9.0),
+                egui::FontId::proportional(8.0),
                 GOLD_DIM,
             );
             // 右侧窗控: 自绘线条图标 (齿轮 / 横线 / 交叉), 圆角矩形 hover 底
@@ -1022,7 +1022,7 @@ impl App {
                 }
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(5.0);
         // 渐变分隔线 (中亮两端隐)
         let r = ui.max_rect();
         let y = ui.cursor().top();
