@@ -1591,7 +1591,6 @@ impl App {
     }
 
     fn draw_update_bar(&mut self, ui: &mut egui::Ui) {
-        let mut do_update = false;
         let mut do_retry = false;
         let r = ui.max_rect();
         let y = ui.cursor().top();
@@ -1628,10 +1627,11 @@ impl App {
                         .size(12.5)
                         .color(INK),
                     );
-                    ui.add_space(6.0);
-                    if gold_button(ui, "立即更新", egui::vec2(96.0, 28.0), true).clicked() {
-                        do_update = true;
-                    }
+                    ui.label(
+                        egui::RichText::new("登录后在账号面板更新")
+                            .size(11.5)
+                            .color(INK_WEAK),
+                    );
                 }
                 UpdateState::Downloading(done, total, file) => {
                     let frac = if *total > 0 {
@@ -1674,9 +1674,6 @@ impl App {
                 );
             });
         });
-        if do_update {
-            self.start_update();
-        }
         if do_retry {
             self.refresh_remote();
         }
