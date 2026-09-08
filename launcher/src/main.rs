@@ -1,8 +1,8 @@
 //! MirForge 登录器。
 //!
 //! 职责: 账号 (登录/注册/密保找回) → 一次性启动票据 → 拉起客户端;
-//! 服务器选择 (servers.json)、公告栏 (服务端公开端点)、
-//! 窗口设置 (经环境变量传给客户端)、游戏更新 (manifest 按文件增量)。
+//! 服务器选择 (servers.json)、公告栏与游戏更新 (全局 site 源, 与区服
+//! 无关; 公告经 WS 订阅实时推送)、窗口设置 (经环境变量传给客户端)。
 //!
 //! 网络全部在后台线程跑 (WS 短连接 + 阻塞 HTTP), 经 mpsc 回报 UI;
 //! egui 界面永不阻塞。
@@ -22,8 +22,19 @@ struct ServerEntry {
     name: String,
     /// 游戏服 ws 地址
     game: String,
-    /// 公告/更新 http 地址 (管理台端口)
+    /// 旧格式遗留字段 (公告/更新曾按区服取); 现仅用于旧配置迁移
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     http: String,
+}
+
+/// servers.json 新格式: 公告与游戏更新走全局 site (主站 http 地址),
+/// 区服条目只管游戏服地址。旧格式 (纯数组) 自动迁移: 取首个区服的
+/// http 作为 site。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct LauncherConfig {
+    /// 公告 + 更新源 (http://host:port, 即服务端管理台端口)
+    site: String,
+    servers: Vec<ServerEntry>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -56,18 +67,30 @@ fn base_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn load_servers() -> Vec<ServerEntry> {
+fn load_config() -> LauncherConfig {
     let p = base_dir().join("servers.json");
-    if let Ok(s) = std::fs::read_to_string(&p) {
-        if let Ok(v) = serde_json::from_str(&s) {
-            return v;
+    if let Ok(text) = std::fs::read_to_string(&p) {
+        if let Ok(cfg) = serde_json::from_str::<LauncherConfig>(&text) {
+            return cfg;
+        }
+        // 旧格式: 纯区服数组, site 取首个区服的 http
+        if let Ok(servers) = serde_json::from_str::<Vec<ServerEntry>>(&text) {
+            let site = servers
+                .iter()
+                .map(|s| s.http.clone())
+                .find(|h| !h.is_empty())
+                .unwrap_or_else(|| "http://127.0.0.1:4001".into());
+            return LauncherConfig { site, servers };
         }
     }
-    let def = vec![ServerEntry {
-        name: "本机测试服".into(),
-        game: "ws://127.0.0.1:4000".into(),
-        http: "http://127.0.0.1:4001".into(),
-    }];
+    let def = LauncherConfig {
+        site: "http://127.0.0.1:4001".into(),
+        servers: vec![ServerEntry {
+            name: "本机测试服".into(),
+            game: "ws://127.0.0.1:4000".into(),
+            http: String::new(),
+        }],
+    };
     let _ = std::fs::write(&p, serde_json::to_string_pretty(&def).unwrap());
     def
 }
@@ -598,6 +621,8 @@ enum Tab {
 }
 
 struct App {
+    /// 公告/更新全局源 (主站 http 地址)
+    site: String,
     servers: Vec<ServerEntry>,
     settings: Settings,
     tab: Tab,
@@ -621,6 +646,8 @@ struct App {
     update_state: UpdateState,
     tx: Sender<Report>,
     rx: Receiver<Report>,
+    /// 供后台线程发完 Report 后唤醒重绘 (无输入时 egui 不会自动刷帧)
+    ectx: egui::Context,
 }
 
 enum UpdateState {
@@ -652,12 +679,13 @@ impl App {
             }
         }
         apply_theme(&ctx.egui_ctx);
-        let servers = load_servers();
+        let cfg = load_config();
         let settings = load_settings();
         let (tx, rx) = channel();
         let mut app = Self {
             user: settings.username.clone(),
-            servers,
+            site: cfg.site,
+            servers: cfg.servers,
             settings,
             tab: Tab::Login,
             pass: String::new(),
@@ -675,12 +703,14 @@ impl App {
             update_state: UpdateState::Checking,
             tx,
             rx,
+            ectx: ctx.egui_ctx.clone(),
         };
         app.settings.last_server = app
             .settings
             .last_server
             .min(app.servers.len().saturating_sub(1));
         app.refresh_remote();
+        app.subscribe_news();
         app
     }
 
@@ -688,11 +718,13 @@ impl App {
         &self.servers[self.settings.last_server]
     }
 
-    /// 拉公告 + 检查更新 (后台)
+    /// 拉公告 + 检查更新 (后台, 全局 site 源; 公告另有 WS 订阅实时推送,
+    /// 此处的 HTTP 拉取兼作旧版服务端兜底)
     fn refresh_remote(&mut self) {
         self.update_state = UpdateState::Checking;
-        let http = self.server().http.clone();
+        let http = self.site.clone();
         let tx = self.tx.clone();
+        let ectx = self.ectx.clone();
         std::thread::spawn(move || {
             if let Ok(resp) = ureq::get(&format!("{http}/api/public/news"))
                 .timeout(std::time::Duration::from_secs(5))
@@ -711,6 +743,7 @@ impl App {
                     let _ = tx.send(Report::UpdatePlan(None));
                 }
             }
+            ectx.request_repaint();
         });
     }
 
@@ -719,14 +752,53 @@ impl App {
         self.status = "处理中...".into();
         let game = self.server().game.clone();
         let tx = self.tx.clone();
+        let ectx = self.ectx.clone();
         std::thread::spawn(move || {
             let (ok, msg, ticket) = ws_auth(&game, action);
             let _ = tx.send(Report::Auth(ok, msg, ticket));
+            ectx.request_repaint();
+        });
+    }
+
+    /// 常驻公告订阅: 连全局 site 的 WS 端点, 管理台保存即实时推送;
+    /// 断线 5→30 秒退避重连
+    fn subscribe_news(&self) {
+        let Some(ws_url) = self
+            .site
+            .strip_prefix("http://")
+            .map(|rest| format!("ws://{rest}/api/public/news/ws"))
+            .or_else(|| {
+                self.site
+                    .strip_prefix("https://")
+                    .map(|rest| format!("wss://{rest}/api/public/news/ws"))
+            })
+        else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let ectx = self.ectx.clone();
+        std::thread::spawn(move || {
+            let mut backoff = 5u64;
+            loop {
+                if let Ok((mut sock, _)) = tungstenite::connect(&ws_url) {
+                    backoff = 5;
+                    while let Ok(msg) = sock.read() {
+                        if let tungstenite::Message::Text(text) = msg {
+                            if let Ok(items) = serde_json::from_str::<Vec<NewsItem>>(&text) {
+                                let _ = tx.send(Report::News(items));
+                                ectx.request_repaint();
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(backoff));
+                backoff = (backoff * 2).min(30);
+            }
         });
     }
 
     fn start_update(&mut self) {
-        let http = self.server().http.clone();
+        let http = self.site.clone();
         let tx = self.tx.clone();
         self.update_state = UpdateState::Downloading(0, 0, "准备...".into());
         std::thread::spawn(move || match plan_update(&http) {
@@ -1601,10 +1673,7 @@ impl App {
             if idx != self.settings.last_server {
                 self.settings.last_server = idx;
                 save_settings(&self.settings);
-                // 切服后重取该服公告与更新计划
-                self.news.clear();
-                self.update_state = UpdateState::Checking;
-                self.refresh_remote();
+                // 公告与更新均为全局源, 切服无需重取
             }
         }
         if close {

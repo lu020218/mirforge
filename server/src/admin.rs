@@ -109,6 +109,8 @@ struct AppState {
     tx: mpsc::UnboundedSender<AdminCmd>,
     token: Option<String>,
     db: crate::db::Db,
+    /// 公告变更信号: 管理台保存后广播, 唤醒所有登录器 WS 订阅推最新列表
+    news_tx: tokio::sync::broadcast::Sender<()>,
 }
 
 fn authed(state: &AppState, headers: &HeaderMap) -> bool {
@@ -793,7 +795,10 @@ async fn api_news_put(
     audit("news", &format!("{} 条公告", items.len()));
     crate::config_store::save_news(st.db.pool(), &items)
         .await
-        .map(|_| StatusCode::NO_CONTENT)
+        .map(|_| {
+            let _ = st.news_tx.send(());
+            StatusCode::NO_CONTENT
+        })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -806,6 +811,60 @@ async fn api_public_news(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     items.truncate(20);
     Ok(Json(items))
+}
+
+/// 公告: 登录器 WS 订阅 (无鉴权)。连上先推一次全量列表,
+/// 之后管理台每次保存都会实时推送最新列表; 30 秒 ping 保活。
+async fn api_public_news_ws(
+    State(st): State<AppState>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> axum::response::Response {
+    ws.on_upgrade(move |sock| news_ws_loop(sock, st))
+}
+
+async fn news_ws_loop(mut sock: axum::extract::ws::WebSocket, st: AppState) {
+    use axum::extract::ws::Message;
+    async fn latest(st: &AppState) -> Option<String> {
+        let mut items = crate::config_store::load_news(st.db.pool()).await.ok()?;
+        items.truncate(20);
+        serde_json::to_string(&items).ok()
+    }
+    let mut rx = st.news_tx.subscribe();
+    match latest(&st).await {
+        Some(json) => {
+            if sock.send(Message::Text(json)).await.is_err() {
+                return;
+            }
+        }
+        None => return,
+    }
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(30));
+    ping.tick().await; // 首个 tick 立即完成, 跳过
+    loop {
+        tokio::select! {
+            r = rx.recv() => {
+                // Lagged 说明漏了几次信号, 反正推的是最新全量, 照推即可
+                if matches!(r, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                    return;
+                }
+                let Some(json) = latest(&st).await else { return };
+                if sock.send(Message::Text(json)).await.is_err() {
+                    return;
+                }
+            }
+            _ = ping.tick() => {
+                if sock.send(Message::Ping(Vec::new())).await.is_err() {
+                    return;
+                }
+            }
+            m = sock.recv() => {
+                match m {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                    Some(Ok(_)) => {} // Pong/杂项忽略
+                }
+            }
+        }
+    }
 }
 
 /// 游戏更新静态目录 (登录器下载 manifest.json 与文件)。
@@ -1365,7 +1424,13 @@ pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         return None;
     }
     let (tx, rx) = mpsc::unbounded_channel();
-    let state = AppState { tx, token, db };
+    let (news_tx, _) = tokio::sync::broadcast::channel(16);
+    let state = AppState {
+        tx,
+        token,
+        db,
+        news_tx,
+    };
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(api_status))
@@ -1375,6 +1440,7 @@ pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
         .route("/api/config", get(api_config_get).put(api_config_put))
         .route("/api/news", get(api_news_get).put(api_news_put))
         .route("/api/public/news", get(api_public_news))
+        .route("/api/public/news/ws", get(api_public_news_ws))
         .route("/updates/*path", get(api_update_file))
         .route(
             "/api/zones",
