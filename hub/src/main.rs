@@ -223,6 +223,11 @@ async fn main() {
         .route("/internal/config/snapshot", get(api::api_internal_snapshot))
         .route("/internal/config/ws", get(api::api_internal_config_ws))
         .route("/internal/heartbeat", post(api::api_internal_heartbeat))
+        // 运行时操作按服代理 (状态/踢人/广播/存盘)
+        .route(
+            "/srv/:id/api/*path",
+            get(api::api_srv_proxy).post(api::api_srv_proxy),
+        )
         // 更新包
         .route("/updates/*path", get(assets::api_update_file))
         // packs 预览 (管理台选择器)

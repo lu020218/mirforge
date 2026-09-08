@@ -1430,7 +1430,14 @@ pub fn spawn(db: crate::db::Db, tx: mpsc::UnboundedSender<AdminCmd>, hub_mode: b
     if addr == "off" {
         return;
     }
-    let token = std::env::var("MIRFORGE_ADMIN_TOKEN").ok();
+    // hub 模式的内部 API 密钥优先用区服↔hub 共享密钥 (hub 代理时原样附带)
+    let token = if hub_mode {
+        std::env::var("MIRFORGE_HUB_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("MIRFORGE_ADMIN_TOKEN").ok())
+    } else {
+        std::env::var("MIRFORGE_ADMIN_TOKEN").ok()
+    };
     if token.is_none() && !addr.starts_with("127.") && !addr.starts_with("localhost") {
         tracing::error!("管理台绑定非本机地址必须设置 MIRFORGE_ADMIN_TOKEN, 已禁用");
         return;
@@ -1442,6 +1449,26 @@ pub fn spawn(db: crate::db::Db, tx: mpsc::UnboundedSender<AdminCmd>, hub_mode: b
         db,
         news_tx,
     };
+    // hub 模式: 配置权威与全局物料都在 hub, 本地只留运行时操作
+    // (状态/踢人/广播/存盘), 供 hub 按服代理调用
+    if hub_mode {
+        let app = Router::new()
+            .route("/api/status", get(api_status))
+            .route("/api/broadcast", post(api_broadcast))
+            .route("/api/kick", post(api_kick))
+            .route("/api/save", post(api_save))
+            .with_state(state);
+        tokio::spawn(async move {
+            match tokio::net::TcpListener::bind(&addr).await {
+                Ok(l) => {
+                    tracing::info!("区服内部 API: http://{addr} (受 hub 代理)");
+                    let _ = axum::serve(l, app).await;
+                }
+                Err(e) => tracing::error!("内部 API 监听失败 {addr}: {e}"),
+            }
+        });
+        return;
+    }
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(api_status))

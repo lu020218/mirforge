@@ -126,6 +126,7 @@
       <div class="sec">运维</div>
       <a id="nav-news" onclick="go('news')"><span class="ico">📰</span>公告管理</a>
       <a id="nav-resources" onclick="go('resources')"><span class="ico">▤</span>资源查看</a>
+      <a id="nav-hubsrv" onclick="go('hubsrv')" style="display:none"><span class="ico">✥</span>区服管理</a>
       <a id="nav-server" onclick="go('server')"><span class="ico">⚙</span>服务器设置</a>
     </div>
     <div class="foot">配置存于 SQLite<br>保存即热重载</div>
@@ -135,6 +136,12 @@
     <!-- ═══ Dashboard ═══ -->
     <section id="page-dashboard" class="page">
       <div class="head"><h2>Dashboard</h2><span class="desc">运行状态总览</span></div>
+      <div id="ov-cards" class="cards" style="display:none;margin:16px 0 4px"></div>
+      <div id="dash-srvbar" class="toolbar" style="display:none">
+        <span class="hint">目标区服:</span>
+        <select id="dash-srv" onchange="curSrv=this.value;tick()"></select>
+        <span id="ov-rev" class="hint"></span>
+      </div>
       <div class="cards" style="margin:16px 0 20px">
         <div class="card"><b id="c-uptime">-</b><span>运行时长</span></div>
         <div class="card"><b id="c-players">-</b><span>在线玩家</span></div>
@@ -347,6 +354,24 @@
       </div>
     </section>
 
+    <!-- ═══ 区服管理 (hub) ═══ -->
+    <section id="page-hubsrv" class="page">
+      <div class="head"><h2>区服管理</h2><span class="desc">注册表 — 登录器区服列表与运维代理目标</span></div>
+      <div class="toolbar">
+        <button onclick="saveHubSrv()">保存区服</button>
+        <button class="ghost" onclick="loadHubSrv()">重新载入</button>
+        <button class="ghost" onclick="addHubSrvRow()">+ 新增区服</button>
+        <span class="hint">game = 玩家连接的 ws 地址 · internal = 区服内部 API (hub 代理踢人/广播用) · 隐藏 = 不在登录器出现</span>
+        <span id="msg-hubsrv" class="ok-msg"></span>
+      </div>
+      <div class="card-box">
+        <table id="hubsrv-table">
+          <thead><tr><th>id</th><th>名称</th><th>game (ws://)</th><th>internal (http://)</th><th>排序</th><th>隐藏</th><th>心跳</th><th>rev</th><th>在线</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="page-server" class="page">
       <div class="head"><h2>服务器设置</h2><span class="desc">运维操作与访问</span></div>
       <div class="card-box">
@@ -492,7 +517,7 @@ const token = localStorage.getItem('admToken') || '';
 const hdr = token ? { 'x-admin-token': token } : {};
 
 // ── 页面路由 ──
-const PAGES = ['dashboard', 'items', 'skills', 'monsters', 'npcs', 'quests', 'maps', 'bosses', 'news', 'resources', 'server'];
+const PAGES = ['dashboard', 'items', 'skills', 'monsters', 'npcs', 'quests', 'maps', 'bosses', 'news', 'resources', 'hubsrv', 'server'];
 let curPage = 'dashboard';
 /// NPC 表是否已载入 (只首次进页自动载, 见 go)
 let npcLoaded = false;
@@ -514,6 +539,7 @@ function go(p, silent) {
   if (p === 'maps' && !document.querySelector('#mon-table tbody tr')) loadCfg('monsters');
   if (p === 'resources' && !window._packsLoaded) loadPackList();
   if (p === 'news' && !window._newsLoaded) loadNews();
+  if (p === 'hubsrv') loadHubSrv();
   // NPC 页涉及跨页取点, 只在首次进入时载入 —— 每次进页都重载会冲掉未保存的行
   // (含刚取到的坐标和还没保存的新增 NPC); 要放弃编辑请点「重新载入」。
   // 地图下拉依赖区域列表, 所以先取 zones 再取配置。
@@ -540,13 +566,98 @@ function saveToken() {
   flash('已保存，刷新页面生效');
 }
 
+// ── hub 模式: 统一后台管多区服 (探测 /api/hub/overview) ──
+let hubMode = false, curSrv = '', hubOverview = null;
+function srvApi(p) { return hubMode ? `/srv/${curSrv}/api/${p}` : `/api/${p}`; }
+async function hubInit() {
+  try {
+    const r = await fetch('/api/hub/overview', { headers: hdr });
+    if (!r.ok) return;
+    hubMode = true;
+    document.getElementById('nav-hubsrv').style.display = '';
+    document.getElementById('dash-srvbar').style.display = '';
+    document.getElementById('ov-cards').style.display = '';
+    await refreshOverview();
+    tick();
+  } catch (e) { /* 单机模式 */ }
+}
+async function refreshOverview() {
+  const r = await fetch('/api/hub/overview', { headers: hdr });
+  if (!r.ok) return;
+  hubOverview = await r.json();
+  const ov = hubOverview;
+  document.getElementById('ov-rev').textContent = `配置 rev ${ov.rev}`;
+  document.getElementById('ov-cards').innerHTML = ov.servers.map(sv => {
+    const dead = sv.beat_secs === null || sv.beat_secs > 90;
+    const stale = !dead && !sv.fresh;
+    const color = dead ? 'var(--red,#e05555)' : stale ? '#d8b23e' : 'var(--green,#6fbf73)';
+    const st = dead ? '失联' : stale ? `rev ${sv.rev} 落后` : `rev ${sv.rev} ✓`;
+    return `<div class="card"><b style="color:${color}">${sv.online ?? '-'}</b>` +
+      `<span>${sv.name}<br>${st}${sv.beat_secs !== null ? ` · ${sv.beat_secs}s 前` : ''}</span></div>`;
+  }).join('');
+  const sel = document.getElementById('dash-srv');
+  const keep = curSrv;
+  sel.innerHTML = ov.servers.map(sv => `<option value="${sv.id}">${sv.name}</option>`).join('');
+  if (ov.servers.length) {
+    curSrv = ov.servers.some(sv => sv.id === keep) ? keep : ov.servers[0].id;
+    sel.value = curSrv;
+  } else { curSrv = ''; }
+}
+
+// ── 区服管理 (hub 注册表) ──
+function hubSrvRow(r, beat) {
+  const tr = document.createElement('tr');
+  const beatTxt = beat ? (beat.beat_secs === null ? '<span class=off>无</span>' : beat.beat_secs + 's 前') : '<span class=off>无</span>';
+  tr.innerHTML = `
+    <td><input value="${r.id ?? ''}" style="width:70px"></td>
+    <td><input value="${r.name ?? ''}" style="width:110px"></td>
+    <td><input value="${r.game ?? ''}" style="width:180px"></td>
+    <td><input value="${r.internal ?? ''}" style="width:180px"></td>
+    <td><input type="number" value="${r.sort ?? 0}" style="width:56px"></td>
+    <td style="text-align:center"><input type="checkbox" ${r.hidden ? 'checked' : ''}></td>
+    <td>${beatTxt}</td>
+    <td>${beat && beat.rev !== null ? beat.rev + (beat.fresh ? ' ✓' : ' ⚠') : '-'}</td>
+    <td>${beat && beat.online !== null ? beat.online : '-'}</td>
+    <td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
+  return tr;
+}
+async function loadHubSrv() {
+  await refreshOverview();
+  const r = await fetch('/api/hub/servers', { headers: hdr });
+  if (!r.ok) return;
+  const rows = await r.json();
+  const beats = Object.fromEntries((hubOverview?.servers ?? []).map(sv => [sv.id, sv]));
+  const tb = document.querySelector('#hubsrv-table tbody');
+  tb.innerHTML = '';
+  for (const row of rows) tb.appendChild(hubSrvRow(row, beats[row.id]));
+}
+function addHubSrvRow() {
+  document.querySelector('#hubsrv-table tbody').appendChild(hubSrvRow({}, null));
+}
+async function saveHubSrv() {
+  const rows = [...document.querySelectorAll('#hubsrv-table tbody tr')].map(tr => {
+    const i = tr.querySelectorAll('input');
+    return { id: i[0].value.trim(), name: i[1].value.trim(), game: i[2].value.trim(),
+             internal: i[3].value.trim(), sort: parseInt(i[4].value) || 0, hidden: i[5].checked };
+  }).filter(r => r.id);
+  const r = await fetch('/api/hub/servers', { method: 'PUT',
+    headers: { ...hdr, 'content-type': 'application/json' }, body: JSON.stringify(rows) });
+  document.getElementById('msg-hubsrv').textContent = r.ok ? '已保存, 登录器即刻可见' : '保存失败';
+  setTimeout(() => document.getElementById('msg-hubsrv').textContent = '', 2500);
+  if (r.ok) loadHubSrv();
+}
+
 function fmtUp(s) {
   const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
   return h > 0 ? `${h}h${m}m` : `${m}m${s%60}s`;
 }
 async function tick() {
+  if (hubMode) {
+    if (curPage === 'dashboard') refreshOverview();
+    if (!curSrv) return;
+  }
   try {
-    const r = await fetch('/api/status', { headers: hdr });
+    const r = await fetch(srvApi('status'), { headers: hdr });
     if (r.status === 401) { c('c-uptime', '未授权'); return; }
     const d = await r.json();
     c('c-uptime', fmtUp(d.uptime_secs));
@@ -566,20 +677,20 @@ function c(id, v) { document.getElementById(id).textContent = v; }
 async function broadcastMsg() {
   const message = document.getElementById('bc').value.trim();
   if (!message) return;
-  await fetch('/api/broadcast', { method: 'POST',
+  await fetch(srvApi('broadcast'), { method: 'POST',
     headers: { ...hdr, 'content-type': 'application/json' },
     body: JSON.stringify({ message }) });
   document.getElementById('bc').value = '';
   flash('公告已发送');
 }
 async function kick(name) {
-  await fetch('/api/kick', { method: 'POST',
+  await fetch(srvApi('kick'), { method: 'POST',
     headers: { ...hdr, 'content-type': 'application/json' },
     body: JSON.stringify({ name }) });
   flash(name + ' 已踢下线'); tick();
 }
 async function saveAll() {
-  await fetch('/api/save', { method: 'POST', headers: hdr });
+  await fetch(srvApi('save'), { method: 'POST', headers: hdr });
   flash('已存档');
 }
 
@@ -2390,7 +2501,7 @@ window.addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
   if (PAGES.includes(h) && h !== curPage) go(h, true);
 });
-tick(); setInterval(tick, 2000);
+hubInit().then(tick); setInterval(tick, 2000);
 </script>
 </body>
 </html>

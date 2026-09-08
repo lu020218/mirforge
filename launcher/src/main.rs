@@ -19,6 +19,9 @@ use protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct ServerEntry {
+    /// hub 注册表 id (上次区服记忆按它; 缺省取 name)
+    #[serde(default)]
+    id: String,
     name: String,
     /// 游戏服 ws 地址
     game: String,
@@ -27,19 +30,23 @@ struct ServerEntry {
     http: String,
 }
 
-/// servers.json 新格式: 公告与游戏更新走全局 site (主站 http 地址),
-/// 区服条目只管游戏服地址。旧格式 (纯数组) 自动迁移: 取首个区服的
-/// http 作为 site。
+/// servers.json: 只需 {"site": "http://hub:4001"} — 区服列表启动时从
+/// hub 拉取 (/api/public/servers), 成功后写 servers_cache.json 供断网
+/// 兜底。旧格式 (纯数组 / {site, servers}) 自动迁移, 内联 servers
+/// 视为初始兜底列表。
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct LauncherConfig {
-    /// 公告 + 更新源 (http://host:port, 即服务端管理台端口)
+    /// hub 地址 (公告/更新/区服列表统一来源)
     site: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     servers: Vec<ServerEntry>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Settings {
-    last_server: usize,
+    /// 上次选择的区服 id (hub 注册表 id; 空 = 取列表第一个)
+    #[serde(default)]
+    last_server: String,
     username: String,
     window: String,
     fullscreen: bool,
@@ -51,7 +58,7 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            last_server: 0,
+            last_server: String::new(),
             username: String::new(),
             window: "1600x900".into(),
             fullscreen: false,
@@ -85,14 +92,32 @@ fn load_config() -> LauncherConfig {
     }
     let def = LauncherConfig {
         site: "http://127.0.0.1:4001".into(),
-        servers: vec![ServerEntry {
-            name: "本机测试服".into(),
-            game: "ws://127.0.0.1:4000".into(),
-            http: String::new(),
-        }],
+        servers: Vec::new(),
     };
     let _ = std::fs::write(&p, serde_json::to_string_pretty(&def).unwrap());
     def
+}
+
+/// 区服列表本地缓存 (最近一次成功拉取; 断网兜底)
+fn servers_cache_file() -> PathBuf {
+    base_dir().join("servers_cache.json")
+}
+
+fn load_servers_cache() -> Vec<ServerEntry> {
+    std::fs::read_to_string(servers_cache_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// 补齐缺省 id (旧配置/手写条目按 name 记忆)
+fn fill_ids(mut servers: Vec<ServerEntry>) -> Vec<ServerEntry> {
+    for s in &mut servers {
+        if s.id.is_empty() {
+            s.id = s.name.clone();
+        }
+    }
+    servers
 }
 
 fn load_settings() -> Settings {
@@ -115,6 +140,8 @@ enum Report {
     /// 登录/注册/找回的结果 (成功?, 提示语, 票据)
     Auth(bool, String, Option<String>),
     News(Vec<NewsItem>),
+    /// hub 区服列表 (启动时拉取)
+    Servers(Vec<ServerEntry>),
     /// 更新检查: 需下载的文件数与总字节 (0 = 已最新); None = 检查失败
     UpdatePlan(Option<(usize, u64)>),
     /// 下载进度 (已完成文件数, 总文件数, 当前文件名)
@@ -681,11 +708,25 @@ impl App {
         apply_theme(&ctx.egui_ctx);
         let cfg = load_config();
         let settings = load_settings();
+        // 区服列表: 缓存优先 (上次拉取结果), 其次配置内联, 保底本机单服;
+        // 启动后再从 hub 拉最新列表覆盖
+        let mut servers = fill_ids(load_servers_cache());
+        if servers.is_empty() {
+            servers = fill_ids(cfg.servers.clone());
+        }
+        if servers.is_empty() {
+            servers = vec![ServerEntry {
+                id: "local".into(),
+                name: "本机测试服".into(),
+                game: "ws://127.0.0.1:4000".into(),
+                http: String::new(),
+            }];
+        }
         let (tx, rx) = channel();
         let mut app = Self {
             user: settings.username.clone(),
             site: cfg.site,
-            servers: cfg.servers,
+            servers,
             settings,
             tab: Tab::Login,
             pass: String::new(),
@@ -705,17 +746,37 @@ impl App {
             rx,
             ectx: ctx.egui_ctx.clone(),
         };
-        app.settings.last_server = app
-            .settings
-            .last_server
-            .min(app.servers.len().saturating_sub(1));
         app.refresh_remote();
+        app.fetch_servers();
         app.subscribe_news();
         app
     }
 
     fn server(&self) -> &ServerEntry {
-        &self.servers[self.settings.last_server]
+        self.servers
+            .iter()
+            .find(|s| s.id == self.settings.last_server)
+            .unwrap_or(&self.servers[0])
+    }
+
+    /// 从 hub 拉区服列表 (成功即覆盖并写缓存; 失败保持现状)
+    fn fetch_servers(&self) {
+        let site = self.site.clone();
+        let tx = self.tx.clone();
+        let ectx = self.ectx.clone();
+        std::thread::spawn(move || {
+            if let Ok(resp) = ureq::get(&format!("{site}/api/public/servers"))
+                .timeout(std::time::Duration::from_secs(5))
+                .call()
+            {
+                if let Ok(list) = resp.into_json::<Vec<ServerEntry>>() {
+                    if !list.is_empty() {
+                        let _ = tx.send(Report::Servers(list));
+                        ectx.request_repaint();
+                    }
+                }
+            }
+        });
     }
 
     /// 拉公告 + 检查更新 (后台, 全局 site 源; 公告另有 WS 订阅实时推送,
@@ -887,6 +948,17 @@ impl eframe::App for App {
                     self.pending_launch = false;
                 }
                 Report::News(n) => self.news = n,
+                Report::Servers(list) => {
+                    let list = fill_ids(list);
+                    let _ = std::fs::write(
+                        servers_cache_file(),
+                        serde_json::to_string_pretty(&list).unwrap_or_default(),
+                    );
+                    if !list.iter().any(|s| s.id == self.settings.last_server) {
+                        self.settings.last_server = list[0].id.clone();
+                    }
+                    self.servers = list;
+                }
                 Report::UpdatePlan(Some((0, _))) => self.update_state = UpdateState::UpToDate,
                 Report::UpdatePlan(Some((n, bytes))) => {
                     self.update_state = UpdateState::Available(n, bytes)
@@ -1584,8 +1656,8 @@ impl App {
     /// 区服选择弹层: 列出全部服务器, 点选即切换
     fn draw_server_popup(&mut self, ctx: &egui::Context) {
         let servers = self.servers.clone();
-        let cur = self.settings.last_server;
-        let mut picked: Option<usize> = None;
+        let cur = self.settings.last_server.clone();
+        let mut picked: Option<String> = None;
         let h = 92.0 + servers.len().min(6) as f32 * 54.0;
         let close = Self::popup_shell(ctx, "server-pop", egui::vec2(340.0, h), |ui| {
             let mut done = false;
@@ -1609,8 +1681,8 @@ impl App {
             egui::ScrollArea::vertical()
                 .max_height(6.0 * 54.0)
                 .show(ui, |ui| {
-                    for (idx, srv) in servers.iter().enumerate() {
-                        let selected = idx == cur;
+                    for srv in &servers {
+                        let selected = srv.id == cur;
                         let (rect, resp) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), 48.0),
                             egui::Sense::click(),
@@ -1661,7 +1733,7 @@ impl App {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         if resp.clicked() {
-                            picked = Some(idx);
+                            picked = Some(srv.id.clone());
                             done = true;
                         }
                         ui.add_space(6.0);
@@ -1669,9 +1741,9 @@ impl App {
                 });
             done
         });
-        if let Some(idx) = picked {
-            if idx != self.settings.last_server {
-                self.settings.last_server = idx;
+        if let Some(id) = picked {
+            if id != self.settings.last_server {
+                self.settings.last_server = id;
                 save_settings(&self.settings);
                 // 公告与更新均为全局源, 切服无需重取
             }

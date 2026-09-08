@@ -818,3 +818,75 @@ pub(crate) async fn api_map_tile(
 pub(crate) async fn index() -> Html<&'static str> {
     Html(include_str!("../../server/src/admin.html"))
 }
+
+// ─────────── 运行时操作代理 (hub → 区服内部 API) ───────────
+
+/// 按服代理: /srv/{id}/api/{path} → 注册表 internal 地址 + 密钥。
+/// 只放行运行时操作白名单, 避免 hub 变成任意转发器。
+pub(crate) async fn api_srv_proxy(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    AxPath((id, path)): AxPath<(String, String)>,
+    method: axum::http::Method,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, StatusCode> {
+    if !authed(&st, &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    const ALLOWED: [&str; 4] = ["status", "broadcast", "kick", "save"];
+    if !ALLOWED.contains(&path.as_str()) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let servers = load_servers(&st.pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let target = servers
+        .into_iter()
+        .find(|r| r.id == id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if target.internal.is_empty() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let url = format!("{}/api/{path}", target.internal.trim_end_matches('/'));
+    let token = st.hub_token.clone().unwrap_or_default();
+    let is_get = method == axum::http::Method::GET;
+    let out = tokio::task::spawn_blocking(move || {
+        let req = if is_get {
+            ureq::get(&url)
+        } else {
+            ureq::post(&url)
+        }
+        .set("x-admin-token", &token)
+        .set("content-type", "application/json")
+        .timeout(std::time::Duration::from_secs(8));
+        let resp = if is_get {
+            req.call()
+        } else {
+            req.send_bytes(&body)
+        };
+        match resp {
+            Ok(r) => {
+                let status = r.status();
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut r.into_reader(), &mut buf);
+                Ok((status, buf))
+            }
+            Err(ureq::Error::Status(code, r)) => {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut r.into_reader(), &mut buf);
+                Ok((code, buf))
+            }
+            Err(e) => Err(format!("{e}")),
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match out {
+        Ok((status, buf)) => Ok(axum::response::Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(buf))
+            .unwrap()),
+        Err(_) => Err(StatusCode::BAD_GATEWAY),
+    }
+}
