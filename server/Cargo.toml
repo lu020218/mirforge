@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+gamedata = { path = "../crates/gamedata" }
 protocol = { path = "../crates/protocol" }
 sim = { path = "../crates/sim" }
 mir-formats = { path = "../crates/mir-formats" }

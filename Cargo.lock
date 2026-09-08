@@ -2940,6 +2940,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gamedata"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4049,6 +4059,7 @@ dependencies = [
  "axum",
  "bcrypt",
  "futures-util",
+ "gamedata",
  "image",
  "mir-formats",
  "protocol",

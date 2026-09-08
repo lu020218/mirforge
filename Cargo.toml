@@ -4,6 +4,7 @@ members = [
     "crates/mir-formats",
     "crates/mir-atlas",
     "crates/mir-pack",
+    "crates/gamedata",
     "crates/protocol",
     "crates/sim",
     "server",
