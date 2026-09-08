@@ -1329,3 +1329,74 @@ pub async fn load_snapshot(pool: &SqlitePool) -> Result<crate::defs::Snapshot, s
     let rev = get_rev(pool).await?;
     Ok(crate::defs::Snapshot { rev, data, zones })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_pool() -> SqlitePool {
+        let opts = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        ensure_schema(&pool).await.unwrap();
+        ensure_rev(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn rev_starts_zero_and_bumps() {
+        let pool = mem_pool().await;
+        assert_eq!(get_rev(&pool).await.unwrap(), 0);
+        assert_eq!(bump_rev(&pool).await.unwrap(), 1);
+        assert_eq!(bump_rev(&pool).await.unwrap(), 2);
+        assert_eq!(get_rev(&pool).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn snapshot_roundtrip_preserves_config() {
+        let pool = mem_pool().await;
+        let seed = crate::defs::GameData::builtin();
+        let mut zones = std::collections::HashMap::new();
+        zones.insert("0.map".to_string(), crate::defs::ZoneSidecar::default());
+        seed_from_files(&pool, &seed, &zones).await.unwrap();
+        bump_rev(&pool).await.unwrap();
+        let snap = load_snapshot(&pool).await.unwrap();
+        assert_eq!(snap.rev, 1);
+        assert_eq!(snap.data.items.len(), seed.items.len());
+        assert_eq!(snap.data.skills.taoist.len(), seed.skills.taoist.len());
+        assert!(snap.zones.contains_key("0.map"));
+        // JSON 往返等值 (hub → 区服传输保真)
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: crate::defs::Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rev, snap.rev);
+        assert_eq!(
+            serde_json::to_value(&back.data).unwrap(),
+            serde_json::to_value(&snap.data).unwrap()
+        );
+        assert_eq!(back.zones.len(), snap.zones.len());
+    }
+
+    #[tokio::test]
+    async fn save_bumps_are_transactional() {
+        // 保存失败不得递增 rev: bump 由调用方在保存成功后执行,
+        // 这里验证保存成功路径 rev 语义 (items 全量替换后快照可见)
+        let pool = mem_pool().await;
+        let seed = crate::defs::GameData::builtin();
+        let zones = std::collections::HashMap::new();
+        seed_from_files(&pool, &seed, &zones).await.unwrap();
+        let mut items = seed.items.clone();
+        items[0].price = 12345;
+        save_items(&pool, &items).await.unwrap();
+        bump_rev(&pool).await.unwrap();
+        let snap = load_snapshot(&pool).await.unwrap();
+        assert_eq!(snap.data.items[0].price, 12345);
+        assert_eq!(snap.rev, 1);
+    }
+}

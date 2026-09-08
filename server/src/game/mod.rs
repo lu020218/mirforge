@@ -209,6 +209,13 @@ pub fn set_data(d: GameData) {
     *DATA.write().unwrap() = Some(std::sync::Arc::new(d));
 }
 
+/// 在线人数 (hub 心跳上报用; 游戏循环每拍刷新)
+static ONLINE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn online_count() -> u32 {
+    ONLINE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn skills_for(class: protocol::CharacterClass) -> Vec<SkillDef> {
     let d = data();
     match class {
@@ -601,7 +608,10 @@ impl Game {
                     }
                 }
                 Some(cmd) = admin.recv() => self.handle_admin(cmd, started).await,
-                _ = tick.tick() => self.tick().await,
+                _ = tick.tick() => {
+                    ONLINE.store(self.players.len() as u32, std::sync::atomic::Ordering::Relaxed);
+                    self.tick().await;
+                }
             }
         }
     }
@@ -647,7 +657,14 @@ impl Game {
         crate::config_store::save_zone(self.db.pool(), map, &sidecar)
             .await
             .map_err(|e| format!("保存区域失败: {e}"))?;
-        // 热应用: 替换区域 + 重建该区怪物 (先广播 removed)
+        self.replace_zone(zone).await;
+        Ok(())
+    }
+
+    /// 热替换一个区域: 换数据 + 重建该区怪物 (先广播 removed)
+    async fn replace_zone(&mut self, zone: Zone) {
+        let map = zone.id.clone();
+        let map = map.as_str();
         let removed: Vec<String> = self
             .monsters
             .iter()
@@ -690,7 +707,6 @@ impl Game {
         info!("区域 {map} 热重载: 怪物 {} 只", fresh.len());
         self.monsters.extend(fresh);
         self.zones.insert(map.to_string(), zone);
-        Ok(())
     }
 
     /// 接入新地图: 默认边车 → 加载 → 写文件
@@ -852,6 +868,67 @@ impl Game {
                     None => false,
                 };
                 let _ = done.send(kicked);
+            }
+            AdminCmd::ApplySnapshot { snap } => {
+                let rev = snap.rev;
+                set_data(snap.data);
+                // 区域对齐: 新增/变更重建, 消失且无人时移除
+                for (map, sc) in &snap.zones {
+                    let changed = match self.zones.get(map) {
+                        None => true,
+                        Some(z) => {
+                            serde_json::to_value(&z.sidecar).ok() != serde_json::to_value(sc).ok()
+                        }
+                    };
+                    if !changed {
+                        continue;
+                    }
+                    let Some(path) = self.map_files.get(map).cloned() else {
+                        warn!("hub 快照区域 {map} 找不到地图文件, 跳过");
+                        continue;
+                    };
+                    match load_zone(&path, map, sc.clone()) {
+                        Some(zone) => self.replace_zone(zone).await,
+                        None => warn!("hub 快照区域 {map} 地图解析失败, 跳过"),
+                    }
+                }
+                let gone: Vec<String> = self
+                    .zones
+                    .keys()
+                    .filter(|m| !snap.zones.contains_key(*m) && **m != self.default_zone)
+                    .cloned()
+                    .collect();
+                for m in gone {
+                    let present = self.players.values().filter(|p| p.zone == m).count();
+                    if present > 0 {
+                        warn!("hub 快照移除区域 {m}, 但尚有 {present} 人在场, 保留");
+                        continue;
+                    }
+                    self.monsters.retain(|mo| mo.zone != m);
+                    self.zones.remove(&m);
+                    info!("区域 {m} 已按 hub 快照移除");
+                }
+                // 与 ConfigReloaded 同步收尾: BOSS/刷新点重刷 + 重推在线玩家
+                self.refresh_bosses().await;
+                self.refresh_spawns().await;
+                let ids: Vec<String> = self
+                    .players
+                    .iter()
+                    .filter(|(_, p)| p.connected)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in ids {
+                    self.send_skill_list(&id).await;
+                    if let Some((conn, zone)) = self
+                        .players
+                        .get(&id)
+                        .map(|p| (p.conn_id.clone(), p.zone.clone()))
+                    {
+                        self.send_npc_list(&conn, &zone).await;
+                    }
+                }
+                crate::hubclient::APPLIED_REV.store(rev, std::sync::atomic::Ordering::Relaxed);
+                info!("hub 配置 rev={rev} 已生效");
             }
             AdminCmd::SaveAll(done) => {
                 self.save_all().await;

@@ -18,6 +18,10 @@ use tokio::sync::{mpsc, oneshot};
 /// 管理命令 (游戏循环内处理)
 pub enum AdminCmd {
     Status(oneshot::Sender<StatusSnapshot>),
+    /// hub 配置快照热应用 (hubclient 拉到新 rev 后投递)
+    ApplySnapshot {
+        snap: Box<gamedata::defs::Snapshot>,
+    },
     /// 配置已热替换 (通知在线玩家刷新技能表等)
     ConfigReloaded {
         kind: String,
@@ -1413,17 +1417,24 @@ async fn index() -> Html<&'static str> {
 }
 
 /// 启动管理台 HTTP 服务; 返回命令接收端 (游戏循环消费)
-pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
-    let addr = std::env::var("MIRFORGE_ADMIN").unwrap_or_else(|_| "127.0.0.1:4001".into());
+/// 启动管理台 http 服务。AdminCmd 通道由调用方创建 (hubclient 也要投递),
+/// 本函数只负责挂路由; 关闭/禁用时直接返回。
+/// hub 模式下缺省端口让位给 hub (4001), 内部 API 落 4002。
+pub fn spawn(db: crate::db::Db, tx: mpsc::UnboundedSender<AdminCmd>, hub_mode: bool) {
+    let default_addr = if hub_mode {
+        "127.0.0.1:4002"
+    } else {
+        "127.0.0.1:4001"
+    };
+    let addr = std::env::var("MIRFORGE_ADMIN").unwrap_or_else(|_| default_addr.into());
     if addr == "off" {
-        return None;
+        return;
     }
     let token = std::env::var("MIRFORGE_ADMIN_TOKEN").ok();
     if token.is_none() && !addr.starts_with("127.") && !addr.starts_with("localhost") {
         tracing::error!("管理台绑定非本机地址必须设置 MIRFORGE_ADMIN_TOKEN, 已禁用");
-        return None;
+        return;
     }
-    let (tx, rx) = mpsc::unbounded_channel();
     let (news_tx, _) = tokio::sync::broadcast::channel(16);
     let state = AppState {
         tx,
@@ -1472,5 +1483,4 @@ pub fn spawn(db: crate::db::Db) -> Option<mpsc::UnboundedReceiver<AdminCmd>> {
             Err(e) => tracing::error!("管理台监听失败 {addr}: {e}"),
         }
     });
-    Some(rx)
 }

@@ -25,6 +25,7 @@ mod config_store;
 mod db;
 mod game;
 mod gateway;
+mod hubclient;
 mod map_render;
 
 use std::collections::HashMap;
@@ -85,85 +86,112 @@ async fn main() {
     }
     let dir = zones_dir();
     let db = db::Db::open(&db_path).await.expect("打开数据库失败");
-    config_store::ensure_schema(db.pool())
-        .await
-        .expect("建配置表失败");
-    // 旧库迁移: 从既有刷新点蒸馏怪物模板 (幂等)
-    config_store::migrate_monsters(db.pool())
-        .await
-        .expect("怪物模板迁移失败");
-    config_store::migrate_skill_fx(db.pool())
-        .await
-        .expect("技能图标/特效迁移失败");
-    config_store::migrate_skill_icons_v2(db.pool())
-        .await
-        .expect("技能图标升级失败");
-    config_store::migrate_skill_anim(db.pool())
-        .await
-        .expect("技能动作回填失败");
-    config_store::migrate_skill_stages(db.pool())
-        .await
-        .expect("技能类型回填失败");
-    config_store::migrate_skill_fx_split(db.pool())
-        .await
-        .expect("技能特效单文件迁移失败");
-    config_store::migrate_skill_fx_named(db.pool())
-        .await
-        .expect("特效名字化迁移失败");
-    config_store::migrate_shidu_dot(db.pool())
-        .await
-        .expect("施毒 DoT 迁移失败");
 
-    // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
-    if config_store::is_empty(db.pool()).await.unwrap_or(false) {
-        let seed = game::GameData::seed_source(&data_dir);
-        let mut zone_seed: HashMap<String, game::ZoneSidecar> = HashMap::new();
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for f in rd.flatten() {
-                let path = f.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                let Some(map_name) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if let Some(sc) = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|t| serde_json::from_str::<game::ZoneSidecar>(&t).ok())
-                {
-                    zone_seed.insert(map_name.to_lowercase(), sc);
+    // hub 模式: 配置权威在中心站, 本地只存玩家数据。
+    // 启动拉快照 (失败用缓存), 运行中经 WS 订阅热更。
+    let hub_cfg = hubclient::from_env();
+    let hub_snapshot = match &hub_cfg {
+        Some(cfg) => {
+            let cache = hubclient::cache_path(&db_path);
+            match hubclient::initial(cfg, &cache).await {
+                Ok(snap) => Some(snap),
+                Err(e) => {
+                    eprintln!("hub 配置获取失败: {e}");
+                    std::process::exit(2);
                 }
             }
         }
-        if zone_seed.is_empty() {
-            zone_seed.insert(default_zone.clone(), game::ZoneSidecar::default());
-        }
-        config_store::seed_from_files(db.pool(), &seed, &zone_seed)
+        None => None,
+    };
+
+    if hub_snapshot.is_none() {
+        config_store::ensure_schema(db.pool())
             .await
-            .expect("种子导入失败");
-        info!(
-            "配置库初始化: 物品 {} / 技能 {} / 任务 {} / NPC {} / BOSS {} / 区域 {}",
-            seed.items.len(),
-            seed.skills.warrior.len() + seed.skills.mage.len() + seed.skills.taoist.len(),
-            seed.quests.len(),
-            seed.npcs.len(),
-            seed.bosses.len(),
-            zone_seed.len()
+            .expect("建配置表失败");
+        // 旧库迁移: 从既有刷新点蒸馏怪物模板 (幂等)
+        config_store::migrate_monsters(db.pool())
+            .await
+            .expect("怪物模板迁移失败");
+        config_store::migrate_skill_fx(db.pool())
+            .await
+            .expect("技能图标/特效迁移失败");
+        config_store::migrate_skill_icons_v2(db.pool())
+            .await
+            .expect("技能图标升级失败");
+        config_store::migrate_skill_anim(db.pool())
+            .await
+            .expect("技能动作回填失败");
+        config_store::migrate_skill_stages(db.pool())
+            .await
+            .expect("技能类型回填失败");
+        config_store::migrate_skill_fx_split(db.pool())
+            .await
+            .expect("技能特效单文件迁移失败");
+        config_store::migrate_skill_fx_named(db.pool())
+            .await
+            .expect("特效名字化迁移失败");
+        config_store::migrate_shidu_dot(db.pool())
+            .await
+            .expect("施毒 DoT 迁移失败");
+
+        // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
+        if config_store::is_empty(db.pool()).await.unwrap_or(false) {
+            let seed = game::GameData::seed_source(&data_dir);
+            let mut zone_seed: HashMap<String, game::ZoneSidecar> = HashMap::new();
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for f in rd.flatten() {
+                    let path = f.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Some(map_name) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if let Some(sc) = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<game::ZoneSidecar>(&t).ok())
+                    {
+                        zone_seed.insert(map_name.to_lowercase(), sc);
+                    }
+                }
+            }
+            if zone_seed.is_empty() {
+                zone_seed.insert(default_zone.clone(), game::ZoneSidecar::default());
+            }
+            config_store::seed_from_files(db.pool(), &seed, &zone_seed)
+                .await
+                .expect("种子导入失败");
+            info!(
+                "配置库初始化: 物品 {} / 技能 {} / 任务 {} / NPC {} / BOSS {} / 区域 {}",
+                seed.items.len(),
+                seed.skills.warrior.len() + seed.skills.mage.len() + seed.skills.taoist.len(),
+                seed.quests.len(),
+                seed.npcs.len(),
+                seed.bosses.len(),
+                zone_seed.len()
+            );
+        }
+
+        // 配置以数据库为准载入内存快照
+        game::set_data(
+            config_store::load_game_data(db.pool())
+                .await
+                .expect("读取配置失败"),
         );
     }
 
-    // 配置以数据库为准载入内存快照
-    game::set_data(
-        config_store::load_game_data(db.pool())
-            .await
-            .expect("读取配置失败"),
-    );
-
-    // 区域: 边车来自配置库, 地图文件来自资源目录
+    // 区域: 边车来自 hub 快照或本地配置库, 地图文件来自资源目录
     let mut zones: HashMap<String, game::Zone> = HashMap::new();
-    let sidecars = config_store::load_zone_sidecars(db.pool())
-        .await
-        .expect("读取区域配置失败");
+    let sidecars: HashMap<String, game::ZoneSidecar> = match &hub_snapshot {
+        Some(snap) => {
+            game::set_data(snap.data.clone());
+            hubclient::APPLIED_REV.store(snap.rev, std::sync::atomic::Ordering::Relaxed);
+            snap.zones.clone()
+        }
+        None => config_store::load_zone_sidecars(db.pool())
+            .await
+            .expect("读取区域配置失败"),
+    };
     for (map_name, sidecar) in sidecars {
         let loaded =
             map_path_of(&idx, &map_name).and_then(|p| game::load_zone(&p, &map_name, sidecar));
@@ -180,12 +208,14 @@ async fn main() {
             .and_then(|p| game::load_zone(&p, &default_zone, game::ZoneSidecar::default()));
         match loaded {
             Some(z) => {
-                let _ = config_store::save_zone(
-                    db.pool(),
-                    &default_zone,
-                    &game::ZoneSidecar::default(),
-                )
-                .await;
+                if hub_snapshot.is_none() {
+                    let _ = config_store::save_zone(
+                        db.pool(),
+                        &default_zone,
+                        &game::ZoneSidecar::default(),
+                    )
+                    .await;
+                }
                 zones.insert(default_zone.clone(), z);
             }
             None => {
@@ -218,7 +248,11 @@ async fn main() {
         })
         .collect();
     let game = game::Game::new(zones, default_zone, db.clone(), sessions, map_files);
-    let admin_rx = admin::spawn(db);
-    tokio::spawn(game.run(events, admin_rx));
+    let (admin_tx, admin_rx) = tokio::sync::mpsc::unbounded_channel();
+    admin::spawn(db, admin_tx.clone(), hub_cfg.is_some());
+    if let Some(cfg) = hub_cfg {
+        hubclient::spawn_runtime(cfg, hubclient::cache_path(&db_path), admin_tx);
+    }
+    tokio::spawn(game.run(events, Some(admin_rx)));
     Arc::new(gw).listen(&addr).await.expect("网关监听失败");
 }
