@@ -1317,7 +1317,17 @@ impl App {
             self.tab = [Tab::Login, Tab::Register, Tab::Reset][sel];
             self.status.clear();
         }
-        ui.add_space(10.0);
+        ui.add_space(if matches!(self.tab, Tab::Register) {
+            8.0
+        } else {
+            10.0
+        });
+        // 注册页 5 个字段, 常规密度会高过主区压到底部状态条 — 用紧凑档
+        let (vmargin, fgap) = if matches!(self.tab, Tab::Register) {
+            (4, 1.0)
+        } else {
+            (7, 4.0)
+        };
         let field = |ui: &mut egui::Ui, label: &str, buf: &mut String, pw: bool| {
             ui.label(egui::RichText::new(label).size(12.0).color(INK_WEAK));
             ui.add_space(1.0);
@@ -1326,9 +1336,9 @@ impl App {
                     .password(pw)
                     .desired_width(f32::INFINITY)
                     .font(egui::FontId::proportional(14.0))
-                    .margin(egui::Margin::symmetric(10, 7)),
+                    .margin(egui::Margin::symmetric(10, vmargin)),
             );
-            ui.add_space(4.0);
+            ui.add_space(fgap);
         };
         field(ui, "账号", &mut self.user, false);
         match self.tab {
@@ -1346,14 +1356,23 @@ impl App {
                 field(ui, "新密码", &mut self.pass, true);
             }
         }
-        ui.add_space(8.0);
+        ui.add_space(if matches!(self.tab, Tab::Register) {
+            6.0
+        } else {
+            8.0
+        });
         let label = match self.tab {
             Tab::Login => "登 录",
             Tab::Register => "注 册",
             Tab::Reset => "重 设 密 码",
         };
         let can = !self.busy && !self.user.is_empty();
-        if gold_button(ui, label, egui::vec2(ui.available_width(), 40.0), can).clicked() && can {
+        let btn_h = if matches!(self.tab, Tab::Register) {
+            36.0
+        } else {
+            40.0
+        };
+        if gold_button(ui, label, egui::vec2(ui.available_width(), btn_h), can).clicked() && can {
             match self.tab {
                 Tab::Login => self.auth(AuthAction::Login {
                     user: self.user.clone(),
