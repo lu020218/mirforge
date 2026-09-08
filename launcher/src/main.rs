@@ -880,7 +880,17 @@ impl eframe::App for App {
                         });
                         ui.add_space(6.0);
                         ui.allocate_ui(egui::vec2(right_w, body_h), |ui| {
-                            self.draw_auth(ui);
+                            // 外层是水平布局, 先转竖排再做垂直居中
+                            ui.vertical(|ui| {
+                                // 卡高随页签变化, 取上一帧量得的高度算留白
+                                let id = egui::Id::new("auth-card-h");
+                                let h: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(body_h);
+                                ui.add_space(((body_h - h) / 2.0).max(0.0));
+                                let top = ui.cursor().top();
+                                self.draw_auth(ui);
+                                let measured = ui.cursor().top() - top;
+                                ui.ctx().data_mut(|d| d.insert_temp(id, measured));
+                            });
                         });
                     });
                 });
@@ -1044,14 +1054,6 @@ impl App {
                         .strong()
                         .color(INK),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new(&self.servers[self.settings.last_server].name)
-                            .small()
-                            .color(INK_WEAK),
-                    );
-                });
             });
             ui.add_space(4.0);
             egui::ScrollArea::vertical()
