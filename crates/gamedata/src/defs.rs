@@ -161,7 +161,7 @@ pub struct SkillsCfg {
 }
 
 /// 全部数据配置 (物品/技能/任务)。内置默认与 server/data/*.json 同源
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameData {
     pub items: Vec<ItemDef>,
     pub skills: SkillsCfg,
@@ -591,4 +591,13 @@ fn default_true() -> bool {
 
 fn one_u32() -> u32 {
     1
+}
+
+/// hub → 区服的全量配置快照 (rev 单调递增; 区服据此判断是否需要拉取)
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub rev: i64,
+    pub data: GameData,
+    /// 区域边车: 地图文件名(小写) → 边车
+    pub zones: std::collections::HashMap<String, ZoneSidecar>,
 }

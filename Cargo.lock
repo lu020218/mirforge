@@ -4040,6 +4040,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mirforge-hub"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "gamedata",
+ "image",
+ "mir-formats",
+ "serde",
+ "serde_json",
+ "sim",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "mirforge-launcher"
 version = "0.1.0"
 dependencies = [

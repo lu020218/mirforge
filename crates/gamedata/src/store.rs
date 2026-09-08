@@ -1293,3 +1293,39 @@ pub async fn seed_from_files(
     }
     Ok(())
 }
+
+// ─────────── 配置版本号 (hub 专用; 每次保存 +1, 区服凭它判断是否拉取) ───────────
+
+/// 建 rev 表 (幂等, 初始 0)
+pub async fn ensure_rev(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS cfg_rev (id INTEGER PRIMARY KEY CHECK (id = 1), rev INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')")
+        .execute(pool)
+        .await?;
+    sqlx::query("INSERT OR IGNORE INTO cfg_rev (id, rev) VALUES (1, 0)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_rev(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query("SELECT rev FROM cfg_rev WHERE id = 1")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get::<i64, _>(0))
+}
+
+/// rev+1 并返回新值 (配置保存成功后调用)
+pub async fn bump_rev(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query("UPDATE cfg_rev SET rev = rev + 1, updated_at = datetime('now') WHERE id = 1")
+        .execute(pool)
+        .await?;
+    get_rev(pool).await
+}
+
+/// 组装全量快照 (配置 + 区域边车 + 当前 rev)
+pub async fn load_snapshot(pool: &SqlitePool) -> Result<crate::defs::Snapshot, sqlx::Error> {
+    let data = load_game_data(pool).await?;
+    let zones = load_zone_sidecars(pool).await?.into_iter().collect();
+    let rev = get_rev(pool).await?;
+    Ok(crate::defs::Snapshot { rev, data, zones })
+}
