@@ -436,8 +436,9 @@ fn vgrad_rounded(
     let (r_top, r_bot) = (r_top.min(h * 0.25), r_bot.min(h * 0.25));
     // 圆角帽高度必须 >= 2×半径: egui 会把圆角半径钳到矩形短边的一半,
     // 帽子太矮圆角就被削掉一半, 填充的弧比描边的弧小一圈 (四角看着像
-    // 内圈多了一条棕线)。帽内用该段中点色填充 —— 本渐变跨度极小,
-    // 这点阶跃肉眼不可见。
+    // 内圈多了一条棕线)。帽内必须用「与中段接缝处」的颜色填充 (顶帽取
+    // 帽底色, 底帽取帽顶色), 接缝才无阶跃; 若取帽中点色, 快速渐变
+    // (如顶部氛围光) 会在帽边缘留下一条清晰的横向色带分界线。
     let (cap_t, cap_b) = (r_top * 2.0, r_bot * 2.0);
     if r_top > 0.5 {
         painter.rect_filled(
@@ -448,7 +449,7 @@ fn vgrad_rounded(
                 sw: 0,
                 se: 0,
             },
-            lerp_c(top, bottom, cap_t * 0.5 / h),
+            lerp_c(top, bottom, cap_t / h),
         );
     }
     if r_bot > 0.5 {
@@ -460,7 +461,7 @@ fn vgrad_rounded(
                 sw: r_bot as u8,
                 se: r_bot as u8,
             },
-            lerp_c(top, bottom, (h - cap_b * 0.5) / h),
+            lerp_c(top, bottom, (h - cap_b) / h),
         );
     }
     let mid = egui::Rect::from_min_max(
