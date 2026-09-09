@@ -245,6 +245,72 @@ pub(crate) fn fx_step(
     }
 }
 
+/// 冲锋拖尾: 跟随施放者的方向性循环特效 (野蛮冲撞火焰冲击波)。
+/// fly 段 16 向×10 槽, 8 向素材放偶数行 (row = dir×2); 100ms/帧循环,
+/// 撞击包到达或走满时限即灭。
+#[derive(Component)]
+pub(crate) struct DashTrail {
+    pub fx: String,
+    /// 施放者: None = 本地玩家, Some(id) = 旁观远端
+    pub caster: Option<String>,
+    /// fly 段行基址 (fxl::FLY + row×SLOT)
+    pub row_base: i32,
+    pub born: f64,
+    pub until: f64,
+}
+
+pub(crate) fn dash_trail_step(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut world: ResMut<World>,
+    mut images: ResMut<Assets<Image>>,
+    remotes: Res<Remotes>,
+    q_player: Query<&Player>,
+    mut q: Query<(
+        Entity,
+        &mut Transform,
+        &mut Sprite,
+        &mut Visibility,
+        &DashTrail,
+    )>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (e, mut tf, mut sp, mut vis, tr) in q.iter_mut() {
+        if now >= tr.until {
+            commands.entity(e).despawn();
+            continue;
+        }
+        // 跟随施放者当前位置
+        let pos = match &tr.caster {
+            None => q_player.get_single().ok().map(|p| p.pos),
+            Some(id) => remotes.0.get(id).map(|r| r.pos),
+        };
+        let Some(pos) = pos else {
+            commands.entity(e).despawn();
+            continue;
+        };
+        let layer = world.fx_layer(&tr.fx);
+        let n = world.block_len(layer, tr.row_base, fxl::SLOT).min(10);
+        if n == 0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let k = (((now - tr.born) / 0.1) as i32) % n as i32;
+        if let Some(f) = world.frame_ex(layer, 0, tr.row_base + k, true) {
+            world.ensure_pages(&mut images);
+            sp.image = world.pages[f.page].clone();
+            sp.rect = Some(f.rect);
+            sp.anchor = Anchor::TopLeft;
+            let px = pos.x as f32 * CELL_W - CELL_W / 2.0;
+            let py = pos.y as f32 * CELL_H - CELL_H / 2.0;
+            tf.translation.x = px + f.off.x;
+            tf.translation.y = -(py + f.off.y);
+            tf.translation.z = 690.0;
+            *vis = Visibility::Inherited;
+        }
+    }
+}
+
 /// 技能弹体步进: 直线插值飞行, 循环飞行帧; 到达 (或该向无帧) 时播命中段
 pub(crate) fn projectile_step(
     mut commands: Commands,

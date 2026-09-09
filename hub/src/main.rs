@@ -88,6 +88,9 @@ async fn init_config(pool: &SqlitePool) {
     gamedata::store::migrate_yeman_charge(pool)
         .await
         .expect("迁移失败");
+    gamedata::store::migrate_yeman_fx(pool)
+        .await
+        .expect("迁移失败");
     if gamedata::store::is_empty(pool).await.unwrap_or(false) {
         let data_dir = std::env::var("MIRFORGE_DATA")
             .map(std::path::PathBuf::from)

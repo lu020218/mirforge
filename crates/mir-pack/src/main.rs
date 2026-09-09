@@ -38,6 +38,12 @@ fn main() {
             Path::new(&args[2]),
             &args[3..].iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         ),
+        Some("extract-range") if args.len() == 5 => extract_range(
+            Path::new(&args[1]),
+            args[2].parse().unwrap_or(0),
+            args[3].parse().unwrap_or(1),
+            Path::new(&args[4]),
+        ),
         Some("extract") if args.len() == 4 => extract(
             Path::new(&args[1]),
             args[2].parse().unwrap_or(0),
@@ -569,6 +575,37 @@ fn extract(path: &Path, frame: usize, out: &Path) -> Result<(), AnyErr> {
         "帧 {frame} ({}x{}) → {}",
         img.width,
         img.height,
+        out.display()
+    );
+    Ok(())
+}
+
+/// 帧段导出: PNG + Placements/<帧号>.txt (锚点), 供改布局重打包
+fn extract_range(path: &Path, start: usize, n: usize, out: &Path) -> Result<(), AnyErr> {
+    let lib = MflLib::parse(std::fs::read(path)?)?;
+    std::fs::create_dir_all(out.join("Placements"))?;
+    let mut ok = 0usize;
+    for i in start..start + n {
+        let Ok(Some(img)) = lib.image(i) else {
+            continue;
+        };
+        let buf = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.rgba.clone())
+            .ok_or("尺寸不符")?;
+        buf.save(out.join(format!("{i}.png")))?;
+        std::fs::write(
+            out.join("Placements").join(format!("{i}.txt")),
+            format!(
+                "{}
+{}
+",
+                img.offset_x, img.offset_y
+            ),
+        )?;
+        ok += 1;
+    }
+    println!(
+        "导出 {start}..{} 共 {ok} 实帧 → {}",
+        start + n,
         out.display()
     );
     Ok(())

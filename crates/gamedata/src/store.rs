@@ -1423,6 +1423,22 @@ pub async fn migrate_kind_s1(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// 野蛮冲撞切新购冲锋素材 (幂等): fly 段 8 向拖尾 + hit 段撞击爆裂
+/// 均在 magic/yeman.mfl; 原 '4' 库保留作备份
+pub async fn migrate_yeman_fx(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let n = sqlx::query(
+        "UPDATE cfg_skills SET fx = 'yeman', fx_base = 170, fx_frames = 8
+         WHERE id = 'yeman' AND fx = '4'",
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if n > 0 {
+        tracing::info!("野蛮冲撞已切换到专属素材 magic/yeman.mfl (拖尾+撞击)");
+    }
+    Ok(())
+}
+
 /// 野蛮冲撞切位移类型 (幂等; 仅在仍是默认单体伤害时切, 不覆盖手工调整)
 pub async fn migrate_yeman_charge(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let n = sqlx::query(

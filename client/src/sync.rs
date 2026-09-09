@@ -12,6 +12,7 @@ pub(crate) fn net_pump(
     mut next: ResMut<NextState<Screen>>,
     screen: Res<State<Screen>>,
     mut q_player: Query<&mut Player>,
+    q_trails: Query<(Entity, &crate::fx::DashTrail)>,
 ) {
     let mut events = Vec::new();
     if let Some(c) = &net.client {
@@ -237,6 +238,7 @@ pub(crate) fn net_pump(
                 ServerMessage::SkillEffect {
                     caster_id,
                     skill_id,
+                    kind,
                     position,
                     targets,
                     level,
@@ -260,26 +262,60 @@ pub(crate) fn net_pump(
                             };
                         }
                     }
-                    // 自己的冲锋类技能: 起本地位移预表现 (方向 = 施放点 → 目标点,
-                    // 与服务端同参同速; 见 player_move 的冲锋分支)
-                    if Some(&caster_id) == net.my_id.as_ref() {
-                        let is_charge = net
-                            .skills
-                            .iter()
-                            .any(|sk| sk.id == skill_id && sk.kind == "charge");
-                        if is_charge {
-                            if let (Some(sp), Ok(mut p)) = (src, q_player.get_single_mut()) {
+                    // 冲锋类分流: 起手包 (anim 非空) 起跟随拖尾 + 本地位移
+                    // 预表现; 撞击包 (anim 空) 灭拖尾后走通用命中特效
+                    if kind == "charge" {
+                        let mine = Some(&caster_id) == net.my_id.as_ref();
+                        if !anim.is_empty() {
+                            // 起手: 本地玩家同参起冲锋 (见 player_move 冲锋分支)
+                            let range = net
+                                .skills
+                                .iter()
+                                .find(|sk| sk.id == skill_id)
+                                .map(|sk| sk.range)
+                                .unwrap_or(5.0);
+                            let mut dashed = false;
+                            if let Some(sp) = src {
                                 let d = DVec2::new(position.x - sp.x, position.y - sp.y);
                                 if d.length() > 0.05 {
-                                    let range = net
-                                        .skills
-                                        .iter()
-                                        .find(|sk| sk.id == skill_id)
-                                        .map(|sk| sk.range)
-                                        .unwrap_or(5.0);
-                                    p.dash_dir = d.normalize();
-                                    p.dash_left = range;
+                                    if mine {
+                                        if let Ok(mut p) = q_player.get_single_mut() {
+                                            p.dash_dir = d.normalize();
+                                            p.dash_left = range;
+                                        }
+                                    }
+                                    // 拖尾: 8 向素材放 fly 段偶数行 (row = dir×2)
+                                    if !fx.is_empty() {
+                                        let row = (sim::dir8_from(d.x, d.y) as i32) * 2;
+                                        commands.spawn((
+                                            Sprite::default(),
+                                            Transform::from_xyz(0.0, 0.0, 690.0),
+                                            Visibility::Hidden,
+                                            crate::fx::DashTrail {
+                                                fx: fx.clone(),
+                                                caster: (!mine).then(|| caster_id.clone()),
+                                                row_base: fxl::FLY + row * fxl::SLOT,
+                                                born: time.elapsed_secs_f64(),
+                                                until: time.elapsed_secs_f64()
+                                                    + range / sim::DASH_SPEED
+                                                    + 0.25,
+                                            },
+                                        ));
+                                    }
+                                    dashed = true;
                                 }
+                            }
+                            let _ = dashed;
+                            continue; // 起手包不走通用命中特效
+                        }
+                        // 撞击包: 灭该施放者的拖尾, 继续走通用命中特效
+                        for (te, tr) in q_trails.iter() {
+                            let hit = match &tr.caster {
+                                None => mine,
+                                Some(id) => id == &caster_id,
+                            };
+                            if hit {
+                                commands.entity(te).despawn();
                             }
                         }
                     }

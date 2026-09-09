@@ -265,12 +265,14 @@ impl Game {
                 }
             }
         }
-        // 特效广播 (客户端按 skill_id 播放)。冲锋类起手不播命中特效
-        // (fx 置空, 客户端只据此起冲锋预表现), 撞击时刻另发一条带特效的
-        let cast_fx = if matches!(def.kind, SkillKind::Charge { .. }) {
-            String::new()
-        } else {
-            def.fx.clone()
+        // 特效广播 (客户端按 kind 分流: 冲锋起手包起跟随拖尾,
+        // 撞击时刻另发一条命中包)
+        let kind_name = match &def.kind {
+            SkillKind::Damage(_) => "damage",
+            SkillKind::Aoe { .. } => "aoe",
+            SkillKind::Heal => "heal",
+            SkillKind::Dot { .. } => "dot",
+            SkillKind::Charge { .. } => "charge",
         };
         let conns = self.zone_conns(&zone);
         broadcast_to(
@@ -279,6 +281,7 @@ impl Game {
             ServerMessage::SkillEffect {
                 caster_id: char_id.clone(),
                 skill_id: def.id.to_string(),
+                kind: kind_name.into(),
                 position: Position {
                     x: center.0,
                     y: center.1,
@@ -289,7 +292,7 @@ impl Game {
                     .chain(dot_target.iter().map(|(id, _, _)| id.clone()))
                     .collect(),
                 level: skill_level,
-                fx: cast_fx,
+                fx: def.fx.clone(),
                 fx_base: def.fx_base,
                 fx_frames: def.fx_frames,
                 anim: def.anim.clone(),
@@ -767,6 +770,7 @@ impl super::Game {
                     ServerMessage::SkillEffect {
                         caster_id: id.clone(),
                         skill_id: dash.skill_id.clone(),
+                        kind: "charge".into(),
                         position: Position { x: ix, y: iy },
                         targets: vec![mon_id.clone()],
                         level: dash.skill_level,

@@ -179,7 +179,7 @@ fn main() {
                 player_sprite,
                 remote_step,
                 npc_step,
-                (float_damage, fx_step, projectile_step),
+                (float_damage, fx_step, projectile_step, fx::dash_trail_step),
                 upload_dirty_pages,
                 net_send,
                 hud::update.run_if(in_state(Screen::InGame)),

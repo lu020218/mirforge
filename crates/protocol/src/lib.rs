@@ -275,6 +275,10 @@ pub enum ServerMessage {
     SkillEffect {
         caster_id: String,
         skill_id: String,
+        /// 机制类型 ("damage"/"aoe"/…/"charge"); 客户端按它分流表现
+        /// (冲锋: 起手包起跟随拖尾, 不走通用命中特效)
+        #[serde(default)]
+        kind: String,
         position: Position,
         targets: Vec<String>,
         /// 施放者的技能修炼等级 (4 级起客户端播强化特效)
