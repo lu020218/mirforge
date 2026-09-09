@@ -97,7 +97,7 @@ pub(crate) fn cast_skills(
         let found = remotes
             .0
             .iter()
-            .filter(|(_, r)| r.image.is_some() && r.anim != 4)
+            .filter(|(_, r)| r.image.is_some() && r.anim != 4 && r.owner.is_none())
             .map(|(id, r)| (id.clone(), (r.pos - p.pos).length(), r.pos))
             .filter(|(_, d, _)| *d <= s.range)
             .min_by(|a, b| a.1.total_cmp(&b.1));
@@ -156,7 +156,7 @@ pub(crate) fn dev_cast(
         let Some(t) = remotes
             .0
             .iter()
-            .filter(|(_, r)| r.image.is_some() && r.anim != 4)
+            .filter(|(_, r)| r.image.is_some() && r.anim != 4 && r.owner.is_none())
             .map(|(tid, r)| (tid.clone(), (r.pos - p.pos).length(), r.pos))
             .filter(|(_, d, _)| *d <= s.range)
             .min_by(|a, b| a.1.total_cmp(&b.1))

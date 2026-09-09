@@ -103,8 +103,45 @@ impl Game {
         }
         // 怪物 AI (有玩家在线才跑)
         if !self.players.is_empty() {
-            let hits = self.monster_ai(now);
-            self.apply_monster_hits(hits).await;
+            let ai = self.monster_ai(now);
+            self.apply_monster_hits(ai.player_hits).await;
+            // 宠物打怪: 归属主人 (经验/掉落/任务与亲手击杀一致)
+            for (owner, mon_id, dmg) in ai.pet_attacks {
+                self.hit_monster(&owner, &mon_id, dmg).await;
+            }
+            // 敌怪打宠物
+            for (pet_id, dmg) in ai.pet_taken {
+                self.damage_pet(&pet_id, dmg).await;
+            }
+        }
+        // 宠物生命周期: 到期 / 主人离线或不同区 → 消散
+        {
+            let owner_zone: std::collections::HashMap<String, (bool, String)> = self
+                .players
+                .iter()
+                .map(|(id, p)| (id.clone(), (p.connected, p.zone.clone())))
+                .collect();
+            let gone: Vec<(String, String)> = self
+                .monsters
+                .iter()
+                .filter(|m| {
+                    let Some(owner) = &m.owner else { return false };
+                    if m.summon_until.is_some_and(|t| now >= t) {
+                        return true;
+                    }
+                    match owner_zone.get(owner) {
+                        Some((true, z)) => z != &m.zone,
+                        _ => true,
+                    }
+                })
+                .map(|m| (m.id.clone(), m.zone.clone()))
+                .collect();
+            if !gone.is_empty() {
+                let ids: std::collections::HashSet<&String> =
+                    gone.iter().map(|(id, _)| id).collect();
+                self.monsters.retain(|m| !ids.contains(&m.id));
+                self.broadcast_removed(&gone).await;
+            }
         }
         // 重生落点要避开玩家, 先抄一份位置快照 (下面 monsters 是可变借用)
         let alive_players: Vec<(String, f64, f64)> = self
@@ -118,12 +155,22 @@ impl Game {
         for m in self.monsters.iter_mut() {
             if m.dying_until.is_some_and(|t| now >= t) {
                 m.dying_until = None;
-                m.respawn_at = Some(now + m.respawn);
-                // 尸体躺到重生时刻 (上限 CORPSE_CAP), 期间继续广播 die 姿态
-                m.corpse_until = Some(now + m.respawn.min(CORPSE_CAP));
+                if m.owner.is_some() {
+                    // 宠物不重生: 尸体躺一小段后彻底移除 (下方统一清理)
+                    m.corpse_until = Some(now + Duration::from_secs(4));
+                } else {
+                    m.respawn_at = Some(now + m.respawn);
+                    // 尸体躺到重生时刻 (上限 CORPSE_CAP), 期间继续广播 die 姿态
+                    m.corpse_until = Some(now + m.respawn.min(CORPSE_CAP));
+                }
             }
             if m.corpse_until.is_some_and(|t| now >= t) {
                 m.corpse_until = None;
+            }
+            // 宠物死透: 标记待移除 (respawn_at 恒 None, removed_sent 挪用为标记)
+            if m.owner.is_some() && m.hp <= 0 && m.dying_until.is_none() && m.corpse_until.is_none()
+            {
+                m.removed_sent = true;
             }
             if m.respawn_at.is_some_and(|t| now >= t) {
                 m.respawn_at = None;
@@ -142,6 +189,21 @@ impl Game {
                 m.y = hy;
                 m.dir = 4;
                 m.removed_sent = false;
+            }
+        }
+        // 死透宠物移除 (removed 广播 + 出列)
+        {
+            let dead_pets: Vec<(String, String)> = self
+                .monsters
+                .iter()
+                .filter(|m| m.owner.is_some() && m.removed_sent)
+                .map(|m| (m.id.clone(), m.zone.clone()))
+                .collect();
+            if !dead_pets.is_empty() {
+                let ids: std::collections::HashSet<&String> =
+                    dead_pets.iter().map(|(id, _)| id).collect();
+                self.monsters.retain(|m| !ids.contains(&m.id));
+                self.broadcast_removed(&dead_pets).await;
             }
         }
         // 20Hz 广播, 按区域分组 (只看得见同区域的人)
@@ -175,6 +237,7 @@ impl Game {
                     image_base: None,
                     poisoned: None,
                     statuses: None,
+                    owner: None,
                 })
                 .collect();
             if entities.is_empty() {
@@ -204,6 +267,7 @@ impl Game {
                                 image_base: None,
                                 poisoned: None,
                                 statuses: None,
+                                owner: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
@@ -238,6 +302,7 @@ impl Game {
                             image_base: Some(m.image_base),
                             poisoned: None,
                             statuses,
+                            owner: m.owner.clone(),
                         })
                     }),
             );

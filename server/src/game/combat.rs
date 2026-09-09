@@ -1,6 +1,15 @@
 //! 战斗结算: 普攻/技能施放/经验/怪物 AI(自 game.rs 机械拆出,行为不变)。
 use super::*;
 
+/// AI 输出: 玩家受击 / 宠物打怪 (归属主人) / 宠物被打
+pub(super) struct AiOut {
+    pub(super) player_hits: Vec<(String, i32)>,
+    /// (主人 char_id, 敌怪 id, 伤害)
+    pub(super) pet_attacks: Vec<(String, String, i32)>,
+    /// (宠物 id, 伤害)
+    pub(super) pet_taken: Vec<(String, i32)>,
+}
+
 impl Game {
     /// 普攻结算：射程/冷却校验 → 扣血 → 飘字广播 → 击杀经验/升级/尸体与重生
     pub(super) async fn handle_attack(&mut self, conn_id: &str, target_id: &str) {
@@ -158,6 +167,14 @@ impl Game {
                 return;
             }
         }
+        // 召唤: 模板必须存在 (扣蓝前拒绝, 配置错误不白扣)
+        if let SkillKind::Summon { ref template, .. } = def.kind {
+            if !data().monsters.iter().any(|m| m.id == *template) {
+                self.notify(conn_id, "召唤模板未配置 (后台「怪物设置」先建)")
+                    .await;
+                return;
+            }
+        }
         // 施法中心: 自我施法 = 自身; 否则目标怪 (射程校验)。
         // 目标/射程无效在扣费之前拒绝 —— 白扣蓝进冷却是 bug
         let center = if def.self_cast {
@@ -210,6 +227,8 @@ impl Game {
         let train_mult = 1.0 + def.level_bonus * skill_level as f64;
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
         let mut dot_target: Option<(String, i32, f64)> = None;
+        // 召唤: 烟雾特效播在骷髅出生点 (素材语义: 宠物从烟雾中现身)
+        let mut summon_fx_pos: Option<(f64, f64)> = None;
         match def.kind {
             SkillKind::Damage(mult) => {
                 if let Some(tid) = &target_id {
@@ -239,6 +258,29 @@ impl Game {
                 if let Some(tid) = &target_id {
                     let tick_dmg = (dmg_base as f64 * tick_mult * train_mult).max(1.0) as i32;
                     dot_target = Some((tid.clone(), tick_dmg, secs));
+                }
+            }
+            SkillKind::Summon {
+                ref template,
+                count,
+                secs,
+            } => {
+                // 重复施放 = 换新宠 (先消散旧的)
+                self.despawn_pets(&char_id).await;
+                let spawned = self
+                    .spawn_pets(
+                        &char_id,
+                        &zone,
+                        (px, py),
+                        template,
+                        count,
+                        secs,
+                        skill_level,
+                        train_mult,
+                    )
+                    .await;
+                if let Some(pos) = spawned {
+                    summon_fx_pos = Some(pos);
                 }
             }
             SkillKind::Charge { mult, stun_secs } => {
@@ -273,6 +315,7 @@ impl Game {
             SkillKind::Heal => "heal",
             SkillKind::Dot { .. } => "dot",
             SkillKind::Charge { .. } => "charge",
+            SkillKind::Summon { .. } => "summon",
         };
         let conns = self.zone_conns(&zone);
         broadcast_to(
@@ -282,9 +325,9 @@ impl Game {
                 caster_id: char_id.clone(),
                 skill_id: def.id.to_string(),
                 kind: kind_name.into(),
-                position: Position {
-                    x: center.0,
-                    y: center.1,
+                position: {
+                    let (fx_x, fx_y) = summon_fx_pos.unwrap_or(center);
+                    Position { x: fx_x, y: fx_y }
                 },
                 targets: hit_ids
                     .iter()
@@ -404,10 +447,14 @@ impl Game {
         self.send_player_status(char_id).await;
     }
 
-    /// 怪物 AI: 0.5s 决策 (仇恨/追击/拴绳/游荡) + 每 tick 连续移动。
-    /// 返回攻击动画到点的命中结算 (角色 id, 伤害)。
-    pub(super) fn monster_ai(&mut self, now: Instant) -> Vec<(String, i32)> {
-        let mut hits = Vec::new();
+    /// AI 决策与移动。敌怪索敌玩家与宠物; 宠物 (owner Some) 跟随主人、
+    /// 攻击附近敌怪, 击杀归属主人。
+    pub(super) fn monster_ai(&mut self, now: Instant) -> AiOut {
+        let mut out = AiOut {
+            player_hits: Vec::new(),
+            pet_attacks: Vec::new(),
+            pet_taken: Vec::new(),
+        };
         let dt = TICK.as_secs_f64();
         // 决策所需的玩家位置快照 (避免与 monsters 可变借用冲突)
         let players: Vec<(String, String, f64, f64)> = self
@@ -415,6 +462,13 @@ impl Game {
             .iter()
             .filter(|(_, p)| p.connected)
             .map(|(id, p)| (id.clone(), p.zone.clone(), p.x, p.y))
+            .collect();
+        // 怪物位置快照 (宠物索敌 / 敌怪打宠物 都要跨条目读)
+        let mon_snap: Vec<(String, String, f64, f64, bool)> = self
+            .monsters
+            .iter()
+            .filter(|m| m.alive())
+            .map(|m| (m.id.clone(), m.zone.clone(), m.x, m.y, m.owner.is_some()))
             .collect();
         // NPC 位置快照 (同样避免借用冲突)
         let npc_pos: Vec<(String, f64, f64)> = data()
@@ -439,6 +493,7 @@ impl Game {
             if m.stunned(now) {
                 continue;
             }
+            let is_pet = m.owner.is_some();
             // 攻击动画期间原地不动; 到点结算命中 (目标仍在范围内才算打中)
             if let Some(t) = m.attack_until {
                 if now < t {
@@ -446,51 +501,131 @@ impl Game {
                 }
                 m.attack_until = None;
                 if let Some(target) = m.pending_hit.take() {
-                    if let Some((_, _, px, py)) = players.iter().find(|(id, ..)| id == &target) {
+                    if is_pet {
+                        // 宠物打怪: 归属主人 (经验/掉落/任务)
+                        if let Some((_, _, tx, ty, _)) =
+                            mon_snap.iter().find(|(id, ..)| id == &target)
+                        {
+                            let d = ((m.x - tx).powi(2) + (m.y - ty).powi(2)).sqrt();
+                            if d <= MONSTER_HIT_RANGE {
+                                if let Some(owner) = &m.owner {
+                                    out.pet_attacks.push((owner.clone(), target, m.damage));
+                                }
+                            }
+                        }
+                    } else if let Some((_, _, px, py)) =
+                        players.iter().find(|(id, ..)| id == &target)
+                    {
                         let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
                         if d <= MONSTER_HIT_RANGE {
-                            hits.push((target, m.damage));
+                            out.player_hits.push((target, m.damage));
+                        }
+                    } else if let Some((_, _, tx, ty, _)) =
+                        mon_snap.iter().find(|(id, ..)| id == &target)
+                    {
+                        // 敌怪打宠物
+                        let d = ((m.x - tx).powi(2) + (m.y - ty).powi(2)).sqrt();
+                        if d <= MONSTER_HIT_RANGE {
+                            out.pet_taken.push((target, m.damage));
                         }
                     }
                 }
             }
             if now >= m.next_decide {
                 m.next_decide = now + Duration::from_millis(500);
-                let home_d = ((m.x - m.home.0).powi(2) + (m.y - m.home.1).powi(2)).sqrt();
-                let nearest = players
-                    .iter()
-                    .filter(|(_, z, _, _)| z == &m.zone)
-                    .map(|(id, _, px, py)| {
-                        let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
-                        (d, id.clone(), *px, *py)
-                    })
-                    .min_by(|a, b| a.0.total_cmp(&b.0));
-                if home_d > LEASH_RANGE {
-                    // 拉离过远 → 脱战回家
-                    m.chasing = false;
-                    m.target = Some(m.home);
-                } else if let Some((d, pid, px, py)) =
-                    nearest.filter(|(d, ..)| *d < AGGRO_RANGE && !m.passive)
-                {
-                    if d < ATTACK_RANGE {
-                        m.dir = dir8_from(px - m.x, py - m.y) as u8;
+                if is_pet {
+                    // ── 宠物决策: 主人为锚, 敌怪为目标 ──
+                    let owner_pos = m.owner.as_ref().and_then(|o| {
+                        players
+                            .iter()
+                            .find(|(id, z, _, _)| id == o && z == &m.zone)
+                            .map(|(_, _, x, y)| (*x, *y))
+                    });
+                    let Some((ox, oy)) = owner_pos else {
+                        continue; // 主人不在本区/离线: tick 清理负责消散
+                    };
+                    let owner_d = ((m.x - ox).powi(2) + (m.y - oy).powi(2)).sqrt();
+                    let nearest_enemy = mon_snap
+                        .iter()
+                        .filter(|(id, z, _, _, pet)| !pet && z == &m.zone && id != &m.id)
+                        .map(|(id, _, x, y, _)| {
+                            let d = ((m.x - x).powi(2) + (m.y - y).powi(2)).sqrt();
+                            (d, id.clone(), *x, *y)
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0));
+                    if owner_d > LEASH_RANGE {
+                        // 离主人太远: 放弃战斗回到主人身边
+                        m.chasing = true;
+                        m.target = Some((ox, oy));
+                    } else if let Some((d, tid, tx, ty)) =
+                        nearest_enemy.filter(|(d, ..)| *d < AGGRO_RANGE)
+                    {
+                        if d < ATTACK_RANGE {
+                            m.dir = dir8_from(tx - m.x, ty - m.y) as u8;
+                            m.target = None;
+                            m.chasing = false;
+                            if now >= m.next_attack {
+                                m.attack_until = Some(now + ATTACK_ANIM);
+                                m.next_attack = now + ATTACK_COOLDOWN;
+                                m.pending_hit = Some(tid);
+                            }
+                        } else {
+                            m.chasing = true;
+                            m.target = Some((tx, ty));
+                        }
+                    } else if owner_d > 3.0 {
+                        // 无敌情: 跟在主人身边
+                        m.chasing = true;
+                        m.target = Some((ox, oy));
+                    } else {
                         m.target = None;
                         m.chasing = false;
-                        if now >= m.next_attack {
-                            m.attack_until = Some(now + ATTACK_ANIM);
-                            m.next_attack = now + ATTACK_COOLDOWN;
-                            m.pending_hit = Some(pid);
-                        }
-                    } else {
-                        m.chasing = true;
-                        m.target = Some((px, py));
                     }
-                } else if m.target.is_none() && rolls[mi] < 0.15 {
-                    // 游荡: 家附近随机踱步 (同一随机数派生角度, 低质量即可)
-                    let ang = rolls[mi] * 41.0;
-                    let want = (m.home.0 + ang.sin() * m.roam, m.home.1 + ang.cos() * m.roam);
-                    m.chasing = false;
-                    m.target = Some(want);
+                } else {
+                    // ── 敌怪决策: 玩家与宠物都是猎物 ──
+                    let home_d = ((m.x - m.home.0).powi(2) + (m.y - m.home.1).powi(2)).sqrt();
+                    let nearest = players
+                        .iter()
+                        .filter(|(_, z, _, _)| z == &m.zone)
+                        .map(|(id, _, px, py)| (id.clone(), *px, *py))
+                        .chain(
+                            mon_snap
+                                .iter()
+                                .filter(|(_, z, _, _, pet)| *pet && z == &m.zone)
+                                .map(|(id, _, x, y, _)| (id.clone(), *x, *y)),
+                        )
+                        .map(|(id, px, py)| {
+                            let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+                            (d, id, px, py)
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0));
+                    if home_d > LEASH_RANGE {
+                        // 拉离过远 → 脱战回家
+                        m.chasing = false;
+                        m.target = Some(m.home);
+                    } else if let Some((d, pid, px, py)) =
+                        nearest.filter(|(d, ..)| *d < AGGRO_RANGE && !m.passive)
+                    {
+                        if d < ATTACK_RANGE {
+                            m.dir = dir8_from(px - m.x, py - m.y) as u8;
+                            m.target = None;
+                            m.chasing = false;
+                            if now >= m.next_attack {
+                                m.attack_until = Some(now + ATTACK_ANIM);
+                                m.next_attack = now + ATTACK_COOLDOWN;
+                                m.pending_hit = Some(pid);
+                            }
+                        } else {
+                            m.chasing = true;
+                            m.target = Some((px, py));
+                        }
+                    } else if m.target.is_none() && rolls[mi] < 0.15 {
+                        // 游荡: 家附近随机踱步 (同一随机数派生角度, 低质量即可)
+                        let ang = rolls[mi] * 41.0;
+                        let want = (m.home.0 + ang.sin() * m.roam, m.home.1 + ang.cos() * m.roam);
+                        m.chasing = false;
+                        m.target = Some(want);
+                    }
                 }
             }
             // 连续移动 (滑行走 sim, 与玩家同源)
@@ -539,7 +674,7 @@ impl Game {
                 }
             }
         }
-        hits
+        out
     }
 
     /// 怪物命中玩家: 扣血/飘字/死亡回城
@@ -591,6 +726,7 @@ impl Game {
                     image_base: None,
                     poisoned: Some(on),
                     statuses: None,
+                    owner: None,
                 }],
                 timestamp: now_ms(),
             },
@@ -675,6 +811,151 @@ impl Game {
 }
 
 impl super::Game {
+    /// 生成宠物: 主人旁落点, 数值/形态随修炼等级; 返回首只出生点
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn spawn_pets(
+        &mut self,
+        owner: &str,
+        zone_id: &str,
+        at: (f64, f64),
+        template: &str,
+        count: u32,
+        secs: f64,
+        skill_level: u32,
+        grow: f64,
+    ) -> Option<(f64, f64)> {
+        let d = data();
+        let t = d.monsters.iter().find(|m| m.id == template)?;
+        let zone = self.zones.get(zone_id)?;
+        let def = t.clone();
+        let hp = (def.hp as f64 * grow) as i32;
+        let damage = (def.damage as f64 * grow) as i32;
+        // 形态随修炼等级换装 (骷髅库 12 形态, 每形态 360 帧)
+        let image_base = def.base + skill_level.min(11) * 360;
+        let now = Instant::now();
+        let until = (secs > 0.0).then(|| now + Duration::from_secs_f64(secs));
+        let mut first = None;
+        for i in 0..count.max(1) {
+            let ang = i as f64 * 2.4 + 0.8;
+            let want = (at.0 + ang.sin() * 1.6, at.1 + ang.cos() * 1.6);
+            let (x, y) = nearest_walkable(&zone.walk, want.0, want.1);
+            if first.is_none() {
+                first = Some((x, y));
+            }
+            self.monsters.push(Monster {
+                id: format!("pet_{}_{}", owner, i),
+                template: def.id.clone(),
+                name: def.name.clone(),
+                boss: false,
+                respawn: Duration::from_secs(3600),
+                announce: false,
+                image: def.image,
+                image_base,
+                zone: zone_id.to_string(),
+                home: (x, y),
+                roam: 1.0,
+                x,
+                y,
+                dir: 4,
+                target: None,
+                chasing: false,
+                attack_until: None,
+                pending_hit: None,
+                next_attack: now,
+                next_decide: now,
+                passive: false,
+                hp,
+                max_hp: hp,
+                damage,
+                exp: 0,
+                drops: Vec::new(),
+                dying_until: None,
+                corpse_until: None,
+                respawn_at: None,
+                removed_sent: false,
+                poison: None,
+                statuses: HashMap::new(),
+                statuses_sent: false,
+                owner: Some(owner.to_string()),
+                summon_until: until,
+            });
+        }
+        first
+    }
+
+    /// 宠物受击: 扣血/飘字/致死进入死亡动画 (不给攻击方任何归属收益)
+    pub(super) async fn damage_pet(&mut self, pet_id: &str, dmg: i32) {
+        let Some(m) = self.monsters.iter_mut().find(|m| m.id == pet_id) else {
+            return;
+        };
+        if !m.alive() {
+            return;
+        }
+        m.hp -= dmg;
+        let (zone, dead) = (m.zone.clone(), m.hp <= 0);
+        if dead {
+            m.dying_until = Some(Instant::now() + DYING_TIME);
+            m.target = None;
+            m.pending_hit = None;
+        }
+        let conns = self.zone_conns(&zone);
+        broadcast_to(
+            &self.sessions,
+            &conns,
+            ServerMessage::DamageNumber {
+                target_id: pet_id.to_string(),
+                amount: dmg,
+                is_critical: false,
+            },
+        )
+        .await;
+    }
+
+    /// 消散某主人的全部宠物 (重复施放/下线/换区/到期)
+    pub(super) async fn despawn_pets(&mut self, owner: &str) {
+        let gone: Vec<(String, String)> = self
+            .monsters
+            .iter()
+            .filter(|m| m.owner.as_deref() == Some(owner))
+            .map(|m| (m.id.clone(), m.zone.clone()))
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        self.monsters.retain(|m| m.owner.as_deref() != Some(owner));
+        self.broadcast_removed(&gone).await;
+    }
+
+    /// 广播实体消失 (宠物消散用; (id, zone) 列表按区分发)
+    pub(super) async fn broadcast_removed(&self, gone: &[(String, String)]) {
+        for (id, zone) in gone {
+            let conns = self.zone_conns(zone);
+            broadcast_to(
+                &self.sessions,
+                &conns,
+                ServerMessage::StateUpdate {
+                    entities: vec![EntityUpdate {
+                        id: id.clone(),
+                        position: None,
+                        hp: None,
+                        animation: None,
+                        dir: None,
+                        removed: Some(true),
+                        armour: None,
+                        weapon: None,
+                        image: None,
+                        image_base: None,
+                        poisoned: None,
+                        statuses: None,
+                        owner: None,
+                    }],
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
+        }
+    }
+
     /// 冲锋推进: 每拍前进 DASH_SPEED×dt, 撞墙停 / 撞第一个怪结算
     /// (伤害 + 沿冲向击退 1 格 + 僵直) / 走完即止
     pub(super) async fn step_dashes(&mut self, now: Instant) {

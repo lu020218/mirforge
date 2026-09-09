@@ -52,7 +52,8 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             anim TEXT NOT NULL DEFAULT '',
             stages INTEGER NOT NULL DEFAULT 0,
             fx TEXT NOT NULL DEFAULT '',
-            ord INTEGER NOT NULL DEFAULT 0
+            ord INTEGER NOT NULL DEFAULT 0,
+            kind_s1 TEXT NOT NULL DEFAULT ''
         )",
         "CREATE TABLE IF NOT EXISTS cfg_news (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,7 +273,8 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
     };
     for r in sqlx::query(
         "SELECT id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages
+                max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages,
+                kind_s1
          FROM cfg_skills ORDER BY class, ord, level",
     )
     .fetch_all(pool)
@@ -300,6 +302,11 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
                 "charge" => SkillKind::Charge {
                     mult: p1,
                     stun_secs: p2,
+                },
+                "summon" => SkillKind::Summon {
+                    template: r.get("kind_s1"),
+                    count: (p1 as u32).max(1),
+                    secs: p2,
                 },
                 _ => SkillKind::Damage(p1),
             },
@@ -744,18 +751,26 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
         ("taoist", &cfg.taoist),
     ] {
         for (i, s) in list.iter().enumerate() {
-            let (kind_type, p1, p2) = match &s.kind {
-                SkillKind::Heal => ("heal", 0.0, 0.0),
-                SkillKind::Damage(m) => ("damage", *m, 0.0),
-                SkillKind::Aoe { radius, mult } => ("aoe", *radius, *mult),
-                SkillKind::Dot { tick_mult, secs } => ("dot", *tick_mult, *secs),
-                SkillKind::Charge { mult, stun_secs } => ("charge", *mult, *stun_secs),
+            let (kind_type, p1, p2, ks1) = match &s.kind {
+                SkillKind::Heal => ("heal", 0.0, 0.0, String::new()),
+                SkillKind::Damage(m) => ("damage", *m, 0.0, String::new()),
+                SkillKind::Aoe { radius, mult } => ("aoe", *radius, *mult, String::new()),
+                SkillKind::Dot { tick_mult, secs } => ("dot", *tick_mult, *secs, String::new()),
+                SkillKind::Charge { mult, stun_secs } => {
+                    ("charge", *mult, *stun_secs, String::new())
+                }
+                SkillKind::Summon {
+                    template,
+                    count,
+                    secs,
+                } => ("summon", f64::from(*count), *secs, template.clone()),
             };
             sqlx::query(
                 "INSERT INTO cfg_skills
                  (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
-                  max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages, ord)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages,
+                  ord, kind_s1)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(class)
@@ -778,6 +793,7 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
             .bind(&s.anim)
             .bind(s.stages as i64)
             .bind(i as i64)
+            .bind(&ks1)
             .execute(&mut *tx)
             .await?;
         }
@@ -1450,6 +1466,42 @@ pub async fn migrate_yeman_charge(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .rows_affected();
     if n > 0 {
         tracing::info!("野蛮冲撞已切换为冲锋类型 (距离 5 格 / 倍率 0.5 / 僵直 0.8s)");
+    }
+    Ok(())
+}
+
+/// 召唤骷髅上线 (幂等): 技能 zhaohuan + 宠物模板 skeleton。
+/// 已存在则不动 (保留后台手工调整)。
+pub async fn migrate_zhaohuan(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let have = sqlx::query("SELECT 1 FROM cfg_skills WHERE id = 'zhaohuan'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !have {
+        sqlx::query(
+            "INSERT INTO cfg_skills
+             (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
+              max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages,
+              ord, kind_s1)
+             VALUES ('zhaohuan', 'taoist', '召唤骷髅', 17, 6000, 19, 0, 1, 'summon', 1, 0,
+                     3, 30, 0.3, 0, 'zhaohuan', 170, 11, 'cast', 1, 90, 'skeleton')",
+        )
+        .execute(pool)
+        .await?;
+        tracing::info!("已加入技能: 召唤骷髅 (道士 19 级, 模板 skeleton)");
+    }
+    let have = sqlx::query("SELECT 1 FROM cfg_monsters WHERE id = 'skeleton'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !have {
+        sqlx::query(
+            "INSERT INTO cfg_monsters (id, name, image, base, hp, damage, exp, passive, drops, ord)
+             VALUES ('skeleton', '骷髅', 50, 0, 60, 6, 0, 0, '[]', 90)",
+        )
+        .execute(pool)
+        .await?;
+        tracing::info!("已加入怪物模板: skeleton (packs/monster/050.mfl)");
     }
     Ok(())
 }

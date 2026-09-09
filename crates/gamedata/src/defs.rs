@@ -99,6 +99,15 @@ pub enum SkillKind {
     /// Blink(瞬移)/Knockback(击退)/Buff/Debuff/Summon(召唤)/
     /// GroundAoe(场地)/Empower(普攻强化) — 字符串参数走 kind_s1 列。
     Charge { mult: f64, stun_secs: f64 },
+    /// 召唤 (召唤骷髅/神兽): 召出 count 只 template 怪物模板做宠物,
+    /// 跟随主人并攻击附近敌怪; secs 秒后消散 (0 = 直到死亡/下线)。
+    /// 宠物数值随修炼等级按 level_bonus 放大, 外观按等级换形态
+    /// (image_base += 等级×360)。template 存 kind_s1 列。
+    Summon {
+        template: String,
+        count: u32,
+        secs: f64,
+    },
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

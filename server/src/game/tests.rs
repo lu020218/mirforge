@@ -510,8 +510,8 @@ async fn charge_dash_hits_knocks_and_stuns() {
     assert!(m.x > mx0 + 0.5, "怪物应沿冲向被击退 (x {mx0}→{})", m.x);
     assert!(m.stunned(now), "怪物应处于僵直");
     // 僵直期间 AI 冻结: 不追不打
-    let hits = g.monster_ai(now);
-    assert!(hits.is_empty(), "僵直期间不应出手");
+    let ai = g.monster_ai(now);
+    assert!(ai.player_hits.is_empty(), "僵直期间不应出手");
     assert!(g.monsters[0].target.is_none(), "僵直期间不应移动");
     // 到期恢复 + 状态清理
     g.monsters[0]
@@ -572,4 +572,95 @@ async fn charge_dash_stops_at_wall_and_range() {
     let p2 = &g.players["char2"];
     assert!(p2.dash.is_none(), "走满距离应结束");
     assert!((p2.x - 24.5).abs() < 0.2, "应前进 4 格 (x={})", p2.x);
+}
+
+#[tokio::test]
+async fn summon_spawns_pet_that_fights_for_owner() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    // 召 1 只 chicken 模板宠物 (内置种子), 出生在主人旁
+    let pos = g
+        .spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 0.0, 2, 1.6)
+        .await;
+    assert!(pos.is_some(), "召唤应成功");
+    let pet = g.monsters.iter().find(|m| m.owner.is_some()).unwrap();
+    assert_eq!(pet.owner.as_deref(), Some("char1"));
+    assert_eq!(pet.image_base, 2 * 360, "形态随修炼等级偏移");
+    let (pet_id, base_hp) = (pet.id.clone(), pet.hp);
+    assert!(base_hp > 0);
+    // 宠物应索敌攻击附近的稻草人 (10,10): 决策 → 攻击动画 → 到点归属主人
+    let now = Instant::now();
+    g.monster_ai(now);
+    let pet = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+    assert!(
+        pet.attack_until.is_some() || pet.target.is_some(),
+        "宠物应对敌怪有反应 (攻击或追击)"
+    );
+    // 拨快攻击动画到点
+    if let Some(m) = g.monsters.iter_mut().find(|m| m.id == pet_id) {
+        m.attack_until = Some(now);
+    }
+    let ai = g.monster_ai(now + ATTACK_ANIM);
+    if let Some((owner, target, _)) = ai.pet_attacks.first() {
+        assert_eq!(owner, "char1", "宠物击打归属主人");
+        assert_ne!(target, &pet_id);
+    }
+    // 敌怪把宠物纳入猎物: 稻草人的决策目标可为宠物 (宠物更近)
+    // 宠物被打掉血: damage_pet 致死进入死亡动画且不重生
+    g.damage_pet(&pet_id, 99999).await;
+    let pet = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+    assert!(pet.dying_until.is_some(), "致死应进入死亡动画");
+    assert!(pet.respawn_at.is_none(), "宠物不重生");
+}
+
+#[tokio::test]
+async fn summon_replace_and_owner_leave_despawns() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    assert_eq!(g.monsters.iter().filter(|m| m.owner.is_some()).count(), 1);
+    // 重复施放 = 先消散旧宠再召新 (业务上由 Summon 分支调 despawn_pets)
+    g.despawn_pets("char1").await;
+    assert_eq!(
+        g.monsters.iter().filter(|m| m.owner.is_some()).count(),
+        0,
+        "旧宠应消散"
+    );
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 2, 0.0, 0, 1.0)
+        .await;
+    assert_eq!(
+        g.monsters.iter().filter(|m| m.owner.is_some()).count(),
+        2,
+        "count=2 召两只"
+    );
+    // 主人换区: tick 清理消散
+    g.players.get_mut("char1").unwrap().zone = "z2".into();
+    g.tick().await;
+    assert_eq!(
+        g.monsters.iter().filter(|m| m.owner.is_some()).count(),
+        0,
+        "主人离区宠物应消散"
+    );
+}
+
+#[tokio::test]
+async fn summon_expires_by_timer() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 5.0, 0, 1.0)
+        .await;
+    // 拨快到期
+    for m in g.monsters.iter_mut().filter(|m| m.owner.is_some()) {
+        m.summon_until = Some(Instant::now());
+    }
+    g.tick().await;
+    assert_eq!(
+        g.monsters.iter().filter(|m| m.owner.is_some()).count(),
+        0,
+        "到期应消散"
+    );
 }

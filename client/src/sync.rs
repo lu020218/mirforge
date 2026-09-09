@@ -546,6 +546,9 @@ pub(crate) fn net_pump(
                         if let Some(st) = &e.statuses {
                             r.stunned = st.iter().any(|s| s == "stun");
                         }
+                        if e.owner.is_some() {
+                            r.owner = e.owner.clone();
+                        }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;
                         }

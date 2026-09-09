@@ -359,6 +359,10 @@ struct Monster {
     /// 活跃状态效果 (statuses_sent: 广播过非空后需补发一次空表清除)
     statuses: HashMap<StatusKind, StatusState>,
     statuses_sent: bool,
+    /// 宠物主人 (召唤骷髅等; Some = 友方, 跟随主人/攻击敌怪/不重生)
+    owner: Option<String>,
+    /// 召唤到期时刻 (None = 直到死亡/主人离场)
+    summon_until: Option<Instant>,
     chasing: bool,
     attack_until: Option<Instant>,
     /// 攻击动画结束时结算伤害的目标角色
@@ -746,6 +750,7 @@ impl Game {
                     image_base: None,
                     poisoned: None,
                     statuses: None,
+                    owner: None,
                 })
                 .collect();
             broadcast_to(
@@ -1619,6 +1624,7 @@ impl Game {
                         SkillKind::Heal => "heal",
                         SkillKind::Dot { .. } => "dot",
                         SkillKind::Charge { .. } => "charge",
+                        SkillKind::Summon { .. } => "summon",
                     }
                     .into(),
                 }

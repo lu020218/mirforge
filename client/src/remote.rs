@@ -223,7 +223,12 @@ pub(crate) fn remote_step(
             );
             let fg = (
                 Sprite {
-                    color: Color::srgb(0.88, 0.25, 0.25),
+                    // 宠物血条绿色 (友方一眼可辨)
+                    color: if r.owner.is_some() {
+                        Color::srgb(0.30, 0.85, 0.35)
+                    } else {
+                        Color::srgb(0.88, 0.25, 0.25)
+                    },
                     custom_size: Some(Vec2::new(42.0 * frac, 4.0)),
                     anchor: Anchor::CenterLeft,
                     ..default()

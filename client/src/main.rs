@@ -325,6 +325,8 @@ struct Remote {
     poisoned: bool,
     /// 僵直 (野蛮冲撞): 精灵叠亮白染色
     stunned: bool,
+    /// 宠物主人 char_id (Some = 召唤物: 友方血条/不可作为攻击目标)
+    owner: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -1102,7 +1104,7 @@ fn player_move(
             || remotes
                 .0
                 .values()
-                .filter(|r| r.image.is_some() && r.anim != 4)
+                .filter(|r| r.image.is_some() && r.anim != 4 && r.owner.is_none())
                 .any(|r| (r.pos - next).length() <= 1.1);
         if blocked {
             p.dash_left = 0.0;
@@ -1277,7 +1279,7 @@ fn player_move(
             let hit = remotes
                 .0
                 .iter()
-                .filter(|(_, r)| r.image.is_some() && r.anim != 4)
+                .filter(|(_, r)| r.image.is_some() && r.anim != 4 && r.owner.is_none())
                 .find(|(_, r)| (r.pos.x - cc.x).abs() < 0.8 && (r.pos.y - cc.y).abs() < 1.1);
             if let Some((mid, m)) = hit {
                 let d = m.pos - p.pos;

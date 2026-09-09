@@ -185,6 +185,9 @@ pub struct EntityUpdate {
     /// hide/shield…); None = 本次更新不改变状态, 空列表 = 全部清除
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statuses: Option<Vec<String>>,
+    /// 宠物主人 char_id (召唤物; 客户端友方染色/不可作为攻击目标)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -569,6 +572,7 @@ mod tests {
                 image_base: None,
                 poisoned: None,
                 statuses: None,
+                owner: None,
             }],
             timestamp: 12345,
         };
