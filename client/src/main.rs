@@ -323,6 +323,8 @@ struct Remote {
     act_base: usize,
     /// 中毒 (施毒术 DoT): 精灵叠绿色染色
     poisoned: bool,
+    /// 僵直 (野蛮冲撞): 精灵叠亮白染色
+    stunned: bool,
 }
 
 #[derive(Resource, Default)]
@@ -910,6 +912,8 @@ fn setup(
                 anim_t: 0.0,
                 attack_start: None,
                 attack_base: hum::ATTACK,
+                dash_dir: DVec2::ZERO,
+                dash_left: 0.0,
             },
             Sprite::default(),
             Transform::default(),
@@ -1024,6 +1028,9 @@ struct Player {
     attack_start: Option<f64>,
     /// 当前动作段基址: [`hum::ATTACK`] 挥砍 / [`hum::CAST`] 施法
     attack_base: usize,
+    /// 冲锋预表现 (野蛮冲撞): 与服务端同参推进, 剩余距离 >0 时输入让位
+    dash_dir: DVec2,
+    dash_left: f64,
 }
 
 /// 普攻动作时长 (6 帧 × 90ms) 与客户端侧冷却
@@ -1085,6 +1092,27 @@ fn player_move(
     let Ok(mut p) = q.get_single_mut() else {
         return;
     };
+    // 冲锋预表现: 与服务端同速推进, 撞墙/贴近实体即停 (权威结算在服务端,
+    // 双端同源常态零漂移, 偏差由 StateUpdate 纠偏兜底); 冲锋期间输入让位
+    if p.dash_left > 0.0 {
+        let dt = time.delta_secs_f64();
+        let step = (sim::DASH_SPEED * dt).min(p.dash_left);
+        let next = p.pos + p.dash_dir * step;
+        let blocked = !world.walk.is_walkable_circle(next.x, next.y, BODY_RADIUS)
+            || remotes
+                .0
+                .values()
+                .filter(|r| r.image.is_some() && r.anim != 4)
+                .any(|r| (r.pos - next).length() <= 1.1);
+        if blocked {
+            p.dash_left = 0.0;
+        } else {
+            p.pos = next;
+            p.dash_left -= step;
+            p.moving = false;
+        }
+        return;
+    }
     // 光标屏幕位置走事件流记忆: Window::cursor_position 在光标离窗时清 None,
     // 事件不会——按住拖出窗口也能沿最后方向继续走 (经典手感)
     for e in ev_cursor.read() {

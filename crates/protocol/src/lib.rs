@@ -181,6 +181,10 @@ pub struct EntityUpdate {
     /// 中毒状态 (施毒术 DoT; 客户端据此给精灵叠绿色染色)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poisoned: Option<bool>,
+    /// 活跃状态效果名列表 (统一状态系统: "stun" 僵直, 后续 slow/root/
+    /// hide/shield…); None = 本次更新不改变状态, 空列表 = 全部清除
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statuses: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +432,10 @@ pub struct SkillInfo {
     pub range: f64,
     /// 免目标施放（治疗/自身为圆心的 AoE）
     pub self_cast: bool,
+    /// 机制类型 ("damage"/"aoe"/"heal"/"dot"/"charge"…); 客户端据此
+    /// 做本地预表现 (如冲锋位移预测)
+    #[serde(default)]
+    pub kind: String,
     /// 修炼等级 (0 起步)
     #[serde(default)]
     pub level: u32,
@@ -556,6 +564,7 @@ mod tests {
                 image: None,
                 image_base: None,
                 poisoned: None,
+                statuses: None,
             }],
             timestamp: 12345,
         };

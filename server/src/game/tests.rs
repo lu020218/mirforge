@@ -102,6 +102,7 @@ fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {
         equipment: HashMap::new(),
         quests: HashMap::new(),
         skills: HashMap::new(),
+        dash: None,
     }
 }
 
@@ -472,4 +473,103 @@ async fn chat_targets_by_channel() {
     assert!(g
         .chat_targets("nobody", protocol::ChatChannel::World)
         .is_empty());
+}
+
+#[tokio::test]
+async fn charge_dash_hits_knocks_and_stuns() {
+    let mut g = test_game().await;
+    let mut p = test_player("c1", "z1", 5.0, 10.0);
+    // 冲锋态: 朝 +x 冲 8 格, 伤害 5, 僵直 0.8s (怪在 (10,10) 路上)
+    p.dash = Some(DashState {
+        dir: (1.0, 0.0),
+        remaining: 8.0,
+        dmg: 5,
+        stun_secs: 0.8,
+        skill_id: "yeman".into(),
+        fx: "4".into(),
+        fx_base: 170,
+        fx_frames: 8,
+        skill_level: 0,
+    });
+    g.players.insert("char1".into(), p);
+    let hp0 = g.monsters[0].hp;
+    let (mx0, _my0) = (g.monsters[0].x, g.monsters[0].y);
+    let now = Instant::now();
+    // 逐拍推进直至撞击 (5→10 约 5 格, 12 格/s × 0.05s = 0.6 格/拍)
+    for _ in 0..20 {
+        g.step_dashes(now).await;
+        if g.players["char1"].dash.is_none() {
+            break;
+        }
+    }
+    let p = &g.players["char1"];
+    assert!(p.dash.is_none(), "撞击后冲锋应结束");
+    assert!(p.x > 5.5 && p.x < 10.5, "应停在怪物面前 (x={})", p.x);
+    let m = &g.monsters[0];
+    assert_eq!(m.hp, hp0 - 5, "撞击应结算伤害");
+    assert!(m.x > mx0 + 0.5, "怪物应沿冲向被击退 (x {mx0}→{})", m.x);
+    assert!(m.stunned(now), "怪物应处于僵直");
+    // 僵直期间 AI 冻结: 不追不打
+    let hits = g.monster_ai(now);
+    assert!(hits.is_empty(), "僵直期间不应出手");
+    assert!(g.monsters[0].target.is_none(), "僵直期间不应移动");
+    // 到期恢复 + 状态清理
+    g.monsters[0]
+        .statuses
+        .insert(StatusKind::Stun, StatusState { until: now });
+    assert!(!g.monsters[0].stunned(now), "到期即恢复");
+    let active = g.monsters[0].active_statuses(now);
+    assert!(active.is_empty(), "过期状态应被清理");
+}
+
+#[tokio::test]
+async fn charge_dash_stops_at_wall_and_range() {
+    let mut g = test_game().await;
+    // 朝 -x 冲: 起点 x=2.5, 距墙 2 格, 冲 8 格应撞墙停
+    let mut p = test_player("c1", "z1", 2.5, 20.0);
+    p.dash = Some(DashState {
+        dir: (-1.0, 0.0),
+        remaining: 8.0,
+        dmg: 5,
+        stun_secs: 0.8,
+        skill_id: "yeman".into(),
+        fx: "4".into(),
+        fx_base: 170,
+        fx_frames: 8,
+        skill_level: 0,
+    });
+    g.players.insert("char1".into(), p);
+    let now = Instant::now();
+    for _ in 0..40 {
+        g.step_dashes(now).await;
+        if g.players["char1"].dash.is_none() {
+            break;
+        }
+    }
+    let px = g.players["char1"].x;
+    assert!(g.players["char1"].dash.is_none(), "撞墙应结束冲锋");
+    assert!(px > 0.0 && px < 2.5, "应停在墙前 (x={px})");
+    // 空旷方向: 走满距离自然结束
+    let mut p2 = test_player("c2", "z1", 20.5, 30.0);
+    p2.dash = Some(DashState {
+        dir: (1.0, 0.0),
+        remaining: 4.0,
+        dmg: 5,
+        stun_secs: 0.8,
+        skill_id: "yeman".into(),
+        fx: "4".into(),
+        fx_base: 170,
+        fx_frames: 8,
+        skill_level: 0,
+    });
+    g.players.insert("char2".into(), p2);
+    for _ in 0..40 {
+        g.step_dashes(now).await;
+        if g.players["char2"].dash.is_none() {
+            break;
+        }
+    }
+    let p2 = &g.players["char2"];
+    assert!(p2.dash.is_none(), "走满距离应结束");
+    assert!((p2.x - 24.5).abs() < 0.2, "应前进 4 格 (x={})", p2.x);
 }

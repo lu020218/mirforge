@@ -150,6 +150,8 @@ pub(crate) fn net_pump(
                                 anim_t: 0.0,
                                 attack_start: None,
                                 attack_base: hum::ATTACK,
+                                dash_dir: DVec2::ZERO,
+                                dash_left: 0.0,
                             },
                             Sprite::default(),
                             Transform::default(),
@@ -246,8 +248,9 @@ pub(crate) fn net_pump(
                     src,
                     ..
                 } => {
-                    // 旁观视角: 施放者播挥砍/施法动作 (本地玩家自己已就地播过)
-                    if Some(&caster_id) != net.my_id.as_ref() {
+                    // 旁观视角: 施放者播挥砍/施法动作 (本地玩家自己已就地播过;
+                    // anim 空 = 撞击特效补发包, 不重播动作)
+                    if Some(&caster_id) != net.my_id.as_ref() && !anim.is_empty() {
                         if let Some(r) = remotes.0.get_mut(&caster_id) {
                             r.act_start = Some(time.elapsed_secs_f64());
                             r.act_base = if anim == "attack" {
@@ -255,6 +258,29 @@ pub(crate) fn net_pump(
                             } else {
                                 hum::CAST
                             };
+                        }
+                    }
+                    // 自己的冲锋类技能: 起本地位移预表现 (方向 = 施放点 → 目标点,
+                    // 与服务端同参同速; 见 player_move 的冲锋分支)
+                    if Some(&caster_id) == net.my_id.as_ref() {
+                        let is_charge = net
+                            .skills
+                            .iter()
+                            .any(|sk| sk.id == skill_id && sk.kind == "charge");
+                        if is_charge {
+                            if let (Some(sp), Ok(mut p)) = (src, q_player.get_single_mut()) {
+                                let d = DVec2::new(position.x - sp.x, position.y - sp.y);
+                                if d.length() > 0.05 {
+                                    let range = net
+                                        .skills
+                                        .iter()
+                                        .find(|sk| sk.id == skill_id)
+                                        .map(|sk| sk.range)
+                                        .unwrap_or(5.0);
+                                    p.dash_dir = d.normalize();
+                                    p.dash_left = range;
+                                }
+                            }
                         }
                     }
                     let color = skill_color(&skill_id);
@@ -480,6 +506,9 @@ pub(crate) fn net_pump(
                         }
                         if let Some(p) = e.poisoned {
                             r.poisoned = p;
+                        }
+                        if let Some(st) = &e.statuses {
+                            r.stunned = st.iter().any(|s| s == "stun");
                         }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;

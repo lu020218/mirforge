@@ -75,6 +75,8 @@ pub(super) fn materialize_monsters(
                 respawn_at: None,
                 removed_sent: false,
                 poison: None,
+                statuses: std::collections::HashMap::new(),
+                statuses_sent: false,
             });
         }
     }
@@ -122,6 +124,8 @@ pub(super) fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monst
                 respawn_at: None,
                 removed_sent: false,
                 poison: None,
+                statuses: std::collections::HashMap::new(),
+                statuses_sent: false,
             }
         })
         .collect()
@@ -150,6 +154,7 @@ impl Game {
                 image: None,
                 image_base: None,
                 poisoned: None,
+                statuses: None,
             })
             .collect();
         self.monsters.retain(|m| m.boss);
@@ -195,6 +200,7 @@ impl Game {
                 image: None,
                 image_base: None,
                 poisoned: None,
+                statuses: None,
             })
             .collect();
         self.monsters.retain(|m| !m.boss);

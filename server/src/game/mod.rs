@@ -173,6 +173,47 @@ fn exp_required(level: u32) -> u64 {
 /// 毒伤跳间隔 (经典绿毒节奏)
 pub const POISON_TICK: Duration = Duration::from_secs(2);
 
+/// 统一状态效果 (僵直/后续减速/定身/隐身/护盾… 的共同地基)。
+/// 中毒因带专属跳伤结算仍走 [`Poison`], 其余控制/增益类状态都进这张表。
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum StatusKind {
+    /// 僵直: 不移动/不攻击/不索敌 (野蛮冲撞附带)
+    Stun,
+}
+
+impl StatusKind {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            StatusKind::Stun => "stun",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct StatusState {
+    pub(super) until: Instant,
+}
+
+pub(super) use sim::DASH_SPEED;
+/// 冲锋撞击判定距离 (与怪物碰撞体贴合)
+const DASH_HIT_RANGE: f64 = 1.1;
+/// 冲锋击退距离 (格)
+const DASH_KNOCKBACK: f64 = 1.0;
+
+/// 玩家冲锋进行态 (野蛮冲撞): 服务端按 tick 推进, 撞击/走完/撞墙即清
+pub(super) struct DashState {
+    pub(super) dir: (f64, f64),
+    pub(super) remaining: f64,
+    pub(super) dmg: i32,
+    pub(super) stun_secs: f64,
+    /// 撞击特效 (广播命中段用)
+    pub(super) skill_id: String,
+    pub(super) fx: String,
+    pub(super) fx_base: u32,
+    pub(super) fx_frames: u8,
+    pub(super) skill_level: u32,
+}
+
 /// 怪物中毒状态 (施毒术上毒; 重复施毒刷新时长)
 #[derive(Clone)]
 pub(super) struct Poison {
@@ -315,6 +356,9 @@ struct Monster {
     dir: u8,
     /// 当前移动目标 (None = 站立)
     target: Option<(f64, f64)>,
+    /// 活跃状态效果 (statuses_sent: 广播过非空后需补发一次空表清除)
+    statuses: HashMap<StatusKind, StatusState>,
+    statuses_sent: bool,
     chasing: bool,
     attack_until: Option<Instant>,
     /// 攻击动画结束时结算伤害的目标角色
@@ -340,6 +384,18 @@ struct Monster {
 }
 
 impl Monster {
+    /// 清掉过期状态并返回活跃状态名 (每拍广播用)
+    fn active_statuses(&mut self, now: Instant) -> Vec<String> {
+        self.statuses.retain(|_, st| now < st.until);
+        self.statuses.keys().map(|k| k.name().to_string()).collect()
+    }
+
+    fn stunned(&self, now: Instant) -> bool {
+        self.statuses
+            .get(&StatusKind::Stun)
+            .is_some_and(|st| now < st.until)
+    }
+
     fn alive(&self) -> bool {
         self.dying_until.is_none() && self.respawn_at.is_none()
     }
@@ -442,6 +498,8 @@ struct PlayerState {
     quests: HashMap<String, QuestProgress>,
     /// 技能 id → 修炼进度
     skills: HashMap<String, SkillProgress>,
+    /// 冲锋进行态 (Some = 冲锋中, 忽略移动包)
+    dash: Option<DashState>,
 }
 
 impl PlayerState {
@@ -687,6 +745,7 @@ impl Game {
                     image: None,
                     image_base: None,
                     poisoned: None,
+                    statuses: None,
                 })
                 .collect();
             broadcast_to(
@@ -1305,6 +1364,14 @@ impl Game {
                 }
             }
             ClientMessage::Move { direction } => {
+                // 冲锋中位移由服务端推进, 玩家移动包忽略
+                if self
+                    .players
+                    .values()
+                    .any(|p| p.conn_id == conn_id && p.dash.is_some())
+                {
+                    return;
+                }
                 if let Some((cid, character_id, x, y)) = self.handle_move(&conn_id, direction) {
                     // 触发传送门 → 通知切区
                     self.send_enter_zone_only(&cid, &character_id, x, y).await;
@@ -1480,6 +1547,7 @@ impl Game {
                 equipment: c_equipment,
                 quests: c_quests,
                 skills: c_skills,
+                dash: None,
             },
         );
         if let Some(p) = self.players.get_mut(&character_id) {
@@ -1545,6 +1613,14 @@ impl Game {
                     },
                     icon: s.icon,
                     anim: s.anim.clone(),
+                    kind: match &s.kind {
+                        SkillKind::Damage(_) => "damage",
+                        SkillKind::Aoe { .. } => "aoe",
+                        SkillKind::Heal => "heal",
+                        SkillKind::Dot { .. } => "dot",
+                        SkillKind::Charge { .. } => "charge",
+                    }
+                    .into(),
                 }
             })
             .collect();

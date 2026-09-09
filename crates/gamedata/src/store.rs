@@ -297,6 +297,10 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
                     tick_mult: p1,
                     secs: p2,
                 },
+                "charge" => SkillKind::Charge {
+                    mult: p1,
+                    stun_secs: p2,
+                },
                 _ => SkillKind::Damage(p1),
             },
             max_level: r.get::<i64, _>("max_level").max(0) as u32,
@@ -745,6 +749,7 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
                 SkillKind::Damage(m) => ("damage", *m, 0.0),
                 SkillKind::Aoe { radius, mult } => ("aoe", *radius, *mult),
                 SkillKind::Dot { tick_mult, secs } => ("dot", *tick_mult, *secs),
+                SkillKind::Charge { mult, stun_secs } => ("charge", *mult, *stun_secs),
             };
             sqlx::query(
                 "INSERT INTO cfg_skills
@@ -1399,4 +1404,36 @@ mod tests {
         assert_eq!(snap.data.items[0].price, 12345);
         assert_eq!(snap.rev, 1);
     }
+}
+
+/// cfg_skills 追加字符串参数列 kind_s1 (幂等)。本期空置, 供后续
+/// Buff/Debuff(效果名)/Summon(怪物模板) 等带字符串参数的技能类型用,
+/// 免得每加一类动一次表。
+pub async fn migrate_kind_s1(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let has = sqlx::query("SELECT 1 FROM pragma_table_info('cfg_skills') WHERE name = 'kind_s1'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !has {
+        sqlx::query("ALTER TABLE cfg_skills ADD COLUMN kind_s1 TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+        tracing::info!("技能表已加字符串参数列 kind_s1");
+    }
+    Ok(())
+}
+
+/// 野蛮冲撞切位移类型 (幂等; 仅在仍是默认单体伤害时切, 不覆盖手工调整)
+pub async fn migrate_yeman_charge(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let n = sqlx::query(
+        "UPDATE cfg_skills SET kind_type = 'charge', p1 = 0.5, p2 = 0.8, range = 5
+         WHERE id = 'yeman' AND kind_type = 'damage'",
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if n > 0 {
+        tracing::info!("野蛮冲撞已切换为冲锋类型 (距离 5 格 / 倍率 0.5 / 僵直 0.8s)");
+    }
+    Ok(())
 }

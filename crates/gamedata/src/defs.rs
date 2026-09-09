@@ -92,6 +92,13 @@ pub enum SkillKind {
     Heal,
     /// 持续毒伤 (施毒术): 每 [`POISON_TICK`] 跳一次, 每跳 = 攻击 × 倍率
     Dot { tick_mult: f64, secs: f64 },
+    /// 位移冲锋 (野蛮冲撞): 朝目标方向冲锋至多 `range` 格, 撞到的
+    /// 第一个实体受 攻击×mult 伤害、沿冲向击退 1 格并僵直 stun_secs。
+    ///
+    /// 机制类型全景 (后续批次按需增加变体, serde 纯增量):
+    /// Blink(瞬移)/Knockback(击退)/Buff/Debuff/Summon(召唤)/
+    /// GroundAoe(场地)/Empower(普攻强化) — 字符串参数走 kind_s1 列。
+    Charge { mult: f64, stun_secs: f64 },
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

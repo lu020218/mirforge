@@ -241,8 +241,37 @@ impl Game {
                     dot_target = Some((tid.clone(), tick_dmg, secs));
                 }
             }
+            SkillKind::Charge { mult, stun_secs } => {
+                // 冲锋: 朝目标方向进入 dash 态, 位移/撞击在 tick 里逐步推进
+                // (center 即目标点, 上方已做射程校验 → 目标必在冲锋距离内)
+                let (dx, dy) = (center.0 - px, center.1 - py);
+                let len = (dx * dx + dy * dy).sqrt();
+                if len > 0.05 {
+                    let dmg = (dmg_base as f64 * mult * train_mult) as i32;
+                    if let Some(p) = self.players.get_mut(&char_id) {
+                        p.dash = Some(DashState {
+                            dir: (dx / len, dy / len),
+                            remaining: def.range,
+                            dmg,
+                            stun_secs,
+                            skill_id: def.id.clone(),
+                            fx: def.fx.clone(),
+                            fx_base: def.fx_base,
+                            fx_frames: def.fx_frames,
+                            skill_level,
+                        });
+                        p.moving = false;
+                    }
+                }
+            }
         }
-        // 特效广播 (客户端按 skill_id 播放)
+        // 特效广播 (客户端按 skill_id 播放)。冲锋类起手不播命中特效
+        // (fx 置空, 客户端只据此起冲锋预表现), 撞击时刻另发一条带特效的
+        let cast_fx = if matches!(def.kind, SkillKind::Charge { .. }) {
+            String::new()
+        } else {
+            def.fx.clone()
+        };
         let conns = self.zone_conns(&zone);
         broadcast_to(
             &self.sessions,
@@ -260,7 +289,7 @@ impl Game {
                     .chain(dot_target.iter().map(|(id, _, _)| id.clone()))
                     .collect(),
                 level: skill_level,
-                fx: def.fx.clone(),
+                fx: cast_fx,
                 fx_base: def.fx_base,
                 fx_frames: def.fx_frames,
                 anim: def.anim.clone(),
@@ -403,6 +432,10 @@ impl Game {
             let Some(zone) = self.zones.get(&m.zone) else {
                 continue;
             };
+            // 僵直: 不移动/不攻击/不索敌 (统一状态系统)
+            if m.stunned(now) {
+                continue;
+            }
             // 攻击动画期间原地不动; 到点结算命中 (目标仍在范围内才算打中)
             if let Some(t) = m.attack_until {
                 if now < t {
@@ -554,6 +587,7 @@ impl Game {
                     image: None,
                     image_base: None,
                     poisoned: Some(on),
+                    statuses: None,
                 }],
                 timestamp: now_ms(),
             },
@@ -633,6 +667,120 @@ impl Game {
                     .await;
             }
             self.send_player_status(&char_id).await;
+        }
+    }
+}
+
+impl super::Game {
+    /// 冲锋推进: 每拍前进 DASH_SPEED×dt, 撞墙停 / 撞第一个怪结算
+    /// (伤害 + 沿冲向击退 1 格 + 僵直) / 走完即止
+    pub(super) async fn step_dashes(&mut self, now: Instant) {
+        use super::{DASH_HIT_RANGE, DASH_KNOCKBACK, DASH_SPEED};
+        let dt = super::TICK.as_secs_f64();
+        let ids: Vec<String> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.dash.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let Some((zone_id, x, y, dir, remaining)) = self.players.get(&id).and_then(|p| {
+                p.dash
+                    .as_ref()
+                    .map(|d| (p.zone.clone(), p.x, p.y, d.dir, d.remaining))
+            }) else {
+                continue;
+            };
+            let Some(zone) = self.zones.get(&zone_id) else {
+                if let Some(p) = self.players.get_mut(&id) {
+                    p.dash = None;
+                }
+                continue;
+            };
+            let step = (DASH_SPEED * dt).min(remaining);
+            let (nx, ny) = (x + dir.0 * step, y + dir.1 * step);
+            // 撞墙: 就地停
+            if !zone.walk.is_walkable_circle(nx, ny, BODY_RADIUS) {
+                if let Some(p) = self.players.get_mut(&id) {
+                    p.dash = None;
+                }
+                continue;
+            }
+            // 撞怪: 结算后停 (路径上第一个活怪, 不限于施放目标)
+            let hit = self
+                .monsters
+                .iter()
+                .filter(|m| m.zone == zone_id && m.alive())
+                .map(|m| {
+                    let d = ((m.x - nx).powi(2) + (m.y - ny).powi(2)).sqrt();
+                    (m.id.clone(), d)
+                })
+                .filter(|(_, d)| *d <= DASH_HIT_RANGE)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            // 先推进位置
+            if let Some(p) = self.players.get_mut(&id) {
+                p.x = nx;
+                p.y = ny;
+                match &mut p.dash {
+                    Some(d) => d.remaining -= step,
+                    None => continue,
+                }
+            }
+            let Some((mon_id, _)) = hit else {
+                // 走完距离自然结束
+                if let Some(p) = self.players.get_mut(&id) {
+                    if p.dash.as_ref().is_some_and(|d| d.remaining <= 0.01) {
+                        p.dash = None;
+                    }
+                }
+                continue;
+            };
+            // ── 撞击结算 ──
+            let Some(dash) = self.players.get_mut(&id).and_then(|p| p.dash.take()) else {
+                continue;
+            };
+            // 击退: 沿冲向 1 格, 落点不可走则原地; 上僵直
+            let stun_until = now + Duration::from_secs_f64(dash.stun_secs.max(0.0));
+            let mut impact_pos = None;
+            if let Some(m) = self.monsters.iter_mut().find(|m| m.id == mon_id) {
+                let (kx, ky) = (
+                    m.x + dash.dir.0 * DASH_KNOCKBACK,
+                    m.y + dash.dir.1 * DASH_KNOCKBACK,
+                );
+                if zone.walk.is_walkable_circle(kx, ky, BODY_RADIUS) {
+                    m.x = kx;
+                    m.y = ky;
+                }
+                m.target = None;
+                m.statuses.insert(
+                    super::StatusKind::Stun,
+                    super::StatusState { until: stun_until },
+                );
+                impact_pos = Some((m.x, m.y));
+            }
+            // 撞击特效 (anim 置空: 客户端不重播施放者动作)
+            if let Some((ix, iy)) = impact_pos {
+                let conns = self.zone_conns(&zone_id);
+                broadcast_to(
+                    &self.sessions,
+                    &conns,
+                    ServerMessage::SkillEffect {
+                        caster_id: id.clone(),
+                        skill_id: dash.skill_id.clone(),
+                        position: Position { x: ix, y: iy },
+                        targets: vec![mon_id.clone()],
+                        level: dash.skill_level,
+                        fx: dash.fx.clone(),
+                        fx_base: dash.fx_base,
+                        fx_frames: dash.fx_frames,
+                        anim: String::new(),
+                        stages: 1,
+                        src: None,
+                    },
+                )
+                .await;
+            }
+            self.hit_monster(&id, &mon_id, dash.dmg).await;
         }
     }
 }

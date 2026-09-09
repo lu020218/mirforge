@@ -4,6 +4,8 @@ use super::*;
 impl Game {
     pub(super) async fn tick(&mut self) {
         let now = Instant::now();
+        // 冲锋推进 (位移/撞击结算)
+        self.step_dashes(now).await;
         // 技能延迟结算到点 (怪物已死/离场由 hit_monster 自然无效化)
         if self.pending_hits.iter().any(|(at, ..)| now >= *at) {
             let mut due = Vec::new();
@@ -172,6 +174,7 @@ impl Game {
                     image: None, // 玩家走 CArmour/CWeapon, 不用怪物图库
                     image_base: None,
                     poisoned: None,
+                    statuses: None,
                 })
                 .collect();
             if entities.is_empty() {
@@ -200,6 +203,7 @@ impl Game {
                                 image: None,
                                 image_base: None,
                                 poisoned: None,
+                                statuses: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
@@ -210,6 +214,16 @@ impl Game {
                             "walk"
                         } else {
                             "stand"
+                        };
+                        let active = m.active_statuses(now);
+                        let statuses = if !active.is_empty() {
+                            m.statuses_sent = true;
+                            Some(active)
+                        } else if m.statuses_sent {
+                            m.statuses_sent = false;
+                            Some(Vec::new())
+                        } else {
+                            None
                         };
                         Some(EntityUpdate {
                             id: m.id.clone(),
@@ -223,6 +237,7 @@ impl Game {
                             image: Some(m.image),
                             image_base: Some(m.image_base),
                             poisoned: None,
+                            statuses,
                         })
                     }),
             );

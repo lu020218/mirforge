@@ -149,7 +149,9 @@ pub(crate) fn remote_step(
             image: world.pages[f.page].clone(),
             rect: Some(f.rect),
             anchor: Anchor::TopLeft,
-            color: if r.poisoned {
+            color: if r.stunned {
+                Color::srgb(1.6, 1.6, 1.6) // 僵直提亮泛白 (受击硬直)
+            } else if r.poisoned {
                 Color::srgb(0.55, 1.0, 0.55) // 中毒染绿 (经典绿毒表现)
             } else {
                 Color::WHITE
