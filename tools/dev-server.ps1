@@ -1,4 +1,4 @@
-# MirForge 开发服务器一键启动 (PowerShell)
+﻿# MirForge 开发服务器一键启动 (PowerShell)
 # 用法:
 #   tools\dev-server.ps1                 # 单机模式: 自带配置库+完整后台 (4001)
 #   tools\dev-server.ps1 -Hub http://127.0.0.1:4001 -ServerId s1

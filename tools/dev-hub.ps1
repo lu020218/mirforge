@@ -1,4 +1,4 @@
-# MirForge 中心站 (hub) 一键启动 (PowerShell)
+﻿# MirForge 中心站 (hub) 一键启动 (PowerShell)
 # 用法:
 #   tools\dev-hub.ps1                       # 起 hub 于 127.0.0.1:4001, 库 target/hub.db
 #   tools\dev-hub.ps1 -Import target\dev.db # 先把旧单机库的配置整体导入再启动

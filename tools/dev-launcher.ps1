@@ -1,4 +1,4 @@
-# MirForge 开发登录器一键启动 (PowerShell)
+﻿# MirForge 开发登录器一键启动 (PowerShell)
 # 用法:
 #   tools\dev-launcher.ps1           # 先编译客户端 (登录器要拉起它), 再启动登录器
 #   tools\dev-launcher.ps1 -SkipClientBuild   # 客户端已编译过时跳过
