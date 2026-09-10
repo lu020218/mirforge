@@ -4,10 +4,10 @@ use super::*;
 /// AI 输出: 玩家受击 / 宠物打怪 (归属主人) / 宠物被打
 pub(super) struct AiOut {
     pub(super) player_hits: Vec<(String, i32)>,
-    /// (主人 char_id, 敌怪 id, 伤害)
-    pub(super) pet_attacks: Vec<(String, String, i32)>,
-    /// (宠物 id, 伤害)
-    pub(super) pet_taken: Vec<(String, i32)>,
+    /// (主人 char_id, 宠物 id, 敌怪 id, 伤害) — 归属记主人, 仇恨记宠物
+    pub(super) pet_attacks: Vec<(String, String, String, i32)>,
+    /// (宠物 id, 攻击者怪 id, 伤害) — 宠物记仇优先反打
+    pub(super) pet_taken: Vec<(String, String, i32)>,
 }
 
 impl Game {
@@ -54,16 +54,19 @@ impl Game {
 
     /// 对怪结算一次伤害: 扣血/飘字广播/击杀 → 尸体+经验。返回是否击杀。
     pub(super) async fn hit_monster(&mut self, char_id: &str, mon_id: &str, dmg: i32) -> bool {
-        self.hit_monster_inner(char_id, mon_id, dmg, true).await
+        self.hit_monster_inner(char_id, mon_id, dmg, true, Some(char_id))
+            .await
     }
 
-    /// struck=false: 不触发受击顿帧 (毒跳伤 — 经典绿毒掉血不顿)
-    async fn hit_monster_inner(
+    /// struck=false: 不触发受击顿帧 (毒跳伤 — 经典绿毒掉血不顿);
+    /// aggro_source: 仇恨记谁 (宠物代主人出手时记宠物; None = 不改仇恨)
+    pub(super) async fn hit_monster_inner(
         &mut self,
         char_id: &str,
         mon_id: &str,
         dmg: i32,
         struck: bool,
+        aggro_source: Option<&str>,
     ) -> bool {
         let now = Instant::now();
         let Some(m) = self
@@ -83,6 +86,12 @@ impl Game {
         } else if struck {
             // 受击硬直: 顿帧 + 受击姿态 (毒跳伤 struck=false 跳过)
             m.struck_until = Some(now + STRUCK_ANIM);
+        }
+        if !killed {
+            if let Some(src) = aggro_source {
+                // 记仇: 被动怪凭它反击, 主动怪凭它锁定
+                m.aggro_target = Some(src.to_string());
+            }
         }
         let conns = self.zone_conns(&zone);
         broadcast_to(
@@ -516,14 +525,19 @@ impl Game {
                 m.attack_until = None;
                 if let Some(target) = m.pending_hit.take() {
                     if is_pet {
-                        // 宠物打怪: 归属主人 (经验/掉落/任务)
+                        // 宠物打怪: 归属主人 (经验/掉落/任务), 仇恨记宠物自身
                         if let Some((_, _, tx, ty, _)) =
                             mon_snap.iter().find(|(id, ..)| id == &target)
                         {
                             let d = ((m.x - tx).powi(2) + (m.y - ty).powi(2)).sqrt();
                             if d <= MONSTER_HIT_RANGE {
                                 if let Some(owner) = &m.owner {
-                                    out.pet_attacks.push((owner.clone(), target, m.damage));
+                                    out.pet_attacks.push((
+                                        owner.clone(),
+                                        m.id.clone(),
+                                        target,
+                                        m.damage,
+                                    ));
                                 }
                             }
                         }
@@ -537,10 +551,10 @@ impl Game {
                     } else if let Some((_, _, tx, ty, _)) =
                         mon_snap.iter().find(|(id, ..)| id == &target)
                     {
-                        // 敌怪打宠物
+                        // 敌怪打宠物 (宠物记仇优先反打)
                         let d = ((m.x - tx).powi(2) + (m.y - ty).powi(2)).sqrt();
                         if d <= MONSTER_HIT_RANGE {
-                            out.pet_taken.push((target, m.damage));
+                            out.pet_taken.push((target, m.id.clone(), m.damage));
                         }
                     }
                 }
@@ -563,6 +577,19 @@ impl Game {
                         continue; // 主人不在本区/离线: tick 清理负责消散
                     };
                     let owner_d = ((m.x - ox).powi(2) + (m.y - oy).powi(2)).sqrt();
+                    // 仇恨优先: 被哪只怪打就先打回哪只; 失效即清
+                    let aggro_enemy = m.aggro_target.as_ref().and_then(|a| {
+                        mon_snap
+                            .iter()
+                            .find(|(id, z, _, _, pet)| id == a && !pet && z == &m.zone)
+                            .map(|(id, _, x, y, _)| {
+                                let d = ((m.x - x).powi(2) + (m.y - y).powi(2)).sqrt();
+                                (d, id.clone(), *x, *y)
+                            })
+                    });
+                    if aggro_enemy.is_none() {
+                        m.aggro_target = None;
+                    }
                     let nearest_enemy = mon_snap
                         .iter()
                         .filter(|(id, z, _, _, pet)| !pet && z == &m.zone && id != &m.id)
@@ -575,8 +602,9 @@ impl Game {
                         // 离主人太远: 放弃战斗回到主人身边
                         m.chasing = true;
                         m.target = Some((ox, oy));
+                        m.aggro_target = None;
                     } else if let Some((d, tid, tx, ty)) =
-                        nearest_enemy.filter(|(d, ..)| *d < AGGRO_RANGE)
+                        aggro_enemy.or(nearest_enemy.filter(|(d, ..)| *d < AGGRO_RANGE))
                     {
                         if d < ATTACK_RANGE {
                             m.dir = dir8_from(tx - m.x, ty - m.y) as u8;
@@ -602,6 +630,28 @@ impl Game {
                 } else {
                     // ── 敌怪决策: 玩家与宠物都是猎物 ──
                     let home_d = ((m.x - m.home.0).powi(2) + (m.y - m.home.1).powi(2)).sqrt();
+                    // 仇恨优先 (被打记仇): 被动怪凭它参战, 主动怪凭它锁定
+                    // 不受索敌半径限制 (LEASH 脱战管总闸); 目标失效即清
+                    let aggro = m.aggro_target.as_ref().and_then(|a| {
+                        players
+                            .iter()
+                            .filter(|(_, z, _, _)| z == &m.zone)
+                            .find(|(id, ..)| id == a)
+                            .map(|(id, _, x, y)| (id.clone(), *x, *y))
+                            .or_else(|| {
+                                mon_snap
+                                    .iter()
+                                    .find(|(id, z, _, _, pet)| id == a && *pet && z == &m.zone)
+                                    .map(|(id, _, x, y, _)| (id.clone(), *x, *y))
+                            })
+                            .map(|(id, x, y)| {
+                                let d = ((m.x - x).powi(2) + (m.y - y).powi(2)).sqrt();
+                                (d, id, x, y)
+                            })
+                    });
+                    if aggro.is_none() {
+                        m.aggro_target = None;
+                    }
                     let nearest = players
                         .iter()
                         .filter(|(_, z, _, _)| z == &m.zone)
@@ -618,11 +668,12 @@ impl Game {
                         })
                         .min_by(|a, b| a.0.total_cmp(&b.0));
                     if home_d > LEASH_RANGE {
-                        // 拉离过远 → 脱战回家
+                        // 拉离过远 → 脱战回家 (仇恨一并放下, 被动怪恢复温顺)
                         m.chasing = false;
                         m.target = Some(m.home);
+                        m.aggro_target = None;
                     } else if let Some((d, pid, px, py)) =
-                        nearest.filter(|(d, ..)| *d < AGGRO_RANGE && !m.passive)
+                        aggro.or(nearest.filter(|(d, ..)| *d < AGGRO_RANGE && !m.passive))
                     {
                         if d < ATTACK_RANGE {
                             m.dir = dir8_from(px - m.x, py - m.y) as u8;
@@ -717,6 +768,8 @@ impl Game {
                 tick_dmg,
                 attacker: attacker.to_string(),
             });
+            // 上毒瞬间拉仇恨 (经典施毒拉怪); 之后毒跳不再刷新
+            m.aggro_target = Some(attacker.to_string());
             zone = Some((m.zone.clone(), m.id.clone()));
         }
         // 立即广播中毒状态 (客户端变绿)
@@ -773,7 +826,8 @@ impl Game {
             }
         }
         for (attacker, mon_id, dmg) in ticks {
-            self.hit_monster_inner(&attacker, &mon_id, dmg, false).await;
+            self.hit_monster_inner(&attacker, &mon_id, dmg, false, None)
+                .await;
         }
         for (zone, id) in expired {
             self.broadcast_poison(&zone, &id, false).await;
@@ -895,6 +949,7 @@ impl super::Game {
                 statuses: HashMap::new(),
                 statuses_sent: false,
                 struck_until: None,
+                aggro_target: None,
                 owner: Some(owner.to_string()),
                 summon_until: until,
             });
@@ -902,8 +957,9 @@ impl super::Game {
         first
     }
 
-    /// 宠物受击: 扣血/飘字/致死进入死亡动画 (不给攻击方任何归属收益)
-    pub(super) async fn damage_pet(&mut self, pet_id: &str, dmg: i32) {
+    /// 宠物受击: 扣血/飘字/致死进入死亡动画 (不给攻击方任何归属收益);
+    /// 宠物记仇优先反打攻击者
+    pub(super) async fn damage_pet(&mut self, pet_id: &str, attacker: &str, dmg: i32) {
         let Some(m) = self.monsters.iter_mut().find(|m| m.id == pet_id) else {
             return;
         };
@@ -911,6 +967,7 @@ impl super::Game {
             return;
         }
         m.hp -= dmg;
+        m.aggro_target = Some(attacker.to_string());
         let (zone, dead) = (m.zone.clone(), m.hp <= 0);
         if dead {
             m.dying_until = Some(Instant::now() + DYING_TIME);

@@ -78,6 +78,7 @@ pub(super) fn materialize_monsters(
                 statuses: std::collections::HashMap::new(),
                 statuses_sent: false,
                 struck_until: None,
+                aggro_target: None,
                 owner: None,
                 summon_until: None,
             });
@@ -130,6 +131,7 @@ pub(super) fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monst
                 statuses: std::collections::HashMap::new(),
                 statuses_sent: false,
                 struck_until: None,
+                aggro_target: None,
                 owner: None,
                 summon_until: None,
             }

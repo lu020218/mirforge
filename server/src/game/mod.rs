@@ -363,6 +363,9 @@ struct Monster {
     statuses_sent: bool,
     /// 受击硬直到点 (播受击姿态 + 暂停移动; 不打断已出手的攻击结算)
     struck_until: Option<Instant>,
+    /// 仇恨对象 (最后攻击我的实体 id; 被动怪凭它参战, 主动怪凭它锁定)。
+    /// 目标失效/脱战回家/重生时清除
+    aggro_target: Option<String>,
     /// 宠物主人 (召唤骷髅等; Some = 友方, 跟随主人/攻击敌怪/不重生)
     owner: Option<String>,
     /// 召唤到期时刻 (None = 直到死亡/主人离场)

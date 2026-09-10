@@ -105,13 +105,14 @@ impl Game {
         if !self.players.is_empty() {
             let ai = self.monster_ai(now);
             self.apply_monster_hits(ai.player_hits).await;
-            // 宠物打怪: 归属主人 (经验/掉落/任务与亲手击杀一致)
-            for (owner, mon_id, dmg) in ai.pet_attacks {
-                self.hit_monster(&owner, &mon_id, dmg).await;
+            // 宠物打怪: 归属记主人 (经验/掉落/任务), 仇恨记宠物自身
+            for (owner, pet_id, mon_id, dmg) in ai.pet_attacks {
+                self.hit_monster_inner(&owner, &mon_id, dmg, true, Some(&pet_id))
+                    .await;
             }
-            // 敌怪打宠物
-            for (pet_id, dmg) in ai.pet_taken {
-                self.damage_pet(&pet_id, dmg).await;
+            // 敌怪打宠物 (宠物记仇优先反打)
+            for (pet_id, attacker, dmg) in ai.pet_taken {
+                self.damage_pet(&pet_id, &attacker, dmg).await;
             }
         }
         // 宠物生命周期: 到期 / 主人离线或不同区 → 消散
@@ -189,6 +190,9 @@ impl Game {
                 m.y = hy;
                 m.dir = 4;
                 m.removed_sent = false;
+                m.aggro_target = None;
+                m.statuses.clear();
+                m.poison = None;
             }
         }
         // 死透宠物移除 (removed 广播 + 出列)

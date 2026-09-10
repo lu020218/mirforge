@@ -602,13 +602,14 @@ async fn summon_spawns_pet_that_fights_for_owner() {
         m.attack_until = Some(now);
     }
     let ai = g.monster_ai(now + ATTACK_ANIM);
-    if let Some((owner, target, _)) = ai.pet_attacks.first() {
+    if let Some((owner, src_pet, target, _)) = ai.pet_attacks.first() {
         assert_eq!(owner, "char1", "宠物击打归属主人");
+        assert_eq!(src_pet, &pet_id, "仇恨来源应是宠物自身");
         assert_ne!(target, &pet_id);
     }
     // 敌怪把宠物纳入猎物: 稻草人的决策目标可为宠物 (宠物更近)
     // 宠物被打掉血: damage_pet 致死进入死亡动画且不重生
-    g.damage_pet(&pet_id, 99999).await;
+    g.damage_pet(&pet_id, "attacker_mon", 99999).await;
     let pet = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
     assert!(pet.dying_until.is_some(), "致死应进入死亡动画");
     assert!(pet.respawn_at.is_none(), "宠物不重生");
@@ -700,4 +701,77 @@ async fn hit_sets_struck_but_poison_tick_does_not() {
         g.monsters[0].struck_until.is_none(),
         "毒跳伤不应触发受击顿帧"
     );
+}
+
+#[tokio::test]
+async fn passive_monster_retaliates_when_hit() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    // 稻草人改被动: 未被打时不主动索敌
+    g.monsters[0].passive = true;
+    let now = Instant::now();
+    g.monsters[0].next_decide = now;
+    g.monster_ai(now);
+    assert!(
+        g.monsters[0].attack_until.is_none() && !g.monsters[0].chasing,
+        "被动怪未被打不应索敌"
+    );
+    // 被打: 记仇 + 反击 (硬直过后)
+    let mon_id = g.monsters[0].id.clone();
+    g.hit_monster("char1", &mon_id, 3).await;
+    assert_eq!(
+        g.monsters[0].aggro_target.as_deref(),
+        Some("char1"),
+        "被打应记仇"
+    );
+    g.monsters[0].struck_until = None;
+    g.monsters[0].next_decide = now;
+    g.monster_ai(now);
+    let m = &g.monsters[0];
+    assert!(
+        m.attack_until.is_some() || m.chasing,
+        "被动怪被打后应反击攻击者"
+    );
+    // 脱战 (拉离老家): 清仇恨恢复温顺
+    g.monsters[0].x = g.monsters[0].home.0 + 30.0;
+    g.monsters[0].next_decide = now;
+    g.monster_ai(now);
+    assert!(g.monsters[0].aggro_target.is_none(), "脱战应放下仇恨");
+}
+
+#[tokio::test]
+async fn monster_retaliates_pet_not_owner() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 20.0, 20.0));
+    g.spawn_pets("char1", "z1", (11.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let pet_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_some())
+        .unwrap()
+        .id
+        .clone();
+    let mon_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_none())
+        .unwrap()
+        .id
+        .clone();
+    // 宠物打怪: 归属主人、仇恨记宠物 (模拟 tick 结算路径)
+    g.hit_monster_inner("char1", &mon_id, 2, true, Some(&pet_id))
+        .await;
+    let m = g.monsters.iter().find(|m| m.id == mon_id).unwrap();
+    assert_eq!(
+        m.aggro_target.as_deref(),
+        Some(pet_id.as_str()),
+        "怪应记仇宠物而非主人"
+    );
+    // 怪打宠物: 宠物记仇
+    g.damage_pet(&pet_id, &mon_id, 1).await;
+    let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+    assert_eq!(p.aggro_target.as_deref(), Some(mon_id.as_str()));
 }
