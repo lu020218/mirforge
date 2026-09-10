@@ -79,6 +79,10 @@ pub struct MonsterDef {
     pub passive: bool,
     #[serde(default)]
     pub drops: Vec<DropSidecar>,
+    /// 怪物类型: "normal" 普通 / "tameable" 可诱惑 (诱惑之光合法目标) /
+    /// "undead" 不死系 (不可诱惑; 为圣言术预留)
+    #[serde(default = "default_mon_type")]
+    pub mon_type: String,
     /// 宠物成长 (仅被召唤技能引用时生效): 等级上限 (经典 7)
     #[serde(default = "default_pet_max_level")]
     pub pet_max_level: u32,
@@ -90,6 +94,9 @@ pub struct MonsterDef {
     pub pet_grow: f64,
 }
 
+fn default_mon_type() -> String {
+    "normal".into()
+}
 fn default_pet_max_level() -> u32 {
     7
 }
@@ -127,6 +134,10 @@ pub enum SkillKind {
         count: u32,
         secs: f64,
     },
+    /// 诱惑 (诱惑之光): 对「可诱惑」类型的无主怪按概率魅惑为宝宝
+    /// (chance + 修炼每级加成, 上限 0.9); 同时持有至多 max_pets 只
+    /// (超限替换最早); 失败拉仇恨。
+    Tame { chance: f64, max_pets: u32 },
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

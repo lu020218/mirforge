@@ -100,6 +100,9 @@ async fn init_config(pool: &SqlitePool) {
     gamedata::store::migrate_pet_growth(pool)
         .await
         .expect("宠物成长列迁移失败");
+    gamedata::store::migrate_tame(pool)
+        .await
+        .expect("诱惑迁移失败");
     if gamedata::store::is_empty(pool).await.unwrap_or(false) {
         let data_dir = std::env::var("MIRFORGE_DATA")
             .map(std::path::PathBuf::from)

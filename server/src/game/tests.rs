@@ -1025,3 +1025,127 @@ async fn pet_growth_params_come_from_template() {
     // 复原全局配置 (测试进程内共享)
     set_data(GameData::builtin());
 }
+
+#[tokio::test]
+async fn tame_converts_and_respects_rules() {
+    let mut g = test_game().await;
+    let mut p = test_player("c1", "z1", 10.5, 10.5);
+    p.character.class = CharacterClass::Mage;
+    p.level = 99;
+    p.mp = 999;
+    g.players.insert("char1".into(), p);
+    // 内存配置: test_dummy 模板不存在 → 用 chicken 模板造一只可诱惑怪
+    let mut d = (*data()).clone();
+    for m in d.monsters.iter_mut().filter(|m| m.id == "chicken") {
+        m.mon_type = "tameable".into();
+    }
+    // builtin 技能种子无 youhuo (库迁移插入) — 测试内存表补一条
+    d.skills.mage.push(SkillDef {
+        id: "youhuo".into(),
+        name: "诱惑之光".into(),
+        mp: 15,
+        cd_ms: 0,
+        level: 13,
+        range: 7.0,
+        self_cast: false,
+        kind: SkillKind::Tame {
+            chance: 0.9,
+            max_pets: 5,
+        },
+        max_level: 3,
+        train_base: 30,
+        level_bonus: 0.1,
+        icon: 0,
+        anim: "cast".into(),
+        stages: 2,
+        fx: "youhuo".into(),
+        fx_base: 170,
+        fx_frames: 8,
+    });
+    set_data(d);
+    let now = Instant::now();
+    g.monsters.push(Monster {
+        id: "wild1".into(),
+        template: "chicken".into(),
+        name: "野鸡".into(),
+        boss: false,
+        respawn: Duration::from_secs(3600),
+        announce: false,
+        image: 1,
+        image_base: 0,
+        zone: "z1".into(),
+        home: (11.5, 10.5),
+        roam: 1.0,
+        x: 11.5,
+        y: 10.5,
+        dir: 4,
+        target: None,
+        chasing: false,
+        attack_until: None,
+        pending_hit: None,
+        next_attack: now,
+        next_decide: now,
+        passive: true,
+        hp: 15,
+        max_hp: 15,
+        damage: 1,
+        exp: 5,
+        drops: Vec::new(),
+        dying_until: None,
+        corpse_until: None,
+        respawn_at: None,
+        removed_sent: false,
+        poison: None,
+        statuses: HashMap::new(),
+        statuses_sent: false,
+        struck_until: None,
+        aggro_target: None,
+        owner: None,
+        pet_level: 0,
+        pet_exp: 0,
+        summon_until: None,
+    });
+    // 成功率 1.0 (youhuo p1 存库 0.35 — 测试改内存技能表不可行, 直接
+    // 多次施放直至成功; 为免概率翻车, 把技能表里的 youhuo 概率视为
+    // 0.35+0.1*99 → 封顶 0.9, 施放 20 次成功概率 >1-1e-20)
+    let mut tamed = false;
+    for _ in 0..50 {
+        g.players.get_mut("char1").unwrap().cooldowns.clear();
+        g.players.get_mut("char1").unwrap().mp = 999;
+        g.handle_use_skill("c1", "youhuo", Some("wild1".into()))
+            .await;
+        if g.monsters
+            .iter()
+            .any(|m| m.id == "wild1" && m.owner.is_some())
+        {
+            tamed = true;
+            break;
+        }
+    }
+    assert!(tamed, "多次施放后应诱惑成功");
+    let m = g.monsters.iter().find(|m| m.id == "wild1").unwrap();
+    assert_eq!(m.owner.as_deref(), Some("char1"));
+    assert_eq!(m.pet_level, 1, "归顺从 1 级养起");
+    assert!(m.aggro_target.is_none(), "归顺清仇恨");
+    // 不可诱惑目标: 稻草人 (test_dummy 模板 → 不在模板表, 视为不可诱惑)
+    let dummy = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_none() && m.id != "wild1")
+        .unwrap()
+        .id
+        .clone();
+    g.players.get_mut("char1").unwrap().cooldowns.clear();
+    g.handle_use_skill("c1", "youhuo", Some(dummy.clone()))
+        .await;
+    assert!(
+        g.monsters
+            .iter()
+            .find(|m| m.id == dummy)
+            .unwrap()
+            .owner
+            .is_none(),
+        "非可诱惑类型不得被魅惑"
+    );
+    set_data(GameData::builtin());
+}

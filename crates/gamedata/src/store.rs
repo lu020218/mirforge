@@ -181,7 +181,8 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             ord INTEGER NOT NULL DEFAULT 0,
             pet_max_level INTEGER NOT NULL DEFAULT 7,
             pet_exp_base INTEGER NOT NULL DEFAULT 100,
-            pet_grow REAL NOT NULL DEFAULT 1.2
+            pet_grow REAL NOT NULL DEFAULT 1.2,
+            mon_type TEXT NOT NULL DEFAULT 'normal'
         )",
         "CREATE TABLE IF NOT EXISTS cfg_drops (
             spawn_id INTEGER NOT NULL,
@@ -305,6 +306,10 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
                 "charge" => SkillKind::Charge {
                     mult: p1,
                     stun_secs: p2,
+                },
+                "tame" => SkillKind::Tame {
+                    chance: p1,
+                    max_pets: (p2 as u32).max(1),
                 },
                 "summon" => SkillKind::Summon {
                     template: r.get("kind_s1"),
@@ -502,7 +507,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
 
     let monsters = sqlx::query(
         "SELECT id, name, image, base, hp, damage, exp, passive, drops,
-                pet_max_level, pet_exp_base, pet_grow
+                pet_max_level, pet_exp_base, pet_grow, mon_type
          FROM cfg_monsters ORDER BY ord, id",
     )
     .fetch_all(pool)
@@ -518,6 +523,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         exp: r.get::<i64, _>("exp").max(0) as u64,
         passive: r.get::<i64, _>("passive") != 0,
         drops: serde_json::from_str(&r.get::<String, _>("drops")).unwrap_or_default(),
+        mon_type: r.get("mon_type"),
         pet_max_level: r.get::<i64, _>("pet_max_level").clamp(1, 99) as u32,
         pet_exp_base: r.get::<i64, _>("pet_exp_base").max(1) as u64,
         pet_grow: r.get::<f64, _>("pet_grow").max(1.0),
@@ -772,6 +778,9 @@ pub async fn save_skills(pool: &SqlitePool, cfg: &SkillsCfg) -> Result<(), sqlx:
                     count,
                     secs,
                 } => ("summon", f64::from(*count), *secs, template.clone()),
+                SkillKind::Tame { chance, max_pets } => {
+                    ("tame", *chance, f64::from(*max_pets), String::new())
+                }
             };
             sqlx::query(
                 "INSERT INTO cfg_skills
@@ -955,8 +964,8 @@ pub async fn save_monsters(
     for (i, m) in monsters.iter().enumerate() {
         sqlx::query(
             "INSERT INTO cfg_monsters (id, name, image, base, hp, damage, exp, passive, drops,
-                                       ord, pet_max_level, pet_exp_base, pet_grow)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                       ord, pet_max_level, pet_exp_base, pet_grow, mon_type)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.name)
@@ -971,6 +980,7 @@ pub async fn save_monsters(
         .bind(m.pet_max_level as i64)
         .bind(m.pet_exp_base as i64)
         .bind(m.pet_grow)
+        .bind(&m.mon_type)
         .execute(&mut *tx)
         .await?;
     }
@@ -1019,6 +1029,7 @@ pub async fn migrate_monsters(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             exp: r.get::<i64, _>("exp").max(0) as u64,
             passive: r.get::<i64, _>("passive") != 0,
             drops,
+            mon_type: "normal".into(),
             pet_max_level: 7,
             pet_exp_base: 100,
             pet_grow: 1.2,
@@ -1549,6 +1560,45 @@ pub async fn migrate_pet_growth(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             sqlx::query(ddl).execute(pool).await?;
         }
         tracing::info!("怪物表已加宠物成长列 (满级/升级基数/每级成长)");
+    }
+    Ok(())
+}
+
+/// 怪物类型列 + 诱惑之光上线 (幂等)
+pub async fn migrate_tame(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let has =
+        sqlx::query("SELECT 1 FROM pragma_table_info('cfg_monsters') WHERE name = 'mon_type'")
+            .fetch_optional(pool)
+            .await?
+            .is_some();
+    if !has {
+        sqlx::query("ALTER TABLE cfg_monsters ADD COLUMN mon_type TEXT NOT NULL DEFAULT 'normal'")
+            .execute(pool)
+            .await?;
+        // 低级野物默认可诱惑 (仅首次补列时点一次, 后台可改)
+        sqlx::query(
+            "UPDATE cfg_monsters SET mon_type = 'tameable' WHERE id IN ('chicken', 'deer')",
+        )
+        .execute(pool)
+        .await?;
+        tracing::info!("怪物表已加类型列 (普通/可诱惑/不死系), 鸡/鹿默认可诱惑");
+    }
+    let have = sqlx::query("SELECT 1 FROM cfg_skills WHERE id = 'youhuo'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !have {
+        sqlx::query(
+            "INSERT INTO cfg_skills
+             (id, class, name, mp, cd_ms, level, range, self_cast, kind_type, p1, p2,
+              max_level, train_base, level_bonus, icon, fx, fx_base, fx_frames, anim, stages,
+              ord, kind_s1)
+             VALUES ('youhuo', 'mage', '诱惑之光', 15, 8000, 13, 7, 0, 'tame', 0.35, 5,
+                     3, 30, 0.1, 0, 'youhuo', 170, 8, 'cast', 2, 91, '')",
+        )
+        .execute(pool)
+        .await?;
+        tracing::info!("已加入技能: 诱惑之光 (法师 13 级, 基础成功率 35%)");
     }
     Ok(())
 }

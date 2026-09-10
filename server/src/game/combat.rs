@@ -198,6 +198,26 @@ impl Game {
                 return;
             }
         }
+        // 诱惑: 目标必须是「可诱惑」类型的无主怪 (扣蓝前拒绝)
+        if matches!(def.kind, SkillKind::Tame { .. }) {
+            let ok = target_id.as_deref().is_some_and(|tid| {
+                self.monsters.iter().any(|m| {
+                    m.id == tid
+                        && m.zone == zone
+                        && m.alive()
+                        && m.owner.is_none()
+                        && data()
+                            .monsters
+                            .iter()
+                            .find(|t| t.id == m.template)
+                            .is_some_and(|t| t.mon_type == "tameable")
+                })
+            });
+            if !ok {
+                self.notify(conn_id, "该目标无法诱惑").await;
+                return;
+            }
+        }
         // 召唤: 模板必须存在 (扣蓝前拒绝, 配置错误不白扣)
         if let SkillKind::Summon { ref template, .. } = def.kind {
             if !data().monsters.iter().any(|m| m.id == *template) {
@@ -355,6 +375,57 @@ impl Game {
                     summon_fx_pos = Some(pos);
                 }
             }
+            SkillKind::Tame { chance, max_pets } => {
+                // 成功率 = 基础 + 修炼每级加成, 封顶 90%
+                let odds = (chance + def.level_bonus * skill_level as f64).min(0.9);
+                let roll = self.rand01();
+                let tid = target_id.clone().unwrap_or_default();
+                if roll < odds {
+                    // 超上限先散最早的一只 (id 含召唤序 — 按入列顺序取第一只)
+                    let mine: Vec<String> = self
+                        .monsters
+                        .iter()
+                        .filter(|m| m.owner.as_deref() == Some(char_id.as_str()))
+                        .map(|m| m.id.clone())
+                        .collect();
+                    if mine.len() as u32 >= max_pets.max(1) {
+                        if let Some(oldest) = mine.first() {
+                            let gone = vec![(
+                                oldest.clone(),
+                                self.monsters
+                                    .iter()
+                                    .find(|m| &m.id == oldest)
+                                    .map(|m| m.zone.clone())
+                                    .unwrap_or_default(),
+                            )];
+                            let oid = oldest.clone();
+                            self.monsters.retain(|m| m.id != oid);
+                            self.broadcast_removed(&gone).await;
+                        }
+                    }
+                    if let Some(m) = self.monsters.iter_mut().find(|m| m.id == tid) {
+                        // 就地归顺: 保留当前血量与数值, 从 1 级开始养
+                        m.owner = Some(char_id.clone());
+                        m.pet_level = 1;
+                        m.pet_exp = 0;
+                        m.aggro_target = None;
+                        m.target = None;
+                        m.pending_hit = None;
+                        m.attack_until = None;
+                        m.chasing = false;
+                        extra_targets.push(m.id.clone());
+                        summon_fx_pos = Some((m.x, m.y));
+                    }
+                } else {
+                    // 失败: 拉仇恨反咬
+                    if let Some(m) = self.monsters.iter_mut().find(|m| m.id == tid) {
+                        m.aggro_target = Some(char_id.clone());
+                        extra_targets.push(m.id.clone());
+                        summon_fx_pos = Some((m.x, m.y));
+                    }
+                    self.notify(conn_id, "诱惑失败!").await;
+                }
+            }
             SkillKind::Charge { mult, stun_secs } => {
                 // 冲锋: 朝目标方向进入 dash 态, 位移/撞击在 tick 里逐步推进
                 // (center 即目标点, 上方已做射程校验 → 目标必在冲锋距离内)
@@ -388,6 +459,7 @@ impl Game {
             SkillKind::Dot { .. } => "dot",
             SkillKind::Charge { .. } => "charge",
             SkillKind::Summon { .. } => "summon",
+            SkillKind::Tame { .. } => "tame",
         };
         let conns = self.zone_conns(&zone);
         broadcast_to(

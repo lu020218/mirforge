@@ -184,7 +184,7 @@
         <button onclick="saveCfg('skills')">保存技能</button>
         <button class="ghost" onclick="loadCfg('skills')">重新载入</button>
         <button class="ghost" onclick="addSkillRow()">+ 新增技能</button>
-        <span class="hint">参数随类型联动: 单体=倍率 / 范围=半径+倍率 / 治疗=无参 / 冲锋=倍率+僵直秒 (距离=射程) / 召唤=数量+持续秒+模板</span>
+        <span class="hint">参数随类型联动: 单体=倍率 / 范围=半径+倍率 / 治疗=无参 / 冲锋=倍率+僵直秒 (距离=射程) / 召唤=数量+持续秒+模板 / 诱惑=成功率+持有上限</span>
         <span id="msg-skills" class="ok-msg"></span>
       </div>
       <div id="err-skills" class="err-msg"></div>
@@ -208,7 +208,7 @@
       <div class="err-msg" id="err-monsters"></div>
       <div class="table-wrap">
         <table id="mon-table">
-          <thead><tr><th>id</th><th>名称</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th title="宠物成长: 被召唤技能引用的模板才生效, 普通怪忽略">宠满级</th><th title="宝宝升到 L+1 需 基数×L 经验">升级基数</th><th title="宝宝每级 HP/攻击 乘法成长 (升级回满血)">每级成长</th><th></th></tr></thead>
+          <thead><tr><th>id</th><th>名称</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th title="普通 / 可诱惑 (法师诱惑之光合法目标) / 不死系 (不可诱惑)">类型</th><th title="宠物成长: 被召唤技能引用的模板才生效, 普通怪忽略">宠满级</th><th title="宝宝升到 L+1 需 基数×L 经验">升级基数</th><th title="宝宝每级 HP/攻击 乘法成长 (升级回满血)">每级成长</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -923,7 +923,7 @@ function closeShapePicker(ev) { if (ev.target.id === 'shape-picker') ev.target.c
 
 // ── 技能 ──
 const CLASSES = { warrior: '战士', mage: '法师', taoist: '道士' };
-const KTYPES = { damage: '单体伤害', aoe: '范围伤害', heal: '治疗', dot: '持续毒伤', charge: '冲锋', summon: '召唤' };
+const KTYPES = { damage: '单体伤害', aoe: '范围伤害', heal: '治疗', dot: '持续毒伤', charge: '冲锋', summon: '召唤', tame: '诱惑' };
 function parseKind(kind) {
   if (kind === 'heal') return { t: 'heal', p1: '', p2: '' };
   if (kind.damage !== undefined) return { t: 'damage', p1: kind.damage, p2: '' };
@@ -931,6 +931,7 @@ function parseKind(kind) {
   if (kind.dot) return { t: 'dot', p1: kind.dot.tick_mult, p2: kind.dot.secs };
   if (kind.charge) return { t: 'charge', p1: kind.charge.mult, p2: kind.charge.stun_secs };
   if (kind.summon) return { t: 'summon', p1: kind.summon.count, p2: kind.summon.secs, s1: kind.summon.template };
+  if (kind.tame) return { t: 'tame', p1: kind.tame.chance, p2: kind.tame.max_pets };
   return { t: 'damage', p1: 1, p2: '' };
 }
 function skillRow(cls, sk) {
@@ -974,7 +975,7 @@ function skillRow(cls, sk) {
   const sync = () => {
     const t = tr.querySelector('[data-c=ktype]').value;
     tr.querySelector('[data-c=p1]').disabled = t === 'heal';
-    tr.querySelector('[data-c=p2]').disabled = t !== 'aoe' && t !== 'dot' && t !== 'charge' && t !== 'summon';
+    tr.querySelector('[data-c=p2]').disabled = t !== 'aoe' && t !== 'dot' && t !== 'charge' && t !== 'summon' && t !== 'tame';
     tr.querySelector('[data-c=ks1]').disabled = t !== 'summon';
   };
   tr.querySelector('[data-c=ktype]').addEventListener('change', sync);
@@ -1106,6 +1107,7 @@ function collectSkills() {
       : t === 'dot' ? { dot: { tick_mult: Number(v('p1')) || 0, secs: Number(v('p2')) || 0 } }
       : t === 'charge' ? { charge: { mult: Number(v('p1')) || 0, stun_secs: Number(v('p2')) || 0 } }
       : t === 'summon' ? { summon: { template: v('ks1').trim(), count: Number(v('p1')) || 1, secs: Number(v('p2')) || 0 } }
+      : t === 'tame' ? { tame: { chance: Number(v('p1')) || 0.35, max_pets: Number(v('p2')) || 5 } }
       : { damage: Number(v('p1')) || 0 };
     out[v('class')].push({
       id: v('id').trim(), name: v('name').trim(),
@@ -1852,6 +1854,11 @@ function monRow(m) {
     <td><input data-m="exp" value="${m.exp ?? 10}" style="width:55px"></td>
     <td><input type="checkbox" data-m="passive" ${m.passive ? 'checked' : ''}></td>
     <td><input data-m="drops" value="${drops}" style="width:200px" title="物品模板:概率, 逗号分隔"></td>
+    <td><select data-m="mon_type">
+        <option value="normal"${(m.mon_type ?? 'normal') === 'normal' ? ' selected' : ''}>普通</option>
+        <option value="tameable"${m.mon_type === 'tameable' ? ' selected' : ''}>可诱惑</option>
+        <option value="undead"${m.mon_type === 'undead' ? ' selected' : ''}>不死系</option>
+      </select></td>
     <td><input data-m="pet_max_level" value="${m.pet_max_level ?? 7}" style="width:44px"></td>
     <td><input data-m="pet_exp_base" value="${m.pet_exp_base ?? 100}" style="width:56px"></td>
     <td><input data-m="pet_grow" value="${m.pet_grow ?? 1.2}" style="width:50px"></td>
@@ -1905,6 +1912,7 @@ function collectMonsters() {
       id: v('id').trim(), name: v('name').trim(),
       image: num(v('image')), base: num(v('base')), hp: num(v('hp')), damage: num(v('damage')),
       exp: num(v('exp')), passive: v('passive'),
+      mon_type: v('mon_type') || 'normal',
       pet_max_level: num(v('pet_max_level')) || 7,
       pet_exp_base: num(v('pet_exp_base')) || 100,
       pet_grow: Number(v('pet_grow')) || 1.2,

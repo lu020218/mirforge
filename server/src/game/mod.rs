@@ -1638,6 +1638,7 @@ impl Game {
                         SkillKind::Dot { .. } => "dot",
                         SkillKind::Charge { .. } => "charge",
                         SkillKind::Summon { .. } => "summon",
+                        SkillKind::Tame { .. } => "tame",
                     }
                     .into(),
                 }
