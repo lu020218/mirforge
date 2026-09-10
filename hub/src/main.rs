@@ -94,6 +94,9 @@ async fn init_config(pool: &SqlitePool) {
     gamedata::store::migrate_zhaohuan(pool)
         .await
         .expect("召唤骷髅迁移失败");
+    gamedata::store::migrate_zhiyu_range(pool)
+        .await
+        .expect("治愈射程迁移失败");
     if gamedata::store::is_empty(pool).await.unwrap_or(false) {
         let data_dir = std::env::var("MIRFORGE_DATA")
             .map(std::path::PathBuf::from)

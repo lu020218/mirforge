@@ -106,6 +106,13 @@ pub(crate) fn cast_skills(
         };
         Some(t)
     };
+    // 治愈类: 目标启发式 — 掉血宝宝(自己或他人的)优先, 其次自己(掉血),
+    // 再次附近其他玩家; 都没有则治自己 (target None)
+    let target = if s.kind == "heal" {
+        heal_target(&net, &remotes, &p, s.range.max(6.0))
+    } else {
+        target
+    };
     if let Some((_, _, mp)) = &target {
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
     }
@@ -125,13 +132,48 @@ pub(crate) fn cast_skills(
     });
 }
 
-/// 开发钩子: MIRFORGE_CAST=skill_id[:秒] — 周期性自动施放 (特效视觉自查用)
+/// 治愈目标启发式: 掉血宠物 → 自己(掉血) → 附近其他玩家 → 自己
+fn heal_target(
+    net: &Net,
+    remotes: &Remotes,
+    p: &Player,
+    range: f64,
+) -> Option<(String, f64, DVec2)> {
+    // 掉血宠物 (任何主人的; 血条信息只有怪物实体带)
+    let hurt_pet = remotes
+        .0
+        .iter()
+        .filter(|(_, r)| r.owner.is_some() && r.anim != 4)
+        .filter(|(_, r)| r.hp.is_some_and(|(cur, max)| cur > 0 && cur < max))
+        .map(|(id, r)| (id.clone(), (r.pos - p.pos).length(), r.pos))
+        .filter(|(_, d, _)| *d <= range)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if hurt_pet.is_some() {
+        return hurt_pet;
+    }
+    // 自己掉血: 治自己 (None = 服务端回落自身)
+    if net.stat.is_some_and(|st| st.hp < st.max_hp) {
+        return None;
+    }
+    // 附近其他玩家 (客户端不知其血量, 交给服务端封顶)
+    remotes
+        .0
+        .iter()
+        .filter(|(_, r)| r.image.is_none() && r.anim != 4)
+        .map(|(id, r)| (id.clone(), (r.pos - p.pos).length(), r.pos))
+        .filter(|(_, d, _)| *d <= range)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// 开发钩子: MIRFORGE_CAST=skill_id[:秒][,skill_id[:秒]…] — 周期性轮流
+/// 施放多个技能 (特效/战斗链路自查用)
 pub(crate) fn dev_cast(
     time: Res<Time>,
     net: ResMut<Net>,
     remotes: Res<Remotes>,
     mut q: Query<&mut Player>,
     mut next_at: Local<f64>,
+    mut slot: Local<usize>,
 ) {
     let Ok(spec) = std::env::var("MIRFORGE_CAST") else {
         return;
@@ -139,18 +181,29 @@ pub(crate) fn dev_cast(
     let Ok(mut p) = q.get_single_mut() else {
         return;
     };
-    let (id, every) = match spec.split_once(':') {
-        Some((a, b)) => (a.to_string(), b.parse().unwrap_or(2.0)),
-        None => (spec, 2.0),
-    };
+    // 逗号分隔多技能轮播: zhaohuan:9,zhiyu:3 — 每次到点施放下一个
+    let entries: Vec<(String, f64)> = spec
+        .split(',')
+        .map(|e| match e.split_once(':') {
+            Some((a, b)) => (a.to_string(), b.parse().unwrap_or(2.0)),
+            None => (e.to_string(), 2.0),
+        })
+        .collect();
+    if entries.is_empty() {
+        return;
+    }
     let now = time.elapsed_secs_f64();
     if now < *next_at {
         return;
     }
+    let (id, every) = entries[*slot % entries.len()].clone();
     let Some(s) = net.skills.iter().find(|s| s.id == id).cloned() else {
+        *slot += 1; // 未学会的跳过, 不卡轮播
         return;
     };
-    let target = if s.self_cast {
+    let target = if s.kind == "heal" {
+        heal_target(&net, &remotes, &p, s.range.max(6.0))
+    } else if s.self_cast {
         None
     } else {
         let Some(t) = remotes
@@ -165,6 +218,7 @@ pub(crate) fn dev_cast(
         };
         Some(t)
     };
+    *slot += 1;
     *next_at = now + every;
     if let Some((_, _, mp)) = &target {
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);

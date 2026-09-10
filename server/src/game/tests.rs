@@ -913,3 +913,70 @@ async fn pet_levels_up_by_kills_capped_at_7() {
     assert_eq!(p.pet_level, 1, "重召从 1 级开始");
     assert_eq!(p.image_base, 0);
 }
+
+#[tokio::test]
+async fn heal_targets_players_and_pets() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    let mut p2 = test_player("c2", "z1", 12.0, 10.0);
+    p2.hp = 10;
+    g.players.insert("char2".into(), p2);
+    g.spawn_pets("char1", "z1", (11.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let pet_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_some())
+        .unwrap()
+        .id
+        .clone();
+    // 直接走 Heal 结算逻辑: 通过 handle_use_skill 需要技能表 — 改用
+    // 与其等价的直接调用路径不可行, 这里用 use_skill 完整链路:
+    // 先给角色喂技能等级 (skills_for 取 taoist 表, zhiyu level 门槛 1)
+    // 测试世界玩家是 warrior — 直接改类为 Taoist
+    g.players.get_mut("char1").unwrap().character.class = CharacterClass::Taoist;
+    g.players.get_mut("char1").unwrap().level = 99;
+    g.players.get_mut("char1").unwrap().mp = 999;
+    // 奶其他玩家
+    g.handle_use_skill("c1", "zhiyu", Some("char2".into()))
+        .await;
+    assert!(
+        g.players["char2"].hp > 10,
+        "治愈应给其他玩家回血 (hp={})",
+        g.players["char2"].hp
+    );
+    // 奶宝宝 (先扣宠物血)
+    if let Some(m) = g.monsters.iter_mut().find(|m| m.id == pet_id) {
+        m.hp = 1;
+    }
+    g.players.get_mut("char1").unwrap().cooldowns.clear();
+    g.handle_use_skill("c1", "zhiyu", Some(pet_id.clone()))
+        .await;
+    let pet_hp = g.monsters.iter().find(|m| m.id == pet_id).unwrap().hp;
+    assert!(pet_hp > 1, "治愈应给宝宝回血 (hp={pet_hp})");
+    // 无目标: 回落治自己
+    g.players.get_mut("char1").unwrap().hp = 5;
+    g.players.get_mut("char1").unwrap().cooldowns.clear();
+    g.handle_use_skill("c1", "zhiyu", None).await;
+    assert!(g.players["char1"].hp > 5, "无目标应治自己");
+    // 敌怪不可被治疗: 目标无效回落自己
+    let mon_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_none())
+        .unwrap()
+        .id
+        .clone();
+    let mon_hp0 = g.monsters.iter().find(|m| m.id == mon_id).unwrap().hp;
+    g.players.get_mut("char1").unwrap().hp = 5;
+    g.players.get_mut("char1").unwrap().cooldowns.clear();
+    g.handle_use_skill("c1", "zhiyu", Some(mon_id.clone()))
+        .await;
+    assert_eq!(
+        g.monsters.iter().find(|m| m.id == mon_id).unwrap().hp,
+        mon_hp0,
+        "敌怪不可被治疗"
+    );
+    assert!(g.players["char1"].hp > 5, "无效目标回落治自己");
+}

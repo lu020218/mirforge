@@ -1505,3 +1505,15 @@ pub async fn migrate_zhaohuan(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     }
     Ok(())
 }
+
+/// 治愈术开放目标施放 (幂等): 旧配置 range 0 (纯自愈) 提到 8 格
+pub async fn migrate_zhiyu_range(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let n = sqlx::query("UPDATE cfg_skills SET range = 8 WHERE id = 'zhiyu' AND range < 6")
+        .execute(pool)
+        .await?
+        .rows_affected();
+    if n > 0 {
+        tracing::info!("治愈术射程已开放为 8 格 (可奶队友与宝宝)");
+    }
+    Ok(())
+}

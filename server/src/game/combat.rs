@@ -261,8 +261,11 @@ impl Game {
         let train_mult = 1.0 + def.level_bonus * skill_level as f64;
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
         let mut dot_target: Option<(String, i32, f64)> = None;
-        // 召唤: 烟雾特效播在骷髅出生点 (素材语义: 宠物从烟雾中现身)
+        // 召唤: 烟雾特效播在骷髅出生点 (素材语义: 宠物从烟雾中现身);
+        // 治愈: 特效播在受疗者身上 — 共用特效落点覆盖
         let mut summon_fx_pos: Option<(f64, f64)> = None;
+        // 非伤害类的特效目标 (治愈受疗者), 只进 SkillEffect.targets
+        let mut extra_targets: Vec<String> = Vec::new();
         match def.kind {
             SkillKind::Damage(mult) => {
                 if let Some(tid) = &target_id {
@@ -282,9 +285,44 @@ impl Game {
                 }
             }
             SkillKind::Heal => {
-                if let Some(p) = self.players.get_mut(&char_id) {
-                    let amount = ((30 + level as i32 * 5) as f64 * train_mult) as i32;
-                    p.hp = (p.hp + amount).min(p.max_hp);
+                // 经典治愈术: 可奶其他玩家/自己或他人的宝宝; 无目标或目标
+                // 无效 (超程/离区/已死) 一律回落治自己, 不白扣蓝
+                let amount = ((30 + level as i32 * 5) as f64 * train_mult) as i32;
+                let heal_range = def.range.max(6.0);
+                let mut healed: Option<(f64, f64, String)> = None;
+                if let Some(tid) = target_id.as_deref().filter(|t| *t != char_id) {
+                    if let Some(t) = self.players.get_mut(tid) {
+                        let d = ((t.x - px).powi(2) + (t.y - py).powi(2)).sqrt();
+                        if t.zone == zone && t.connected && d <= heal_range {
+                            t.hp = (t.hp + amount).min(t.max_hp);
+                            healed = Some((t.x, t.y, tid.to_string()));
+                        }
+                    } else if let Some(m) = self
+                        .monsters
+                        .iter_mut()
+                        .find(|m| m.id == tid && m.zone == zone && m.owner.is_some() && m.alive())
+                    {
+                        let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+                        if d <= heal_range {
+                            m.hp = (m.hp + amount).min(m.max_hp);
+                            healed = Some((m.x, m.y, m.id.clone()));
+                        }
+                    }
+                }
+                match healed {
+                    Some((hx, hy, hid)) => {
+                        summon_fx_pos = Some((hx, hy));
+                        extra_targets.push(hid.clone());
+                        // 受疗者是玩家: 即刻推状态 (血条实时回)
+                        if self.players.contains_key(&hid) {
+                            self.send_player_status(&hid).await;
+                        }
+                    }
+                    None => {
+                        if let Some(p) = self.players.get_mut(&char_id) {
+                            p.hp = (p.hp + amount).min(p.max_hp);
+                        }
+                    }
                 }
             }
             SkillKind::Dot { tick_mult, secs } => {
@@ -367,6 +405,7 @@ impl Game {
                     .iter()
                     .map(|(id, _)| id.clone())
                     .chain(dot_target.iter().map(|(id, _, _)| id.clone()))
+                    .chain(extra_targets.iter().cloned())
                     .collect(),
                 level: skill_level,
                 fx: def.fx.clone(),
