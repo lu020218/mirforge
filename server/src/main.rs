@@ -148,6 +148,9 @@ async fn main() {
         config_store::migrate_zhiyu_range(db.pool())
             .await
             .expect("治愈射程迁移失败");
+        config_store::migrate_pet_growth(db.pool())
+            .await
+            .expect("宠物成长列迁移失败");
 
         // 首次建库: 从 JSON 种子导入一次 (之后配置以数据库为准)
         if config_store::is_empty(db.pool()).await.unwrap_or(false) {

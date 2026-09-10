@@ -197,13 +197,6 @@ pub(super) struct StatusState {
 }
 
 pub(super) use sim::DASH_SPEED;
-/// 宝宝最高等级 (经典 7 级封顶)
-pub const PET_MAX_LEVEL: u32 = 7;
-/// 宝宝升级经验基数: 升到 L+1 需 PET_EXP_BASE × L
-pub const PET_EXP_BASE: u64 = 100;
-/// 宝宝每级数值成长 (HP/攻击 ×1.2 乘法叠加, 升级回满血)
-pub const PET_LEVEL_GROW: f64 = 1.2;
-
 /// 冲锋撞击判定距离 (与怪物碰撞体贴合)
 const DASH_HIT_RANGE: f64 = 1.1;
 /// 冲锋击退距离 (格)

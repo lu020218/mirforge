@@ -1042,8 +1042,9 @@ impl super::Game {
         .await;
     }
 
-    /// 宝宝吃经验: 满额升级 (最高 7 级) — 数值 ×1.2/级并回满血,
-    /// 形态切下一档 (骷髅库 12 形态, 7 级用前 7 档)
+    /// 宝宝吃经验: 满额升级 — 成长参数实时取自怪物模板 (后台可调,
+    /// 热改后已召唤的宝宝下一次升级即按新曲线); 形态切下一档
+    /// (骷髅库 12 形态)
     pub(super) async fn grant_pet_exp(&mut self, pet_id: &str, exp: u64) {
         let d = data();
         let Some(m) = self
@@ -1053,17 +1054,23 @@ impl super::Game {
         else {
             return;
         };
+        let (cap, exp_base, grow) = d
+            .monsters
+            .iter()
+            .find(|t| t.id == m.template)
+            .map(|t| (t.pet_max_level, t.pet_exp_base, t.pet_grow))
+            .unwrap_or((7, 100, 1.2));
         m.pet_exp += exp;
         let mut leveled = false;
-        while m.pet_level < PET_MAX_LEVEL {
-            let need = PET_EXP_BASE * m.pet_level as u64;
+        while m.pet_level < cap {
+            let need = exp_base * m.pet_level as u64;
             if m.pet_exp < need {
                 break;
             }
             m.pet_exp -= need;
             m.pet_level += 1;
-            m.max_hp = (m.max_hp as f64 * PET_LEVEL_GROW) as i32;
-            m.damage = (m.damage as f64 * PET_LEVEL_GROW) as i32;
+            m.max_hp = (m.max_hp as f64 * grow) as i32;
+            m.damage = (m.damage as f64 * grow) as i32;
             leveled = true;
         }
         if leveled {

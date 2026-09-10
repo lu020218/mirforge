@@ -178,7 +178,10 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             exp INTEGER NOT NULL DEFAULT 10,
             passive INTEGER NOT NULL DEFAULT 0,
             drops TEXT NOT NULL DEFAULT '[]',
-            ord INTEGER NOT NULL DEFAULT 0
+            ord INTEGER NOT NULL DEFAULT 0,
+            pet_max_level INTEGER NOT NULL DEFAULT 7,
+            pet_exp_base INTEGER NOT NULL DEFAULT 100,
+            pet_grow REAL NOT NULL DEFAULT 1.2
         )",
         "CREATE TABLE IF NOT EXISTS cfg_drops (
             spawn_id INTEGER NOT NULL,
@@ -498,7 +501,9 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
     }
 
     let monsters = sqlx::query(
-        "SELECT id, name, image, base, hp, damage, exp, passive, drops FROM cfg_monsters ORDER BY ord, id",
+        "SELECT id, name, image, base, hp, damage, exp, passive, drops,
+                pet_max_level, pet_exp_base, pet_grow
+         FROM cfg_monsters ORDER BY ord, id",
     )
     .fetch_all(pool)
     .await?
@@ -513,6 +518,9 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         exp: r.get::<i64, _>("exp").max(0) as u64,
         passive: r.get::<i64, _>("passive") != 0,
         drops: serde_json::from_str(&r.get::<String, _>("drops")).unwrap_or_default(),
+        pet_max_level: r.get::<i64, _>("pet_max_level").clamp(1, 99) as u32,
+        pet_exp_base: r.get::<i64, _>("pet_exp_base").max(1) as u64,
+        pet_grow: r.get::<f64, _>("pet_grow").max(1.0),
     })
     .collect();
 
@@ -946,8 +954,9 @@ pub async fn save_monsters(
         .await?;
     for (i, m) in monsters.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO cfg_monsters (id, name, image, base, hp, damage, exp, passive, drops, ord)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cfg_monsters (id, name, image, base, hp, damage, exp, passive, drops,
+                                       ord, pet_max_level, pet_exp_base, pet_grow)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.name)
@@ -959,6 +968,9 @@ pub async fn save_monsters(
         .bind(m.passive as i64)
         .bind(serde_json::to_string(&m.drops).unwrap_or_else(|_| "[]".into()))
         .bind(i as i64)
+        .bind(m.pet_max_level as i64)
+        .bind(m.pet_exp_base as i64)
+        .bind(m.pet_grow)
         .execute(&mut *tx)
         .await?;
     }
@@ -1007,6 +1019,9 @@ pub async fn migrate_monsters(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             exp: r.get::<i64, _>("exp").max(0) as u64,
             passive: r.get::<i64, _>("passive") != 0,
             drops,
+            pet_max_level: 7,
+            pet_exp_base: 100,
+            pet_grow: 1.2,
         });
     }
     if !out.is_empty() {
@@ -1514,6 +1529,26 @@ pub async fn migrate_zhiyu_range(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .rows_affected();
     if n > 0 {
         tracing::info!("治愈术射程已开放为 8 格 (可奶队友与宝宝)");
+    }
+    Ok(())
+}
+
+/// 宠物成长参数后台化 (幂等): cfg_monsters 补三列 (旧库)
+pub async fn migrate_pet_growth(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let has =
+        sqlx::query("SELECT 1 FROM pragma_table_info('cfg_monsters') WHERE name = 'pet_max_level'")
+            .fetch_optional(pool)
+            .await?
+            .is_some();
+    if !has {
+        for ddl in [
+            "ALTER TABLE cfg_monsters ADD COLUMN pet_max_level INTEGER NOT NULL DEFAULT 7",
+            "ALTER TABLE cfg_monsters ADD COLUMN pet_exp_base INTEGER NOT NULL DEFAULT 100",
+            "ALTER TABLE cfg_monsters ADD COLUMN pet_grow REAL NOT NULL DEFAULT 1.2",
+        ] {
+            sqlx::query(ddl).execute(pool).await?;
+        }
+        tracing::info!("怪物表已加宠物成长列 (满级/升级基数/每级成长)");
     }
     Ok(())
 }

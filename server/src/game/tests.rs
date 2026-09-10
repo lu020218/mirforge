@@ -980,3 +980,48 @@ async fn heal_targets_players_and_pets() {
     );
     assert!(g.players["char1"].hp > 5, "无效目标回落治自己");
 }
+
+#[tokio::test]
+async fn pet_growth_params_come_from_template() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    // 改内存配置: chicken 模板 低基数/强成长/低上限
+    let mut d = (*data()).clone();
+    for m in d.monsters.iter_mut().filter(|m| m.id == "chicken") {
+        m.pet_exp_base = 10;
+        m.pet_grow = 2.0;
+        m.pet_max_level = 3;
+    }
+    set_data(d);
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let pet_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_some())
+        .unwrap()
+        .id
+        .clone();
+    let hp1 = g.monsters.iter().find(|m| m.id == pet_id).unwrap().max_hp;
+    // 10 经验即可升 2 级 (基数 10×1), 数值翻倍
+    g.grant_pet_exp(&pet_id, 10).await;
+    {
+        let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+        assert_eq!(p.pet_level, 2, "基数 10 应 10 经验升级");
+        assert_eq!(p.max_hp, hp1 * 2, "成长 2.0 数值翻倍");
+    }
+    // 大量经验: 按模板上限 3 封顶
+    g.grant_pet_exp(&pet_id, 100_000).await;
+    assert_eq!(
+        g.monsters
+            .iter()
+            .find(|m| m.id == pet_id)
+            .unwrap()
+            .pet_level,
+        3,
+        "上限取模板 pet_max_level"
+    );
+    // 复原全局配置 (测试进程内共享)
+    set_data(GameData::builtin());
+}

@@ -208,7 +208,7 @@
       <div class="err-msg" id="err-monsters"></div>
       <div class="table-wrap">
         <table id="mon-table">
-          <thead><tr><th>id</th><th>名称</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th></th></tr></thead>
+          <thead><tr><th>id</th><th>名称</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th title="宠物成长: 被召唤技能引用的模板才生效, 普通怪忽略">宠满级</th><th title="宝宝升到 L+1 需 基数×L 经验">升级基数</th><th title="宝宝每级 HP/攻击 乘法成长 (升级回满血)">每级成长</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -1852,6 +1852,9 @@ function monRow(m) {
     <td><input data-m="exp" value="${m.exp ?? 10}" style="width:55px"></td>
     <td><input type="checkbox" data-m="passive" ${m.passive ? 'checked' : ''}></td>
     <td><input data-m="drops" value="${drops}" style="width:200px" title="物品模板:概率, 逗号分隔"></td>
+    <td><input data-m="pet_max_level" value="${m.pet_max_level ?? 7}" style="width:44px"></td>
+    <td><input data-m="pet_exp_base" value="${m.pet_exp_base ?? 100}" style="width:56px"></td>
+    <td><input data-m="pet_grow" value="${m.pet_grow ?? 1.2}" style="width:50px"></td>
     <td><button class="ghost" onclick="this.closest('tr').remove()">删</button></td>`;
   const syncThumb = () => {
     const lib = Number(tr.querySelector('input[data-m="image"]').value) || 0;
@@ -1902,6 +1905,9 @@ function collectMonsters() {
       id: v('id').trim(), name: v('name').trim(),
       image: num(v('image')), base: num(v('base')), hp: num(v('hp')), damage: num(v('damage')),
       exp: num(v('exp')), passive: v('passive'),
+      pet_max_level: num(v('pet_max_level')) || 7,
+      pet_exp_base: num(v('pet_exp_base')) || 100,
+      pet_grow: Number(v('pet_grow')) || 1.2,
       drops: v('drops').split(',').map(x => x.trim()).filter(Boolean).map(x => {
         const [item, ch] = x.split(':');
         return { item: (item || '').trim(), chance: num(ch) };

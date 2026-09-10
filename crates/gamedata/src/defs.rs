@@ -79,6 +79,25 @@ pub struct MonsterDef {
     pub passive: bool,
     #[serde(default)]
     pub drops: Vec<DropSidecar>,
+    /// 宠物成长 (仅被召唤技能引用时生效): 等级上限 (经典 7)
+    #[serde(default = "default_pet_max_level")]
+    pub pet_max_level: u32,
+    /// 宠物升级经验基数: 升到 L+1 需 基数 × L
+    #[serde(default = "default_pet_exp_base")]
+    pub pet_exp_base: u64,
+    /// 宠物每级 HP/攻击乘法成长 (升级回满血)
+    #[serde(default = "default_pet_grow")]
+    pub pet_grow: f64,
+}
+
+fn default_pet_max_level() -> u32 {
+    7
+}
+fn default_pet_exp_base() -> u64 {
+    100
+}
+fn default_pet_grow() -> f64 {
+    1.2
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
