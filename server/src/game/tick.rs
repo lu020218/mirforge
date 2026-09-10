@@ -274,6 +274,8 @@ impl Game {
                             "die"
                         } else if m.attack_until.is_some() {
                             "attack"
+                        } else if m.struck_until.is_some_and(|t| now < t) {
+                            "struck"
                         } else if m.target.is_some() {
                             "walk"
                         } else {

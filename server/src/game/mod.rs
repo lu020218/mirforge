@@ -150,6 +150,8 @@ const PLAYER_ATTACK_RANGE: f64 = 2.5;
 const PLAYER_ATTACK_CD: Duration = Duration::from_millis(600);
 const MONSTER_HIT_RANGE: f64 = 2.2;
 const DYING_TIME: Duration = Duration::from_millis(1300);
+/// 受击硬直: 顿帧 + 播受击姿态 (经典"被打顿一下"; 毒跳伤不触发)
+const STRUCK_ANIM: Duration = Duration::from_millis(300);
 const RESPAWN_TIME: Duration = Duration::from_secs(30);
 /// 尸体最长停留时长 (经典传奇: 尸体躺一阵才消失; 到重生时刻或此上限先到者为准)
 const CORPSE_CAP: Duration = Duration::from_secs(60);
@@ -359,6 +361,8 @@ struct Monster {
     /// 活跃状态效果 (statuses_sent: 广播过非空后需补发一次空表清除)
     statuses: HashMap<StatusKind, StatusState>,
     statuses_sent: bool,
+    /// 受击硬直到点 (播受击姿态 + 暂停移动; 不打断已出手的攻击结算)
+    struck_until: Option<Instant>,
     /// 宠物主人 (召唤骷髅等; Some = 友方, 跟随主人/攻击敌怪/不重生)
     owner: Option<String>,
     /// 召唤到期时刻 (None = 直到死亡/主人离场)

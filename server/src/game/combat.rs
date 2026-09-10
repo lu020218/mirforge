@@ -54,6 +54,17 @@ impl Game {
 
     /// 对怪结算一次伤害: 扣血/飘字广播/击杀 → 尸体+经验。返回是否击杀。
     pub(super) async fn hit_monster(&mut self, char_id: &str, mon_id: &str, dmg: i32) -> bool {
+        self.hit_monster_inner(char_id, mon_id, dmg, true).await
+    }
+
+    /// struck=false: 不触发受击顿帧 (毒跳伤 — 经典绿毒掉血不顿)
+    async fn hit_monster_inner(
+        &mut self,
+        char_id: &str,
+        mon_id: &str,
+        dmg: i32,
+        struck: bool,
+    ) -> bool {
         let now = Instant::now();
         let Some(m) = self
             .monsters
@@ -69,6 +80,9 @@ impl Game {
             m.target = None;
             m.attack_until = None;
             m.pending_hit = None;
+        } else if struck {
+            // 受击硬直: 顿帧 + 受击姿态 (毒跳伤 struck=false 跳过)
+            m.struck_until = Some(now + STRUCK_ANIM);
         }
         let conns = self.zone_conns(&zone);
         broadcast_to(
@@ -531,6 +545,10 @@ impl Game {
                     }
                 }
             }
+            // 受击硬直: 顿帧 (决策与移动暂停; 已出手的攻击结算不受影响)
+            if m.struck_until.is_some_and(|t| now < t) {
+                continue;
+            }
             if now >= m.next_decide {
                 m.next_decide = now + Duration::from_millis(500);
                 if is_pet {
@@ -755,7 +773,7 @@ impl Game {
             }
         }
         for (attacker, mon_id, dmg) in ticks {
-            self.hit_monster(&attacker, &mon_id, dmg).await;
+            self.hit_monster_inner(&attacker, &mon_id, dmg, false).await;
         }
         for (zone, id) in expired {
             self.broadcast_poison(&zone, &id, false).await;
@@ -876,6 +894,7 @@ impl super::Game {
                 poison: None,
                 statuses: HashMap::new(),
                 statuses_sent: false,
+                struck_until: None,
                 owner: Some(owner.to_string()),
                 summon_until: until,
             });
@@ -897,6 +916,8 @@ impl super::Game {
             m.dying_until = Some(Instant::now() + DYING_TIME);
             m.target = None;
             m.pending_hit = None;
+        } else {
+            m.struck_until = Some(Instant::now() + STRUCK_ANIM);
         }
         let conns = self.zone_conns(&zone);
         broadcast_to(

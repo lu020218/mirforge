@@ -664,3 +664,40 @@ async fn summon_expires_by_timer() {
         "到期应消散"
     );
 }
+
+#[tokio::test]
+async fn hit_sets_struck_but_poison_tick_does_not() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    let mon_id = g.monsters[0].id.clone();
+    // 直接命中: 进入受击硬直
+    g.hit_monster("char1", &mon_id, 3).await;
+    let now = Instant::now();
+    assert!(
+        g.monsters[0].struck_until.is_some_and(|t| t > now),
+        "命中应设受击硬直"
+    );
+    // 硬直期间: 决策与移动暂停 (target 不会被赋新值)
+    g.monsters[0].target = None;
+    g.monsters[0].next_decide = now;
+    g.monster_ai(now);
+    assert!(g.monsters[0].target.is_none(), "硬直期间不应移动/索敌");
+    // 硬直过后恢复决策
+    g.monsters[0].struck_until = Some(now);
+    g.monsters[0].next_decide = now;
+    g.monster_ai(now);
+    assert!(
+        g.monsters[0].target.is_some() || g.monsters[0].attack_until.is_some(),
+        "硬直结束应恢复行动"
+    );
+    // 毒跳伤不触发受击
+    g.monsters[0].struck_until = None;
+    g.apply_poison("char1", &mon_id, 2, 10.0).await;
+    g.monsters[0].poison.as_mut().unwrap().next_tick = Instant::now();
+    g.tick_poisons(Instant::now()).await;
+    assert!(
+        g.monsters[0].struck_until.is_none(),
+        "毒跳伤不应触发受击顿帧"
+    );
+}

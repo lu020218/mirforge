@@ -81,6 +81,7 @@ pub(crate) fn remote_step(
             // 动作序号: 站0 走1 攻2 被击3 死4; (相位, 一次性)
             let (act, phase, oneshot) = match r.anim {
                 4 => (4, (r.anim_t / 0.13) as usize, true),
+                5 => (3, (r.anim_t / 0.12) as usize, true),
                 3 => (2, (r.anim_t / 0.15) as usize, false),
                 _ if walking => (1, (r.walk_phase * 6.0) as usize, false),
                 _ => (0, (r.anim_t / 0.25) as usize, false),

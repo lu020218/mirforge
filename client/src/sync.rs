@@ -525,6 +525,8 @@ pub(crate) fn net_pump(
                             Some("walk") => 1,
                             Some("attack") => 3,
                             Some("die") => 4,
+                            // 怪物受击 (编号避开玩家 run=2, 不进移动插值判定)
+                            Some("struck") => 5,
                             _ => 0,
                         };
                         if anim != r.anim {
