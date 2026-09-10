@@ -80,6 +80,8 @@ pub(super) fn materialize_monsters(
                 struck_until: None,
                 aggro_target: None,
                 owner: None,
+                pet_level: 0,
+                pet_exp: 0,
                 summon_until: None,
             });
         }
@@ -133,6 +135,8 @@ pub(super) fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monst
                 struck_until: None,
                 aggro_target: None,
                 owner: None,
+                pet_level: 0,
+                pet_exp: 0,
                 summon_until: None,
             }
         })

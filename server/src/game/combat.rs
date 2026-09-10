@@ -93,6 +93,14 @@ impl Game {
                 m.aggro_target = Some(src.to_string());
             }
         }
+        // 宝宝击杀: 怪物经验同额喂给宝宝 (主人经验照旧, 见下方结算)
+        if killed {
+            if let Some(src) = aggro_source {
+                if src != char_id {
+                    self.grant_pet_exp(src, exp_gain).await;
+                }
+            }
+        }
         let conns = self.zone_conns(&zone);
         broadcast_to(
             &self.sessions,
@@ -905,8 +913,9 @@ impl super::Game {
         let def = t.clone();
         let hp = (def.hp as f64 * grow) as i32;
         let damage = (def.damage as f64 * grow) as i32;
-        // 形态随修炼等级换装 (骷髅库 12 形态, 每形态 360 帧)
-        let image_base = def.base + skill_level.min(11) * 360;
+        // 形态随宝宝等级换装 (1 级 = 首形态; 升级在 grant_pet_exp 里切换)
+        let _ = skill_level;
+        let image_base = def.base;
         let now = Instant::now();
         let until = (secs > 0.0).then(|| now + Duration::from_secs_f64(secs));
         let mut first = None;
@@ -954,6 +963,8 @@ impl super::Game {
                 struck_until: None,
                 aggro_target: None,
                 owner: Some(owner.to_string()),
+                pet_level: 1,
+                pet_exp: 0,
                 summon_until: until,
             });
         }
@@ -990,6 +1001,56 @@ impl super::Game {
             },
         )
         .await;
+    }
+
+    /// 宝宝吃经验: 满额升级 (最高 7 级) — 数值 ×1.2/级并回满血,
+    /// 形态切下一档 (骷髅库 12 形态, 7 级用前 7 档)
+    pub(super) async fn grant_pet_exp(&mut self, pet_id: &str, exp: u64) {
+        let d = data();
+        let Some(m) = self
+            .monsters
+            .iter_mut()
+            .find(|m| m.id == pet_id && m.owner.is_some() && m.alive())
+        else {
+            return;
+        };
+        m.pet_exp += exp;
+        let mut leveled = false;
+        while m.pet_level < PET_MAX_LEVEL {
+            let need = PET_EXP_BASE * m.pet_level as u64;
+            if m.pet_exp < need {
+                break;
+            }
+            m.pet_exp -= need;
+            m.pet_level += 1;
+            m.max_hp = (m.max_hp as f64 * PET_LEVEL_GROW) as i32;
+            m.damage = (m.damage as f64 * PET_LEVEL_GROW) as i32;
+            leveled = true;
+        }
+        if leveled {
+            m.hp = m.max_hp; // 升级回满
+            if let Some(t) = d.monsters.iter().find(|t| t.id == m.template) {
+                m.image_base = t.base + (m.pet_level - 1).min(11) * 360;
+            }
+            let (zone, name, lv) = (m.zone.clone(), m.name.clone(), m.pet_level);
+            let owner = m.owner.clone();
+            // 升级提示给主人
+            if let Some(conn) = owner
+                .and_then(|o| self.players.get(&o))
+                .map(|p| p.conn_id.clone())
+            {
+                send_to(
+                    &self.sessions,
+                    &conn,
+                    ServerMessage::Notification {
+                        message: format!("{name}升到了 {lv} 级!"),
+                        notification_type: "info".into(),
+                    },
+                )
+                .await;
+            }
+            let _ = zone;
+        }
     }
 
     /// 消散某主人的全部宠物 (重复施放/下线/换区/到期)

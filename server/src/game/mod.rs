@@ -197,6 +197,13 @@ pub(super) struct StatusState {
 }
 
 pub(super) use sim::DASH_SPEED;
+/// 宝宝最高等级 (经典 7 级封顶)
+pub const PET_MAX_LEVEL: u32 = 7;
+/// 宝宝升级经验基数: 升到 L+1 需 PET_EXP_BASE × L
+pub const PET_EXP_BASE: u64 = 100;
+/// 宝宝每级数值成长 (HP/攻击 ×1.2 乘法叠加, 升级回满血)
+pub const PET_LEVEL_GROW: f64 = 1.2;
+
 /// 冲锋撞击判定距离 (与怪物碰撞体贴合)
 const DASH_HIT_RANGE: f64 = 1.1;
 /// 冲锋击退距离 (格)
@@ -368,6 +375,10 @@ struct Monster {
     aggro_target: Option<String>,
     /// 宠物主人 (召唤骷髅等; Some = 友方, 跟随主人/攻击敌怪/不重生)
     owner: Option<String>,
+    /// 宝宝等级 1-7 (杀怪得经验升级, 形态/数值随级; 死亡/消散即归零)
+    pet_level: u32,
+    /// 当前级已积累经验 (升级所需 = PET_EXP_BASE × 当前级)
+    pet_exp: u64,
     /// 召唤到期时刻 (None = 直到死亡/主人离场)
     summon_until: Option<Instant>,
     chasing: bool,
@@ -408,7 +419,9 @@ impl Monster {
     }
 
     fn alive(&self) -> bool {
-        self.dying_until.is_none() && self.respawn_at.is_none()
+        // hp 判定必不可少: 宠物不重生 (respawn_at 恒 None), 尸体期若无它
+        // 会被当活体继续索敌出手 — "骨堆延迟咬怪" bug 的根源
+        self.hp > 0 && self.dying_until.is_none() && self.respawn_at.is_none()
     }
 }
 

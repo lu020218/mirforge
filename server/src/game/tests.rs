@@ -586,7 +586,10 @@ async fn summon_spawns_pet_that_fights_for_owner() {
     assert!(pos.is_some(), "召唤应成功");
     let pet = g.monsters.iter().find(|m| m.owner.is_some()).unwrap();
     assert_eq!(pet.owner.as_deref(), Some("char1"));
-    assert_eq!(pet.image_base, 2 * 360, "形态随修炼等级偏移");
+    assert_eq!(
+        pet.image_base, 0,
+        "初始形态固定首档 (形态随宝宝等级, 见 pet_levels_up)"
+    );
     let (pet_id, base_hp) = (pet.id.clone(), pet.hp);
     assert!(base_hp > 0);
     // 宠物应索敌攻击附近的稻草人 (10,10): 决策 → 攻击动画 → 到点归属主人
@@ -820,4 +823,93 @@ async fn pet_death_full_lifecycle() {
         !g.monsters.iter().any(|m| m.id == pet_id),
         "尸体到期应彻底移除"
     );
+}
+
+#[tokio::test]
+async fn dead_pet_corpse_does_not_attack() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 10.5, 10.0));
+    g.spawn_pets("char1", "z1", (10.5, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let pet_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_some())
+        .unwrap()
+        .id
+        .clone();
+    // 宠物出手中 (pending_hit 挂着) 被咬死 → 进入尸体期
+    let now = Instant::now();
+    let mon_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_none())
+        .unwrap()
+        .id
+        .clone();
+    if let Some(m) = g.monsters.iter_mut().find(|m| m.id == pet_id) {
+        m.attack_until = Some(now);
+        m.pending_hit = Some(mon_id.clone());
+    }
+    g.damage_pet(&pet_id, &mon_id, 99999).await;
+    // 拨快死亡动画 → 尸体期
+    if let Some(m) = g.monsters.iter_mut().find(|m| m.id == pet_id) {
+        m.dying_until = Some(now - Duration::from_millis(1));
+    }
+    g.tick().await;
+    let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+    assert!(p.corpse_until.is_some(), "应在尸体期");
+    assert!(!p.alive(), "尸体期不得视为活体 (hp<=0)");
+    // 尸体期 AI: 不得产出任何宠物攻击
+    let hp0 = g.monsters.iter().find(|m| m.id == mon_id).unwrap().hp;
+    let ai = g.monster_ai(Instant::now());
+    assert!(ai.pet_attacks.is_empty(), "骨堆不得出手");
+    assert_eq!(g.monsters.iter().find(|m| m.id == mon_id).unwrap().hp, hp0);
+}
+
+#[tokio::test]
+async fn pet_levels_up_by_kills_capped_at_7() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let pet_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_some())
+        .unwrap()
+        .id
+        .clone();
+    let (hp1, dmg1) = {
+        let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+        assert_eq!(p.pet_level, 1);
+        assert_eq!(p.image_base, 0, "1 级 = 首形态");
+        (p.max_hp, p.damage)
+    };
+    // 喂 100 经验 → 升 2 级: 数值 ×1.2, 回满, 形态切换
+    g.grant_pet_exp(&pet_id, 100).await;
+    {
+        let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+        assert_eq!(p.pet_level, 2, "100 经验应升 2 级");
+        assert!(p.max_hp > hp1 && p.damage >= dmg1);
+        assert_eq!(p.hp, p.max_hp, "升级应回满");
+        assert_eq!(p.image_base, 360, "2 级 = 第二形态");
+    }
+    // 灌大量经验: 封顶 7 级
+    g.grant_pet_exp(&pet_id, 1_000_000).await;
+    {
+        let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+        assert_eq!(p.pet_level, 7, "最高 7 级");
+        assert_eq!(p.image_base, 6 * 360, "7 级 = 第七形态");
+    }
+    // 死亡后重召: 回 1 级
+    g.damage_pet(&pet_id, "mon_x", 99999).await;
+    g.despawn_pets("char1").await;
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let p = g.monsters.iter().find(|m| m.owner.is_some()).unwrap();
+    assert_eq!(p.pet_level, 1, "重召从 1 级开始");
+    assert_eq!(p.image_base, 0);
 }
