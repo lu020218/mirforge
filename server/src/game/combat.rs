@@ -36,7 +36,7 @@ impl Game {
         let Some(m) = self
             .monsters
             .iter_mut()
-            .find(|m| m.id == target_id && m.zone == zone && m.alive())
+            .find(|m| m.id == target_id && m.zone == zone && m.alive() && m.owner.is_none())
         else {
             return;
         };
@@ -204,7 +204,10 @@ impl Game {
             (px, py)
         } else {
             let Some(m) = self.monsters.iter().find(|m| {
-                Some(m.id.as_str()) == target_id.as_deref() && m.zone == zone && m.alive()
+                Some(m.id.as_str()) == target_id.as_deref()
+                    && m.zone == zone
+                    && m.alive()
+                    && m.owner.is_none()
             }) else {
                 self.notify(conn_id, "目标无效").await;
                 return;
@@ -262,7 +265,7 @@ impl Game {
                 for m in self
                     .monsters
                     .iter()
-                    .filter(|m| m.zone == zone && m.alive())
+                    .filter(|m| m.zone == zone && m.alive() && m.owner.is_none())
                     .filter(|m| {
                         ((m.x - center.0).powi(2) + (m.y - center.1).powi(2)).sqrt() <= radius
                     })
@@ -1072,7 +1075,7 @@ impl super::Game {
             let hit = self
                 .monsters
                 .iter()
-                .filter(|m| m.zone == zone_id && m.alive())
+                .filter(|m| m.zone == zone_id && m.alive() && m.owner.is_none())
                 .map(|m| {
                     let d = ((m.x - nx).powi(2) + (m.y - ny).powi(2)).sqrt();
                     (m.id.clone(), d)

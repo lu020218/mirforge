@@ -775,3 +775,49 @@ async fn monster_retaliates_pet_not_owner() {
     let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
     assert_eq!(p.aggro_target.as_deref(), Some(mon_id.as_str()));
 }
+
+#[tokio::test]
+async fn pet_death_full_lifecycle() {
+    let mut g = test_game().await;
+    g.players
+        .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
+    g.spawn_pets("char1", "z1", (12.0, 10.0), "chicken", 1, 0.0, 0, 1.0)
+        .await;
+    let pet_id = g
+        .monsters
+        .iter()
+        .find(|m| m.owner.is_some())
+        .unwrap()
+        .id
+        .clone();
+    // 致死: 应进入死亡动画
+    g.damage_pet(&pet_id, "mon_x", 99999).await;
+    let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+    assert!(p.dying_until.is_some(), "致死应设 dying");
+    // 死亡动画期间 tick: 宠物应保留 (广播 die 姿态)
+    g.tick().await;
+    assert!(
+        g.monsters.iter().any(|m| m.id == pet_id),
+        "dying 中不应被移除"
+    );
+    // 拨快 dying 到点 → 进尸体
+    if let Some(m) = g.monsters.iter_mut().find(|m| m.id == pet_id) {
+        m.dying_until = Some(Instant::now() - Duration::from_millis(1));
+    }
+    g.tick().await;
+    let p = g.monsters.iter().find(|m| m.id == pet_id).unwrap();
+    assert!(
+        p.dying_until.is_none() && p.corpse_until.is_some(),
+        "应进尸体期"
+    );
+    assert!(p.respawn_at.is_none(), "宠物不重生");
+    // 拨快尸体到点 → 彻底移除
+    if let Some(m) = g.monsters.iter_mut().find(|m| m.id == pet_id) {
+        m.corpse_until = Some(Instant::now() - Duration::from_millis(1));
+    }
+    g.tick().await;
+    assert!(
+        !g.monsters.iter().any(|m| m.id == pet_id),
+        "尸体到期应彻底移除"
+    );
+}
