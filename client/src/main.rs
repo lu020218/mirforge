@@ -924,6 +924,7 @@ fn setup(
                 attack_base: hum::ATTACK,
                 dash_dir: DVec2::ZERO,
                 dash_left: 0.0,
+                label_anchor: Vec2::ZERO,
             },
             Sprite::default(),
             Transform::default(),
@@ -1026,7 +1027,7 @@ fn blank_page() -> Image {
 // ─────────── 玩家 ───────────
 
 /// 玩家状态 (位置为格坐标, 连续浮点)
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct Player {
     pos: DVec2,
     /// Mir 8 向 (0=上, 顺时针)
@@ -1041,6 +1042,8 @@ struct Player {
     /// 冲锋预表现 (野蛮冲撞): 与服务端同参推进, 剩余距离 >0 时输入让位
     dash_dir: DVec2,
     dash_left: f64,
+    /// 名牌锚点 (自身精灵包围盒底部中点; player_sprite 每帧写入)
+    label_anchor: Vec2,
 }
 
 /// 普攻动作时长 (6 帧 × 90ms) 与客户端侧冷却
@@ -1491,15 +1494,18 @@ fn player_sprite(
     net: Res<Net>,
     mut wep_entity: Local<Option<Entity>>,
     mut debug_shapes: Local<Option<Option<(u16, Option<u16>)>>>,
-    mut q: Query<(&Player, &mut Sprite, &mut Transform)>,
+    mut q: Query<(&mut Player, &mut Sprite, &mut Transform)>,
     mut q_wep: Query<
         (&mut Sprite, &mut Transform, &mut Visibility),
         (With<WeaponSprite>, Without<Player>),
     >,
 ) {
-    let Ok((p, mut sprite, mut tf)) = q.get_single_mut() else {
+    let Ok((mut player, mut sprite, mut tf)) = q.get_single_mut() else {
         return;
     };
+    // 只读快照: 精灵取帧需要不可变借用, 写回名牌锚点在末尾
+    let p = player.clone();
+    let p = &p;
     // 外观: MIRFORGE_SHAPES=armour[,weapon] 调试覆盖 (离线可视验证);
     // 否则由已穿装备的 shape 决定
     let dbg = *debug_shapes.get_or_insert_with(|| {
@@ -1556,6 +1562,9 @@ fn player_sprite(
     // 与前景高物件同一行深度体系; +0.005 让同行时角色压在物件之上
     let z = 10.0 + p.pos.y as f32 * 0.01 + 0.005;
     tf.translation = Vec3::new(bx + f.off.x, -(by + f.off.y), z);
+    // 名牌锚点: 精灵包围盒底部中点 (与远程实体同一算法, 高低一致)
+    let size = f.rect.size();
+    player.label_anchor = Vec2::new(bx + f.off.x + size.x / 2.0, by + f.off.y + size.y - 6.0);
     // 武器叠层: 与身体同帧号同格原点, z 微高
     let wep = *wep_entity.get_or_insert_with(|| {
         commands
@@ -1611,11 +1620,13 @@ fn self_label(
     if net.my_name.is_empty() {
         return;
     }
-    let cx = p.pos.x as f32 * CELL_W;
-    let cy = -(p.pos.y as f32 * CELL_H - CELL_H / 2.0 + 12.0);
+    if p.label_anchor == Vec2::ZERO {
+        return; // 首帧精灵未落位
+    }
+    let (cx, cy) = (p.label_anchor.x, -p.label_anchor.y);
     match q_label.get_single_mut() {
         Ok((e, mut tf)) => {
-            tf.translation = Vec3::new(cx, cy, 641.0);
+            tf.translation = Vec3::new(cx, cy, 661.0);
             if *shown != net.my_name {
                 *shown = net.my_name.clone();
                 commands.entity(e).insert(Text2d::new(net.my_name.clone()));
@@ -1633,7 +1644,7 @@ fn self_label(
                 },
                 // 自己: 亮白 (与其他玩家的淡金区分)
                 TextColor(Color::srgb(1.0, 1.0, 1.0)),
-                Transform::from_xyz(cx, cy, 641.0),
+                Transform::from_xyz(cx, cy, 661.0),
             ));
         }
     }

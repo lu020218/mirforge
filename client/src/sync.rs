@@ -156,6 +156,7 @@ pub(crate) fn net_pump(
                                 attack_base: hum::ATTACK,
                                 dash_dir: DVec2::ZERO,
                                 dash_left: 0.0,
+                                label_anchor: Vec2::ZERO,
                             },
                             Sprite::default(),
                             Transform::default(),

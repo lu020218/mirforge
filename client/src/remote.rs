@@ -258,9 +258,14 @@ pub(crate) fn remote_step(
         // 名牌: 脚下一行 (经典 Mir 名字在人物下方); 死亡中不显示
         let show_label = !r.name.is_empty() && r.anim != 4;
         if show_label {
-            let cx = r.pos.x as f32 * CELL_W;
-            let cy = -(r.pos.y as f32 * CELL_H - CELL_H / 2.0 + 12.0);
-            let tf = Transform::from_xyz(cx, cy, 640.0);
+            // 按精灵实际包围盒定位: 水平居中、垂直贴脚底 — 各实体精灵
+            // 尺寸差异大 (人物/骷髅/鸡), 按格中心算会高低不齐
+            let size = f.rect.size();
+            let cx = px + size.x / 2.0;
+            // 精灵底部含投影/透明边, 上移 6px 贴合实际脚底;
+            // z 高于血条 (650/651), 免得被队友/宠物血条压住
+            let cy = -(py + size.y - 6.0);
+            let tf = Transform::from_xyz(cx, cy, 660.0);
             match r.label {
                 Some(l) => {
                     commands.entity(l).insert(tf);
