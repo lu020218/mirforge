@@ -1562,9 +1562,9 @@ fn player_sprite(
     // 与前景高物件同一行深度体系; +0.005 让同行时角色压在物件之上
     let z = 10.0 + p.pos.y as f32 * 0.01 + 0.005;
     tf.translation = Vec3::new(bx + f.off.x, -(by + f.off.y), z);
-    // 名牌锚点: 精灵包围盒底部中点 (与远程实体同一算法, 高低一致)
+    // 名牌锚点: 精灵包围盒正中 (与远程实体同一算法, 高低一致)
     let size = f.rect.size();
-    player.label_anchor = Vec2::new(bx + f.off.x + size.x / 2.0, by + f.off.y + size.y - 6.0);
+    player.label_anchor = Vec2::new(p.pos.x as f32 * CELL_W, by + f.off.y + size.y / 2.0);
     // 武器叠层: 与身体同帧号同格原点, z 微高
     let wep = *wep_entity.get_or_insert_with(|| {
         commands
@@ -1644,6 +1644,7 @@ fn self_label(
                 },
                 // 自己: 亮白 (与其他玩家的淡金区分)
                 TextColor(Color::srgb(1.0, 1.0, 1.0)),
+                Anchor::Center,
                 Transform::from_xyz(cx, cy, 661.0),
             ));
         }

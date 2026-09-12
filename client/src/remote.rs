@@ -261,10 +261,12 @@ pub(crate) fn remote_step(
             // 按精灵实际包围盒定位: 水平居中、垂直贴脚底 — 各实体精灵
             // 尺寸差异大 (人物/骷髅/鸡), 按格中心算会高低不齐
             let size = f.rect.size();
-            let cx = px + size.x / 2.0;
-            // 精灵底部含投影/透明边, 上移 6px 贴合实际脚底;
-            // z 高于血条 (650/651), 免得被队友/宠物血条压住
-            let cy = -(py + size.y - 6.0);
+            // 水平取逻辑格中心 (与血条同基准): 帧内容在包围盒里并不居中,
+            // 按包围盒算会整体偏右
+            let cx = r.pos.x as f32 * CELL_W;
+            // 名牌落在精灵包围盒正中 (身体中心); z 高于血条 (650/651),
+            // 免得被队友/宠物血条压住
+            let cy = -(py + size.y / 2.0);
             let tf = Transform::from_xyz(cx, cy, 660.0);
             match r.label {
                 Some(l) => {
@@ -293,6 +295,8 @@ pub(crate) fn remote_step(
                                 ..default()
                             },
                             TextColor(color),
+                            // 缺省锚点非居中会让名字整体偏右
+                            Anchor::Center,
                             tf,
                         ))
                         .id();
