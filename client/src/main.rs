@@ -1564,7 +1564,7 @@ fn player_sprite(
     tf.translation = Vec3::new(bx + f.off.x, -(by + f.off.y), z);
     // 名牌锚点: 精灵包围盒正中 (与远程实体同一算法, 高低一致)
     let size = f.rect.size();
-    player.label_anchor = Vec2::new(p.pos.x as f32 * CELL_W, by + f.off.y + size.y / 2.0);
+    player.label_anchor = Vec2::new(p.pos.x as f32 * CELL_W, by + f.off.y + size.y / 2.0 - 8.0);
     // 武器叠层: 与身体同帧号同格原点, z 微高
     let wep = *wep_entity.get_or_insert_with(|| {
         commands

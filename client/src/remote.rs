@@ -266,7 +266,7 @@ pub(crate) fn remote_step(
             let cx = r.pos.x as f32 * CELL_W;
             // 名牌落在精灵包围盒正中 (身体中心); z 高于血条 (650/651),
             // 免得被队友/宠物血条压住
-            let cy = -(py + size.y / 2.0);
+            let cy = -(py + size.y / 2.0 - 8.0);
             let tf = Transform::from_xyz(cx, cy, 660.0);
             match r.label {
                 Some(l) => {
