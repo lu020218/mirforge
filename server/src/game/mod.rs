@@ -562,6 +562,8 @@ pub struct Game {
     next_drop_id: u64,
     /// xorshift64 随机态 (怪物 AI 用, 无需加密质量)
     rng: u64,
+    /// 刷新点补位实例的 id 序号 (诱惑把原实例转宠后, 补一只替补重生)
+    next_slot_id: u64,
     last_save: Instant,
     last_regen: Instant,
     /// 技能延迟结算队列: 与客户端起手/飞行编排对齐 (到点才掉血)
@@ -649,6 +651,7 @@ impl Game {
             ground: Vec::new(),
             next_drop_id: 1,
             rng: 0x00C0_FFEE_1234_5678,
+            next_slot_id: 1,
             last_save: Instant::now(),
             last_regen: Instant::now(),
             pending_hits: Vec::new(),

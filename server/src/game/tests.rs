@@ -1127,6 +1127,25 @@ async fn tame_converts_and_respects_rules() {
     assert_eq!(m.owner.as_deref(), Some("char1"));
     assert_eq!(m.pet_level, 1, "归顺从 1 级养起");
     assert!(m.aggro_target.is_none(), "归顺清仇恨");
+    // 刷新点补位: 应多出一只同模板的替补, 在老家等重生 (名额不被占走)
+    let slot = g
+        .monsters
+        .iter()
+        .find(|x| x.owner.is_none() && x.template == "chicken" && x.id != "wild1")
+        .expect("应补一只替补进入重生倒计时");
+    assert!(slot.respawn_at.is_some(), "替补应等重生");
+    assert_eq!(slot.home, (11.5, 10.5), "替补回原刷新点老家");
+    assert!(slot.removed_sent, "替补未曾广播过, 不应再发 removed");
+    let slot_id = slot.id.clone();
+    // 拨快重生: 替补以满血野怪身份上线
+    if let Some(x) = g.monsters.iter_mut().find(|x| x.id == slot_id) {
+        x.respawn_at = Some(Instant::now() - Duration::from_millis(1));
+    }
+    g.tick().await;
+    let slot = g.monsters.iter().find(|x| x.id == slot_id).unwrap();
+    assert!(slot.respawn_at.is_none() && slot.alive(), "替补应正常重生");
+    assert!(slot.owner.is_none(), "替补是野怪不是宠物");
+    assert_eq!(slot.hp, slot.max_hp, "重生满血");
     // 不可诱惑目标: 稻草人 (test_dummy 模板 → 不在模板表, 视为不可诱惑)
     let dummy = g
         .monsters

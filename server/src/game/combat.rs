@@ -403,7 +403,57 @@ impl Game {
                             self.broadcast_removed(&gone).await;
                         }
                     }
+                    // 刷新点补位: 归顺的实例从此是宠物 (不再重生), 若不补
+                    // 一只替补, 该刷新点的名额就被永久占走 — 补位实例回老家
+                    // 进入重生倒计时, 到点像正常重生一样出现
+                    let slot_seq = self.next_slot_id;
+                    let now = Instant::now();
+                    let mut slot: Option<Monster> = None;
                     if let Some(m) = self.monsters.iter_mut().find(|m| m.id == tid) {
+                        // 基础 id 去掉历史补位后缀, 避免反复诱惑后无限加长
+                        let base_id = m.id.split('~').next().unwrap_or(&m.id).to_string();
+                        slot = Some(Monster {
+                            id: format!("{base_id}~r{slot_seq}"),
+                            template: m.template.clone(),
+                            name: m.name.clone(),
+                            boss: m.boss,
+                            respawn: m.respawn,
+                            announce: m.announce,
+                            image: m.image,
+                            image_base: m.image_base,
+                            zone: m.zone.clone(),
+                            home: m.home,
+                            roam: m.roam,
+                            x: m.home.0,
+                            y: m.home.1,
+                            dir: 4,
+                            target: None,
+                            chasing: false,
+                            attack_until: None,
+                            pending_hit: None,
+                            next_attack: now,
+                            next_decide: now,
+                            passive: m.passive,
+                            hp: m.max_hp,
+                            max_hp: m.max_hp,
+                            damage: m.damage,
+                            exp: m.exp,
+                            drops: m.drops.clone(),
+                            dying_until: None,
+                            corpse_until: None,
+                            respawn_at: Some(now + m.respawn),
+                            // 客户端从未见过它, 不必广播 removed
+                            removed_sent: true,
+                            poison: None,
+                            statuses: HashMap::new(),
+                            statuses_sent: false,
+                            struck_until: None,
+                            aggro_target: None,
+                            owner: None,
+                            pet_level: 0,
+                            pet_exp: 0,
+                            summon_until: None,
+                        });
                         // 就地归顺: 保留当前血量与数值, 从 1 级开始养
                         m.owner = Some(char_id.clone());
                         m.pet_level = 1;
@@ -415,6 +465,10 @@ impl Game {
                         m.chasing = false;
                         extra_targets.push(m.id.clone());
                         summon_fx_pos = Some((m.x, m.y));
+                    }
+                    if let Some(slot) = slot {
+                        self.next_slot_id += 1;
+                        self.monsters.push(slot);
                     }
                 } else {
                     // 失败: 拉仇恨反咬
