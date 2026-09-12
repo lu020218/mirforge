@@ -177,6 +177,7 @@ fn main() {
                 cast_skills,
                 dev_cast,
                 player_sprite,
+                self_label,
                 remote_step,
                 npc_step,
                 (float_damage, fx_step, projectile_step, fx::dash_trail_step),
@@ -233,6 +234,8 @@ struct Net {
     status: String,
     /// HUD 数值 (PlayerStatus 驱动)
     stat: Option<Stat>,
+    /// 本角色名 (自己的名牌; 来自自身实体广播)
+    my_name: String,
     /// 通知堆栈 (msg, 类型, 出生时刻)
     notices: Vec<(String, String, f64)>,
     /// 技能冷却结束时刻 (id → elapsed_secs)
@@ -327,6 +330,11 @@ struct Remote {
     stunned: bool,
     /// 宠物主人 char_id (Some = 召唤物: 友方血条/不可作为攻击目标)
     owner: Option<String>,
+    /// 显示名 (服务端下发; 宠物含等级)
+    name: String,
+    /// 名牌实体与已渲染文本 (文本变化才重建, 位置每帧跟随)
+    label: Option<Entity>,
+    label_text: String,
 }
 
 #[derive(Resource, Default)]
@@ -1583,6 +1591,53 @@ fn player_sprite(
 /// 武器叠层精灵标记 (本地玩家/远程实体共用)
 #[derive(Component)]
 struct WeaponSprite;
+
+/// 本地玩家名牌标记
+#[derive(Component)]
+struct SelfLabel;
+
+/// 本地玩家名牌: 与远程实体同款 (脚下一行), 名字来自自身实体广播
+fn self_label(
+    mut commands: Commands,
+    net: Res<Net>,
+    skin: Res<hud::Skin>,
+    q_player: Query<&Player>,
+    mut q_label: Query<(Entity, &mut Transform), With<SelfLabel>>,
+    mut shown: Local<String>,
+) {
+    let Ok(p) = q_player.get_single() else {
+        return;
+    };
+    if net.my_name.is_empty() {
+        return;
+    }
+    let cx = p.pos.x as f32 * CELL_W;
+    let cy = -(p.pos.y as f32 * CELL_H - CELL_H / 2.0 + 12.0);
+    match q_label.get_single_mut() {
+        Ok((e, mut tf)) => {
+            tf.translation = Vec3::new(cx, cy, 641.0);
+            if *shown != net.my_name {
+                *shown = net.my_name.clone();
+                commands.entity(e).insert(Text2d::new(net.my_name.clone()));
+            }
+        }
+        Err(_) => {
+            *shown = net.my_name.clone();
+            commands.spawn((
+                SelfLabel,
+                Text2d::new(net.my_name.clone()),
+                TextFont {
+                    font: skin.font.clone(),
+                    font_size: 12.0,
+                    ..default()
+                },
+                // 自己: 亮白 (与其他玩家的淡金区分)
+                TextColor(Color::srgb(1.0, 1.0, 1.0)),
+                Transform::from_xyz(cx, cy, 641.0),
+            ));
+        }
+    }
+}
 
 fn camera_follow(q_player: Query<&Player>, mut q_cam: Query<&mut Transform, With<Camera2d>>) {
     let (Ok(p), Ok(mut cam)) = (q_player.get_single(), q_cam.get_single_mut()) else {

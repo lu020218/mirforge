@@ -188,6 +188,9 @@ pub struct EntityUpdate {
     /// 宠物主人 char_id (召唤物; 客户端友方染色/不可作为攻击目标)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// 显示名 (玩家角色名 / 怪物模板名 / 宠物「名 Lv N」); 客户端画名牌
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -573,6 +576,7 @@ mod tests {
                 poisoned: None,
                 statuses: None,
                 owner: None,
+                name: None,
             }],
             timestamp: 12345,
         };

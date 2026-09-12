@@ -136,6 +136,9 @@ pub(crate) fn net_pump(
                                 commands.entity(a).despawn();
                                 commands.entity(b).despawn();
                             }
+                            if let Some(l) = r.label.take() {
+                                commands.entity(l).despawn();
+                            }
                         }
                     }
                     let pos = DVec2::new(position.x, position.y);
@@ -478,6 +481,11 @@ pub(crate) fn net_pump(
                     for e in entities {
                         // 自己: 权威纠偏 (预测与服务器同源 sim, 常态几乎零漂移)
                         if net.my_id.as_deref() == Some(e.id.as_str()) {
+                            if let Some(n) = &e.name {
+                                if net.my_name != *n {
+                                    net.my_name = n.clone();
+                                }
+                            }
                             if let (Some(pos), Ok(mut p)) = (e.position, q_player.get_single_mut())
                             {
                                 let server = DVec2::new(pos.x, pos.y);
@@ -496,6 +504,9 @@ pub(crate) fn net_pump(
                                 if let Some((a, b)) = r.bar.take() {
                                     commands.entity(a).despawn();
                                     commands.entity(b).despawn();
+                                }
+                                if let Some(l) = r.label.take() {
+                                    commands.entity(l).despawn();
                                 }
                             }
                             continue;
@@ -550,6 +561,11 @@ pub(crate) fn net_pump(
                         }
                         if e.owner.is_some() {
                             r.owner = e.owner.clone();
+                        }
+                        if let Some(n) = &e.name {
+                            if r.name != *n {
+                                r.name = n.clone();
+                            }
                         }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;

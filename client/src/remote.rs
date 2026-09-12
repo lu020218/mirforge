@@ -8,6 +8,7 @@ pub(crate) fn remote_step(
     mut world: ResMut<World>,
     mut images: ResMut<Assets<Image>>,
     mut remotes: ResMut<Remotes>,
+    skin: Res<hud::Skin>,
 ) {
     let dt = time.delta_secs_f64();
     let now = time.elapsed_secs_f64();
@@ -24,6 +25,9 @@ pub(crate) fn remote_step(
             }
             if let Some(w) = r.wep_entity.take() {
                 commands.entity(w).despawn();
+            }
+            if let Some(l) = r.label.take() {
+                commands.entity(l).despawn();
             }
             gone.push(id.clone());
             continue;
@@ -250,6 +254,48 @@ pub(crate) fn remote_step(
         } else if let Some((a, b)) = r.bar.take() {
             commands.entity(a).despawn();
             commands.entity(b).despawn();
+        }
+        // 名牌: 脚下一行 (经典 Mir 名字在人物下方); 死亡中不显示
+        let show_label = !r.name.is_empty() && r.anim != 4;
+        if show_label {
+            let cx = r.pos.x as f32 * CELL_W;
+            let cy = -(r.pos.y as f32 * CELL_H - CELL_H / 2.0 + 12.0);
+            let tf = Transform::from_xyz(cx, cy, 640.0);
+            match r.label {
+                Some(l) => {
+                    commands.entity(l).insert(tf);
+                    // 文本变化 (如宠物升级) 才重建, 免得每帧重排版
+                    if r.label_text != r.name {
+                        r.label_text = r.name.clone();
+                        commands.entity(l).insert(Text2d::new(r.name.clone()));
+                    }
+                }
+                None => {
+                    r.label_text = r.name.clone();
+                    let color = if r.owner.is_some() {
+                        Color::srgb(0.45, 0.95, 0.5) // 宠物 (友方) 绿
+                    } else if r.image.is_some() {
+                        Color::srgb(0.86, 0.86, 0.9) // 怪物 淡白
+                    } else {
+                        Color::srgb(0.98, 0.93, 0.62) // 其他玩家 淡金
+                    };
+                    let l = commands
+                        .spawn((
+                            Text2d::new(r.name.clone()),
+                            TextFont {
+                                font: skin.font.clone(),
+                                font_size: 12.0,
+                                ..default()
+                            },
+                            TextColor(color),
+                            tf,
+                        ))
+                        .id();
+                    r.label = Some(l);
+                }
+            }
+        } else if let Some(l) = r.label.take() {
+            commands.entity(l).despawn();
         }
     }
     for id in gone {

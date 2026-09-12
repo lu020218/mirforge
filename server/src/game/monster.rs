@@ -168,6 +168,7 @@ impl Game {
                 poisoned: None,
                 statuses: None,
                 owner: None,
+                name: None,
             })
             .collect();
         self.monsters.retain(|m| m.boss);
@@ -215,6 +216,7 @@ impl Game {
                 poisoned: None,
                 statuses: None,
                 owner: None,
+                name: None,
             })
             .collect();
         self.monsters.retain(|m| !m.boss);

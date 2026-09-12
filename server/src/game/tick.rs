@@ -242,6 +242,7 @@ impl Game {
                     poisoned: None,
                     statuses: None,
                     owner: None,
+                    name: Some(p.character.name.clone()),
                 })
                 .collect();
             if entities.is_empty() {
@@ -272,6 +273,7 @@ impl Game {
                                 poisoned: None,
                                 statuses: None,
                                 owner: None,
+                                name: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
@@ -309,6 +311,14 @@ impl Game {
                             poisoned: None,
                             statuses,
                             owner: m.owner.clone(),
+                            // 宠物名带等级 (养成进度一眼可见); 无名怪不画名牌
+                            name: (!m.name.is_empty()).then(|| {
+                                if m.owner.is_some() {
+                                    format!("{} Lv{}", m.name, m.pet_level)
+                                } else {
+                                    m.name.clone()
+                                }
+                            }),
                         })
                     }),
             );

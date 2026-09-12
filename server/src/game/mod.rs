@@ -767,6 +767,7 @@ impl Game {
                     poisoned: None,
                     statuses: None,
                     owner: None,
+                    name: None,
                 })
                 .collect();
             broadcast_to(
