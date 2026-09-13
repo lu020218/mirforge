@@ -1626,6 +1626,7 @@ pub fn refresh(
         .map(|p| crate::Portrait {
             base: p.base.clone(),
             gear: p.gear.clone(),
+            weapon: p.weapon.clone(),
         })
         .unwrap_or_default();
     // 本次重建涉及的物品图标预取
@@ -2002,6 +2003,20 @@ fn build_character(
                                     ..default()
                                 },
                                 ImageNode::new(gimg),
+                            ));
+                        }
+                        // 武器展示图: 最上层 (南向站立武器持在身前)
+                        if let Some((wimg, wsize, woff)) = portrait.weapon.clone() {
+                            frame.spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px((box_w - wsize.x * k) / 2.0 + woff.x * k),
+                                    top: Val::Px((box_h - wsize.y * k) / 2.0 + woff.y * k),
+                                    width: Val::Px(wsize.x * k),
+                                    height: Val::Px(wsize.y * k),
+                                    ..default()
+                                },
+                                ImageNode::new(wimg),
                             ));
                         }
                     }

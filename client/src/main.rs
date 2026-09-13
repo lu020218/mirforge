@@ -598,6 +598,9 @@ pub struct Portrait {
     /// 叠加层: 已穿衣甲的展示图 (packs/portrait/{shape:03}.mfl);
     /// 第三项是帧偏移 (相对共享中心的对位微调, 打包时写入)
     pub gear: Option<(Handle<Image>, Vec2, Vec2)>,
+    /// 叠加层: 武器展示图 (packs/portrait/weapon/{shape:03}.mfl, 不分性别
+    /// 单帧); 偏移为握持点对位, 打包时按图内手位写入; 画在衣甲之上
+    pub weapon: Option<(Handle<Image>, Vec2, Vec2)>,
 }
 
 /// 物品图标 (packs/items.mfl 优先, Crystal Items.Lib 兜底; 帧 → 独立 Image, 惰性缓存)
@@ -830,28 +833,64 @@ fn make_portrait(
     // 有衣甲且有展示图 → 裸模打底 + 展示图叠加;
     // 有衣甲没展示图 → 该外观的站立帧 (packs 覆盖同样生效, 别让人光着);
     // 没衣甲 → 裸模, 连裸模都没有 → 0 号站立帧
-    let (base_img, gear_img) = match armor_shape {
+    // hires: base 是高清裸模 (展示图坐标系) 还是游戏内站立帧 (格坐标系)
+    let (base_img, gear_img, hires) = match armor_shape {
         Some(s) => {
             let g = world
                 .open_lib(&format!("portrait/{s:03}"))
                 .and_then(|l| l.image(gender_frame).ok().flatten());
             if g.is_some() && naked.is_some() {
-                (naked, g)
+                (naked, g, true)
             } else {
                 // 该外观的站立帧缺库时退裸模, 面板立绘不至于空白
-                let st = stand(&mut world, &format!("CArmour/{s:02}"));
-                (st.or(naked), None)
+                match stand(&mut world, &format!("CArmour/{s:02}")) {
+                    Some(st) => (Some(st), None, false),
+                    None => (naked, None, true),
+                }
             }
         }
-        None => (naked.or_else(|| stand(&mut world, "CArmour/00")), None),
+        None => match naked {
+            Some(n) => (Some(n), None, true),
+            None => (stand(&mut world, "CArmour/00"), None, false),
+        },
     };
+    // 武器层: 高清模式用展示图 (缺图宁缺勿错位, 不叠);
+    // 站立帧模式叠 CWeapon 站立帧 — 与底图同格坐标系, 用中心差作偏移
+    let weapon_shape = net.equipment.get("weapon").map(|i| i.shape);
+    let weapon_img = weapon_shape.and_then(|ws| {
+        if hires {
+            world
+                .open_lib(&format!("portrait/weapon/{ws:03}"))
+                .and_then(|l| l.image(0).ok().flatten())
+                .map(|img| {
+                    let off = Vec2::new(img.offset_x as f32, img.offset_y as f32);
+                    (img, off)
+                })
+        } else {
+            let b = base_img.as_ref()?;
+            let bc = (
+                b.offset_x as f32 + b.width as f32 / 2.0,
+                b.offset_y as f32 + b.height as f32 / 2.0,
+            );
+            let wimg = stand(&mut world, &format!("CWeapon/{ws:02}"))?;
+            let off = Vec2::new(
+                wimg.offset_x as f32 + wimg.width as f32 / 2.0 - bc.0,
+                wimg.offset_y as f32 + wimg.height as f32 / 2.0 - bc.1,
+            );
+            Some((wimg, off))
+        }
+    });
     let base = base_img.map(&mut mk);
     let gear = gear_img.map(|img| {
         let off = Vec2::new(img.offset_x as f32, img.offset_y as f32);
         let (h, size) = mk(img);
         (h, size, off)
     });
-    commands.insert_resource(Portrait { base, gear });
+    let weapon = weapon_img.map(|(img, off)| {
+        let (h, size) = mk(img);
+        (h, size, off)
+    });
+    commands.insert_resource(Portrait { base, gear, weapon });
 }
 
 // ─────────── 启动 ───────────
