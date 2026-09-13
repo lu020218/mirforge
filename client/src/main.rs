@@ -167,7 +167,7 @@ fn main() {
             Update,
             (
                 panels::ui_hover,
-                player_move,
+                (player_move, update_hover),
                 camera_follow,
                 camera_control,
                 stream_chunks,
@@ -183,7 +183,7 @@ fn main() {
                 (float_damage, fx_step, projectile_step, fx::dash_trail_step),
                 upload_dirty_pages,
                 net_send,
-                hud::update.run_if(in_state(Screen::InGame)),
+                (hud::update, hud::target_frame).run_if(in_state(Screen::InGame)),
                 (
                     hud::chat_input,
                     panels::toggle,
@@ -236,6 +236,10 @@ struct Net {
     stat: Option<Stat>,
     /// 本角色名 (自己的名牌; 来自自身实体广播)
     my_name: String,
+    /// 锁定目标 (左键点实体锁定, 点空地取消; 死亡/离场自动清)
+    target: Option<String>,
+    /// 悬停目标 (光标下实体, 每帧刷新; 未锁定时技能"指哪打哪")
+    hover: Option<String>,
     /// 通知堆栈 (msg, 类型, 出生时刻)
     notices: Vec<(String, String, f64)>,
     /// 技能冷却结束时刻 (id → elapsed_secs)
@@ -1083,6 +1087,36 @@ const CURSOR_DEADZONE: f64 = 0.4;
 
 /// 经典传奇操作: 左键点怪=普攻, 左键按住空地=走路, 右键按住=跑步
 #[allow(clippy::too_many_arguments)]
+/// 每帧解析光标下的实体 -> net.hover (未锁定时技能"指哪打哪"的依据);
+/// 光标在 UI 上或手上提着物品时不取, 免得隔着面板误指
+fn update_hover(
+    windows: Query<&Window>,
+    q_cam: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui_hover: Res<panels::UiHover>,
+    grab: Res<panels::Grab>,
+    remotes: Res<Remotes>,
+    mut net: ResMut<Net>,
+) {
+    let hover = (|| {
+        if ui_hover.0 || grab.item.is_some() {
+            return None;
+        }
+        let c = windows.get_single().ok()?.cursor_position()?;
+        let (cam, tf) = q_cam.get_single().ok()?;
+        let w = cam.viewport_to_world_2d(tf, c).ok()?;
+        let cc = DVec2::new(w.x as f64 / CELL_W as f64, -(w.y as f64) / CELL_H as f64);
+        remotes
+            .0
+            .iter()
+            .filter(|(_, r)| r.anim != 4)
+            .find(|(_, r)| (r.pos.x - cc.x).abs() < 0.8 && (r.pos.y - cc.y).abs() < 1.1)
+            .map(|(id, _)| id.clone())
+    })();
+    if net.hover != hover {
+        net.hover = hover;
+    }
+}
+
 fn player_move(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -1287,6 +1321,18 @@ fn player_move(
     // 左键按在怪身上 = 普攻 (光标 bbox 近似命中, 死亡中的怪忽略)
     if buttons.pressed(MouseButton::Left) && !run {
         if let Some(cc) = cursor_cell {
+            // 按下瞬间更新锁定: 点中实体 (含玩家/宠物) 锁定, 点空地取消
+            if buttons.just_pressed(MouseButton::Left) {
+                let picked = remotes
+                    .0
+                    .iter()
+                    .filter(|(_, r)| r.anim != 4)
+                    .find(|(_, r)| (r.pos.x - cc.x).abs() < 0.8 && (r.pos.y - cc.y).abs() < 1.1)
+                    .map(|(id, _)| id.clone());
+                if net.target != picked {
+                    net.target = picked;
+                }
+            }
             let hit = remotes
                 .0
                 .iter()

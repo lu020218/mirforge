@@ -97,6 +97,14 @@ pub struct ZoneNameText;
 #[derive(Component)]
 pub struct CoordText;
 #[derive(Component)]
+pub struct TargetFrame;
+#[derive(Component)]
+pub struct TargetName;
+#[derive(Component)]
+pub struct TargetHpFill;
+#[derive(Component)]
+pub struct TargetHpText;
+#[derive(Component)]
 pub struct MiniDot(usize);
 #[derive(Component)]
 pub struct MiniMapImg;
@@ -736,6 +744,62 @@ pub fn setup(
                 col.spawn((text(&skin.font, "", 15.0, TEXT_MAIN), NoticeLine(i)));
             }
         });
+
+    // ── 顶部中央: 锁定目标栏 (名字 + 血条; 无锁定时隐藏) ──
+    commands
+        .spawn((
+            HudRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(14.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn((
+                TargetFrame,
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(3.0),
+                    padding: UiRect::axes(Val::Px(16.0), Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    display: Display::None,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.071, 0.078, 0.129, 0.88)),
+                BorderColor(GOLD),
+                BorderRadius::all(Val::Px(4.0)),
+            ))
+            .with_children(|f| {
+                f.spawn((text(&skin.font, "", 13.0, TEXT_MAIN), TargetName));
+                f.spawn((
+                    Node {
+                        width: Val::Px(180.0),
+                        height: Val::Px(7.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.071, 0.078, 0.129)),
+                    BorderColor(EDGE_DARK),
+                ))
+                .with_children(|bar| {
+                    bar.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(HP_RED),
+                        TargetHpFill,
+                    ));
+                });
+                f.spawn((text(&skin.font, "", 11.0, TEXT_MAIN), TargetHpText));
+            });
+        });
 }
 
 pub fn teardown(mut commands: Commands, q: Query<Entity, With<HudRoot>>) {
@@ -1084,6 +1148,77 @@ pub fn update(
                     });
                 }
             });
+        }
+    }
+}
+
+/// 顶部中央目标栏: 锁定目标的名字 + 血条; 目标死亡/离场时自动清锁定。
+/// 玩家血量不广播 (无 PvP 需求), 锁定玩家时只显示名字、血条置空。
+pub fn target_frame(
+    mut net: ResMut<Net>,
+    remotes: Res<crate::Remotes>,
+    mut q_frame: Query<&mut Node, With<TargetFrame>>,
+    mut q_name: Query<(&mut Text, &mut TextColor), With<TargetName>>,
+    mut q_fill: Query<&mut Node, (With<TargetHpFill>, Without<TargetFrame>)>,
+    mut q_hp: Query<&mut Text, (With<TargetHpText>, Without<TargetName>)>,
+) {
+    let info = net
+        .target
+        .as_ref()
+        .and_then(|id| {
+            let r = remotes.0.get(id)?;
+            (r.anim != 4).then_some(r)
+        })
+        .map(|r| {
+            let color = if r.owner.is_some() {
+                Color::srgb(0.45, 0.95, 0.5) // 宠物 绿
+            } else if r.image.is_some() {
+                TEXT_MAIN // 怪物
+            } else {
+                GOLD_BRIGHT // 玩家
+            };
+            let name = if r.name.is_empty() {
+                "???".to_string()
+            } else {
+                r.name.clone()
+            };
+            (name, color, r.hp)
+        });
+    if info.is_none() && net.target.is_some() {
+        net.target = None;
+    }
+    let Ok(mut frame) = q_frame.get_single_mut() else {
+        return;
+    };
+    match info {
+        Some((name, color, hp)) => {
+            frame.display = Display::Flex;
+            if let Ok((mut t, mut c)) = q_name.get_single_mut() {
+                if **t != name {
+                    **t = name;
+                }
+                c.0 = color;
+            }
+            let (frac, label) = match hp {
+                Some((cur, max)) => (
+                    (cur.max(0) as f32 / max.max(1) as f32).min(1.0),
+                    format!("{}/{}", cur.max(0), max),
+                ),
+                None => (0.0, String::new()),
+            };
+            if let Ok(mut fill) = q_fill.get_single_mut() {
+                fill.width = Val::Percent(100.0 * frac);
+            }
+            if let Ok(mut t) = q_hp.get_single_mut() {
+                if **t != label {
+                    **t = label;
+                }
+            }
+        }
+        None => {
+            if frame.display != Display::None {
+                frame.display = Display::None;
+            }
         }
     }
 }

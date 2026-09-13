@@ -92,26 +92,57 @@ pub(crate) fn cast_skills(
     }
     let target = if s.self_cast {
         None
+    } else if s.kind == "heal" {
+        // 治愈类: 锁定/悬停的友方 (玩家或宠物) 优先, 否则原启发式 —
+        // 掉血宝宝 → 自己(掉血) → 附近其他玩家 → 自己 (None)
+        let range = s.range.max(6.0);
+        let picked = [net.target.clone(), net.hover.clone()]
+            .into_iter()
+            .flatten()
+            .find_map(|id| {
+                let r = remotes.0.get(&id)?;
+                let friendly = r.owner.is_some() || r.image.is_none();
+                let d = (r.pos - p.pos).length();
+                (friendly && r.anim != 4 && d <= range).then(|| (id, d, r.pos))
+            });
+        picked.or_else(|| heal_target(&net, &remotes, &p, range))
     } else {
-        // 射程内最近的活怪
-        let found = remotes
-            .0
-            .iter()
-            .filter(|(_, r)| r.image.is_some() && r.anim != 4 && r.owner.is_none())
-            .map(|(id, r)| (id.clone(), (r.pos - p.pos).length(), r.pos))
-            .filter(|(_, d, _)| *d <= s.range)
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        let Some(t) = found else {
-            return; // 无目标不施放
+        // 敌对类: 锁定 → 悬停 → 射程内最近的活怪
+        let valid = |id: &String| {
+            let r = remotes.0.get(id)?;
+            (r.image.is_some() && r.owner.is_none() && r.anim != 4)
+                .then(|| (id.clone(), (r.pos - p.pos).length(), r.pos))
         };
-        Some(t)
-    };
-    // 治愈类: 目标启发式 — 掉血宝宝(自己或他人的)优先, 其次自己(掉血),
-    // 再次附近其他玩家; 都没有则治自己 (target None)
-    let target = if s.kind == "heal" {
-        heal_target(&net, &remotes, &p, s.range.max(6.0))
-    } else {
-        target
+        if let Some((id, d, mp)) = net.target.as_ref().and_then(&valid) {
+            if d > s.range {
+                // 锁定目标太远: 明确提示, 不烧冷却也不乱打别的怪
+                net.notices.push(("目标太远了".into(), "warn".into(), now));
+                if net.notices.len() > 6 {
+                    net.notices.remove(0);
+                }
+                return;
+            }
+            Some((id, d, mp))
+        } else if let Some(t) = net
+            .hover
+            .as_ref()
+            .and_then(&valid)
+            .filter(|(_, d, _)| *d <= s.range)
+        {
+            Some(t)
+        } else {
+            let found = remotes
+                .0
+                .iter()
+                .filter(|(_, r)| r.image.is_some() && r.anim != 4 && r.owner.is_none())
+                .map(|(id, r)| (id.clone(), (r.pos - p.pos).length(), r.pos))
+                .filter(|(_, d, _)| *d <= s.range)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            let Some(t) = found else {
+                return; // 无目标不施放
+            };
+            Some(t)
+        }
     };
     if let Some((_, _, mp)) = &target {
         p.dir = dir8_from(mp.x - p.pos.x, mp.y - p.pos.y);
