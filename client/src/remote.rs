@@ -1,7 +1,47 @@
 //! 远程实体渲染: 插值行走/帧表寻址/血条/武器叠层(自 main.rs 机械拆出)。
 use crate::*;
+use bevy::asset::RenderAssetUsages;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 /// 其他玩家插值行走 + 精灵帧 (与本地玩家同一套 CArmour 帧表)
+/// 生成脚下选中光圈贴图: 128x64 金色椭圆环 + 内圈淡光
+fn ring_image() -> Image {
+    const W: usize = 128;
+    const H: usize = 64;
+    let mut data = vec![0u8; W * H * 4];
+    for y in 0..H {
+        for x in 0..W {
+            let dx = (x as f32 - 63.5) / 62.0;
+            let dy = (y as f32 - 31.5) / 30.5;
+            let rr = (dx * dx + dy * dy).sqrt();
+            let a = if rr <= 1.0 {
+                // 主环 (0.9 附近最亮) + 靠环内侧的淡光晕
+                let ring = 1.0 - ((rr - 0.9).abs() / 0.1).min(1.0);
+                let glow = ((rr - 0.45) / 0.45).clamp(0.0, 1.0) * 0.22;
+                (ring * 0.95 + glow).min(1.0)
+            } else {
+                0.0
+            };
+            let i = (y * W + x) * 4;
+            data[i] = 255; // 金 #ffd876
+            data[i + 1] = 216;
+            data[i + 2] = 118;
+            data[i + 3] = (a * 255.0) as u8;
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: W as u32,
+            height: H as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
 pub(crate) fn remote_step(
     mut commands: Commands,
     time: Res<Time>,
@@ -9,10 +49,14 @@ pub(crate) fn remote_step(
     mut images: ResMut<Assets<Image>>,
     mut remotes: ResMut<Remotes>,
     skin: Res<hud::Skin>,
+    net: Res<Net>,
+    mut ring: Local<Option<(Entity, Handle<Image>)>>,
 ) {
     let dt = time.delta_secs_f64();
     let now = time.elapsed_secs_f64();
     let mut gone = Vec::new();
+    // 锁定目标的光圈落点 (循环里按该实体当帧包围盒回填)
+    let mut ring_at: Option<(f32, f32, f32, f32)> = None; // (cx, cy, z, 宽)
     for (id, r) in remotes.0.iter_mut() {
         // 3s 未出现在广播里视为离场
         if now - r.last_seen > 3.0 {
@@ -306,9 +350,54 @@ pub(crate) fn remote_step(
         } else if let Some(l) = r.label.take() {
             commands.entity(l).despawn();
         }
+        // 锁定目标: 记脚下光圈落点 (逻辑格底边中心 = 站立点; 精灵包围盒
+        // 含烘焙投影会偏低, 不能用 bbox 底), 略低于本体 z 压在脚下
+        if net.target.as_deref() == Some(id.as_str()) && r.anim != 4 {
+            let size = f.rect.size();
+            let cx = r.pos.x as f32 * CELL_W;
+            let cy = -(r.pos.y as f32 * CELL_H + CELL_H / 2.0 - 6.0);
+            let rz = 10.0 + r.pos.y as f32 * 0.01 + 0.002;
+            let w = (size.x * 0.9).clamp(44.0, 120.0);
+            ring_at = Some((cx, cy, rz, w));
+        }
     }
     for id in gone {
         remotes.0.remove(&id);
+    }
+    // 选中光圈: 有锁定目标跟随其脚底, 无则隐藏 (实体常驻, 贴图只生成一次)
+    let (ent, img) = match &*ring {
+        Some(v) => v.clone(),
+        None => {
+            let img = images.add(ring_image());
+            let ent = commands
+                .spawn((
+                    Sprite {
+                        image: img.clone(),
+                        ..default()
+                    },
+                    Transform::default(),
+                    Visibility::Hidden,
+                ))
+                .id();
+            *ring = Some((ent, img.clone()));
+            (ent, img)
+        }
+    };
+    match ring_at {
+        Some((cx, cy, z, w)) => {
+            commands.entity(ent).insert((
+                Sprite {
+                    image: img,
+                    custom_size: Some(Vec2::new(w, w * 0.5)),
+                    ..default()
+                },
+                Transform::from_xyz(cx, cy, z),
+                Visibility::Inherited,
+            ));
+        }
+        None => {
+            commands.entity(ent).insert(Visibility::Hidden);
+        }
     }
 }
 

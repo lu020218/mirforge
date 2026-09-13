@@ -745,13 +745,13 @@ pub fn setup(
             }
         });
 
-    // ── 顶部中央: 锁定目标栏 (名字 + 血条; 无锁定时隐藏) ──
+    // ── 顶部中央: 锁定目标栏 (双层金边 + 菱形饰点 + 皮肤血条; 无锁定隐藏) ──
     commands
         .spawn((
             HudRoot,
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(14.0),
+                top: Val::Px(12.0),
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 justify_content: JustifyContent::Center,
@@ -762,42 +762,84 @@ pub fn setup(
             root.spawn((
                 TargetFrame,
                 Node {
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: Val::Px(3.0),
-                    padding: UiRect::axes(Val::Px(16.0), Val::Px(6.0)),
                     border: UiRect::all(Val::Px(1.0)),
+                    padding: UiRect::all(Val::Px(2.0)),
                     display: Display::None,
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.071, 0.078, 0.129, 0.88)),
-                BorderColor(GOLD),
-                BorderRadius::all(Val::Px(4.0)),
+                BackgroundColor(Color::srgba(0.016, 0.02, 0.04, 0.65)),
+                BorderColor(EDGE_GOLD),
+                BorderRadius::all(Val::Px(9.0)),
             ))
-            .with_children(|f| {
-                f.spawn((text(&skin.font, "", 13.0, TEXT_MAIN), TargetName));
-                f.spawn((
-                    Node {
-                        width: Val::Px(180.0),
-                        height: Val::Px(7.0),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.071, 0.078, 0.129)),
-                    BorderColor(EDGE_DARK),
-                ))
-                .with_children(|bar| {
-                    bar.spawn((
+            .with_children(|outer| {
+                outer
+                    .spawn((
                         Node {
-                            width: Val::Percent(100.0),
-                            height: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            row_gap: Val::Px(5.0),
+                            padding: UiRect::axes(Val::Px(20.0), Val::Px(7.0)),
+                            border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
-                        BackgroundColor(HP_RED),
-                        TargetHpFill,
-                    ));
-                });
-                f.spawn((text(&skin.font, "", 11.0, TEXT_MAIN), TargetHpText));
+                        BackgroundColor(GLASS_BG),
+                        BorderColor(GOLD),
+                        BorderRadius::all(Val::Px(7.0)),
+                    ))
+                    .with_children(|f| {
+                        // 名字行: 两侧小菱形饰点
+                        f.spawn(Node {
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(9.0),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn(text(&skin.font, "\u{25c6}", 7.0, GOLD));
+                            row.spawn((text(&skin.font, "", 14.0, TEXT_MAIN), TargetName));
+                            row.spawn(text(&skin.font, "\u{25c6}", 7.0, GOLD));
+                        });
+                        // 血条: 与底部 HUD 同款烘焙渐变填充, 数值居中叠条上
+                        f.spawn((
+                            Node {
+                                width: Val::Px(220.0),
+                                height: Val::Px(13.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BackgroundColor(BAR_BG),
+                            BorderColor(EDGE_GOLD),
+                            BorderRadius::all(Val::Px(6.0)),
+                        ))
+                        .with_children(|b| {
+                            b.spawn((
+                                Node {
+                                    height: Val::Percent(100.0),
+                                    width: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                ImageNode::new(skin.bar_hp.clone()).with_mode(sliced(4.0)),
+                                BorderRadius::all(Val::Px(5.0)),
+                                TargetHpFill,
+                            ));
+                            b.spawn((Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(0.0),
+                                right: Val::Px(0.0),
+                                top: Val::Px(0.0),
+                                bottom: Val::Px(0.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },))
+                                .with_children(|overlay| {
+                                    overlay.spawn((
+                                        text(&skin.font, "", 10.0, TEXT_MAIN),
+                                        TargetHpText,
+                                    ));
+                                });
+                        });
+                    });
             });
         });
 }
