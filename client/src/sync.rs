@@ -568,6 +568,9 @@ pub(crate) fn net_pump(
                                 r.name = n.clone();
                             }
                         }
+                        if e.level.is_some() {
+                            r.level = e.level;
+                        }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;
                         }

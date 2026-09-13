@@ -337,6 +337,8 @@ const ATTACK_COOLDOWN: Duration = Duration::from_millis(1500);
 struct Monster {
     id: String,
     template: String,
+    /// 模板等级 (展示用, 随实体广播)
+    level: u32,
     /// 显示名 (BOSS 击杀公告用; 普通怪为空)
     name: String,
     /// 是 BOSS: 重生慢, 死亡可全服公告
@@ -768,6 +770,7 @@ impl Game {
                     statuses: None,
                     owner: None,
                     name: None,
+                    level: None,
                 })
                 .collect();
             broadcast_to(

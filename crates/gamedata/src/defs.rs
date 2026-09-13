@@ -83,6 +83,9 @@ pub struct MonsterDef {
     /// "undead" 不死系 (不可诱惑; 为圣言术预留)
     #[serde(default = "default_mon_type")]
     pub mon_type: String,
+    /// 怪物等级 (展示用: 目标栏等级徽标)
+    #[serde(default = "default_mon_level")]
+    pub level: u32,
     /// 宠物成长 (仅被召唤技能引用时生效): 等级上限 (经典 7)
     #[serde(default = "default_pet_max_level")]
     pub pet_max_level: u32,
@@ -96,6 +99,9 @@ pub struct MonsterDef {
 
 fn default_mon_type() -> String {
     "normal".into()
+}
+fn default_mon_level() -> u32 {
+    1
 }
 fn default_pet_max_level() -> u32 {
     7

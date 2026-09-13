@@ -191,6 +191,9 @@ pub struct EntityUpdate {
     /// 显示名 (玩家角色名 / 怪物模板名 / 宠物「名 Lv N」); 客户端画名牌
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 等级 (玩家=角色级, 怪物=模板级, 宠物=宝宝级); 目标栏徽标
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,6 +580,7 @@ mod tests {
                 statuses: None,
                 owner: None,
                 name: None,
+                level: None,
             }],
             timestamp: 12345,
         };

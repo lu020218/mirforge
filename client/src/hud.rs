@@ -99,6 +99,10 @@ pub struct CoordText;
 #[derive(Component)]
 pub struct TargetFrame;
 #[derive(Component)]
+pub struct TargetLevel;
+#[derive(Component)]
+pub struct TargetAvatar;
+#[derive(Component)]
 pub struct TargetName;
 #[derive(Component)]
 pub struct TargetHpFill;
@@ -745,7 +749,7 @@ pub fn setup(
             }
         });
 
-    // ── 顶部中央: 锁定目标栏 (双层金边 + 菱形饰点 + 皮肤血条; 无锁定隐藏) ──
+    // ── 顶部中央: 锁定目标栏 (异形: 左圆形头像位, 右上等级+名字, 右下血条) ──
     commands
         .spawn((
             HudRoot,
@@ -762,84 +766,104 @@ pub fn setup(
             root.spawn((
                 TargetFrame,
                 Node {
-                    border: UiRect::all(Val::Px(1.0)),
-                    padding: UiRect::all(Val::Px(2.0)),
+                    height: Val::Px(56.0),
+                    align_items: AlignItems::Center,
                     display: Display::None,
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.016, 0.02, 0.04, 0.65)),
-                BorderColor(EDGE_GOLD),
-                BorderRadius::all(Val::Px(9.0)),
             ))
-            .with_children(|outer| {
-                outer
-                    .spawn((
+            .with_children(|f| {
+                // 右侧信息块: 左端缩进给圆形头像叠位, 右端收成半圆
+                f.spawn((
+                    Node {
+                        margin: UiRect::left(Val::Px(28.0)),
+                        padding: UiRect::new(
+                            Val::Px(38.0),
+                            Val::Px(22.0),
+                            Val::Px(7.0),
+                            Val::Px(7.0),
+                        ),
+                        flex_direction: FlexDirection::Column,
+                        justify_content: JustifyContent::Center,
+                        row_gap: Val::Px(4.0),
+                        ..default()
+                    },
+                    BackgroundColor(GLASS_BG),
+                    BorderRadius {
+                        top_left: Val::Px(6.0),
+                        bottom_left: Val::Px(6.0),
+                        top_right: Val::Px(21.0),
+                        bottom_right: Val::Px(21.0),
+                    },
+                ))
+                .with_children(|info| {
+                    // 上: 等级徽标 + 名字
+                    info.spawn(Node {
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(7.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((text(&skin.font, "", 11.0, GOLD_BRIGHT), TargetLevel));
+                        row.spawn((text(&skin.font, "", 14.0, TEXT_MAIN), TargetName));
+                    });
+                    // 下: 血条 (无外框, 数值居中叠条上)
+                    info.spawn((
                         Node {
-                            flex_direction: FlexDirection::Column,
-                            align_items: AlignItems::Center,
-                            row_gap: Val::Px(5.0),
-                            padding: UiRect::axes(Val::Px(20.0), Val::Px(7.0)),
-                            border: UiRect::all(Val::Px(1.0)),
+                            width: Val::Px(190.0),
+                            height: Val::Px(12.0),
+                            overflow: Overflow::clip(),
                             ..default()
                         },
-                        BackgroundColor(GLASS_BG),
-                        BorderColor(GOLD),
-                        BorderRadius::all(Val::Px(7.0)),
+                        BackgroundColor(BAR_BG),
+                        BorderRadius::all(Val::Px(6.0)),
                     ))
-                    .with_children(|f| {
-                        // 名字行: 两侧小菱形饰点
-                        f.spawn(Node {
-                            align_items: AlignItems::Center,
-                            column_gap: Val::Px(9.0),
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            row.spawn(text(&skin.font, "\u{25c6}", 7.0, GOLD));
-                            row.spawn((text(&skin.font, "", 14.0, TEXT_MAIN), TargetName));
-                            row.spawn(text(&skin.font, "\u{25c6}", 7.0, GOLD));
-                        });
-                        // 血条: 与底部 HUD 同款烘焙渐变填充, 数值居中叠条上
-                        f.spawn((
+                    .with_children(|b| {
+                        b.spawn((
                             Node {
-                                width: Val::Px(220.0),
-                                height: Val::Px(13.0),
-                                border: UiRect::all(Val::Px(1.0)),
-                                overflow: Overflow::clip(),
+                                height: Val::Percent(100.0),
+                                width: Val::Percent(100.0),
                                 ..default()
                             },
-                            BackgroundColor(BAR_BG),
-                            BorderColor(EDGE_GOLD),
+                            ImageNode::new(skin.bar_hp.clone()).with_mode(sliced(4.0)),
                             BorderRadius::all(Val::Px(6.0)),
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Node {
-                                    height: Val::Percent(100.0),
-                                    width: Val::Percent(100.0),
-                                    ..default()
-                                },
-                                ImageNode::new(skin.bar_hp.clone()).with_mode(sliced(4.0)),
-                                BorderRadius::all(Val::Px(5.0)),
-                                TargetHpFill,
-                            ));
-                            b.spawn((Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(0.0),
-                                right: Val::Px(0.0),
-                                top: Val::Px(0.0),
-                                bottom: Val::Px(0.0),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },))
-                                .with_children(|overlay| {
-                                    overlay.spawn((
-                                        text(&skin.font, "", 10.0, TEXT_MAIN),
-                                        TargetHpText,
-                                    ));
-                                });
-                        });
+                            TargetHpFill,
+                        ));
+                        b.spawn((Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            right: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            bottom: Val::Px(0.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },))
+                            .with_children(|overlay| {
+                                overlay.spawn((
+                                    text(&skin.font, "", 10.0, TEXT_MAIN),
+                                    TargetHpText,
+                                ));
+                            });
                     });
+                });
+                // 左: 圆形头像位 (叠在信息块左端; 头像素材接入前留空)
+                f.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        width: Val::Px(56.0),
+                        height: Val::Px(56.0),
+                        border: UiRect::all(Val::Px(2.0)),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.114, 0.122, 0.180)),
+                    BorderColor(GOLD),
+                    BorderRadius::all(Val::Percent(50.0)),
+                    TargetAvatar,
+                ));
             });
         });
 }
@@ -1203,6 +1227,7 @@ pub fn target_frame(
     mut q_name: Query<(&mut Text, &mut TextColor), With<TargetName>>,
     mut q_fill: Query<&mut Node, (With<TargetHpFill>, Without<TargetFrame>)>,
     mut q_hp: Query<&mut Text, (With<TargetHpText>, Without<TargetName>)>,
+    mut q_lv: Query<&mut Text, (With<TargetLevel>, Without<TargetName>, Without<TargetHpText>)>,
 ) {
     let info = net
         .target
@@ -1219,12 +1244,21 @@ pub fn target_frame(
             } else {
                 GOLD_BRIGHT // 玩家
             };
-            let name = if r.name.is_empty() {
+            // 宠物名自带「 LvN」后缀, 等级徽标已单列, 去重
+            let name = match r.level {
+                Some(lv) => r
+                    .name
+                    .strip_suffix(&format!(" Lv{lv}"))
+                    .unwrap_or(&r.name)
+                    .to_string(),
+                None => r.name.clone(),
+            };
+            let name = if name.is_empty() {
                 "???".to_string()
             } else {
-                r.name.clone()
+                name
             };
-            (name, color, r.hp)
+            (name, color, r.hp, r.level)
         });
     if info.is_none() && net.target.is_some() {
         net.target = None;
@@ -1233,13 +1267,22 @@ pub fn target_frame(
         return;
     };
     match info {
-        Some((name, color, hp)) => {
+        Some((name, color, hp, level)) => {
             frame.display = Display::Flex;
             if let Ok((mut t, mut c)) = q_name.get_single_mut() {
                 if **t != name {
                     **t = name;
                 }
                 c.0 = color;
+            }
+            if let Ok(mut t) = q_lv.get_single_mut() {
+                let label = match level {
+                    Some(lv) => format!("Lv{lv}"),
+                    None => String::new(),
+                };
+                if **t != label {
+                    **t = label;
+                }
             }
             let (frac, label) = match hp {
                 Some((cur, max)) => (

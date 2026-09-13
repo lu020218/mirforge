@@ -336,6 +336,8 @@ struct Remote {
     owner: Option<String>,
     /// 显示名 (服务端下发; 宠物含等级)
     name: String,
+    /// 等级 (服务端下发; 目标栏徽标)
+    level: Option<u32>,
     /// 名牌实体与已渲染文本 (文本变化才重建, 位置每帧跟随)
     label: Option<Entity>,
     label_text: String,

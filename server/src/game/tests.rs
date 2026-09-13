@@ -1068,6 +1068,7 @@ async fn tame_converts_and_respects_rules() {
         id: "wild1".into(),
         template: "chicken".into(),
         name: "野鸡".into(),
+        level: 1,
         boss: false,
         respawn: Duration::from_secs(3600),
         announce: false,
