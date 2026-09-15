@@ -194,6 +194,9 @@ pub struct EntityUpdate {
     /// 等级 (玩家=角色级, 怪物=模板级, 宠物=宝宝级); 目标栏徽标
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u32>,
+    /// 音效基址 (怪物; packs/sound/mon/{基址:03}-动作.ogg)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,6 +247,9 @@ pub enum ServerMessage {
         /// 小地图帧号 (Data/mmap.Lib)；None = 该区未配置小地图
         #[serde(default, skip_serializing_if = "Option::is_none")]
         minimap: Option<u16>,
+        /// 区域 BGM 曲名 (packs/sound/bgm/<名>.ogg); None = 无
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bgm: Option<String>,
     },
     #[serde(rename = "playerStatus")]
     PlayerStatus {
@@ -581,6 +587,7 @@ mod tests {
                 owner: None,
                 name: None,
                 level: None,
+                sound: None,
             }],
             timestamp: 12345,
         };

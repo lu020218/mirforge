@@ -11,6 +11,7 @@
 //! 操作（经典传奇）：鼠标左键按住 = 朝光标走路，右键按住 = 跑步（均沿墙滑行）；
 //! PageUp/PageDown 或 +/- 缩放，F 键 1x/2x/3x 整数缩放循环。
 
+mod audio;
 mod dev;
 mod fx;
 mod hud;
@@ -131,6 +132,9 @@ fn main() {
         .init_resource::<panels::Drag>()
         .init_resource::<panels::Grab>()
         .init_resource::<panels::UiHover>()
+        .insert_resource(audio::SoundBank::new())
+        .init_resource::<audio::Bgm>()
+        .add_event::<audio::Sfx>()
         .init_resource::<NpcHits>()
         .init_resource::<AutoPath>()
         .init_resource::<screens::CharSelectState>()
@@ -167,7 +171,13 @@ fn main() {
             Update,
             (
                 panels::ui_hover,
-                (player_move, update_hover),
+                (
+                    player_move,
+                    update_hover,
+                    audio::audio_step,
+                    audio::bgm_pick,
+                    audio::self_sounds,
+                ),
                 camera_follow,
                 camera_control,
                 stream_chunks,
@@ -253,6 +263,8 @@ struct Net {
     zone_name: String,
     /// 当前区域小地图帧号 (服务器下发, 管理台配置)
     zone_minimap: Option<u16>,
+    /// 当前区域 BGM 曲名 (服务器随切区下发; 空 = 无)
+    zone_bgm: String,
     /// 当前区域 NPC (服务器下发)
     npcs: Vec<protocol::NpcInfo>,
     /// NPC 列表版本 (变化时重建精灵)
@@ -338,6 +350,8 @@ struct Remote {
     name: String,
     /// 等级 (服务端下发; 目标栏徽标)
     level: Option<u32>,
+    /// 音效基址 (怪物; mon/{基址:03}-动作.ogg)
+    sound: u16,
     /// 名牌实体与已渲染文本 (文本变化才重建, 位置每帧跟随)
     label: Option<Entity>,
     label_text: String,

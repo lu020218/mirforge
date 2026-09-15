@@ -13,6 +13,7 @@ pub(crate) fn net_pump(
     screen: Res<State<Screen>>,
     mut q_player: Query<&mut Player>,
     q_trails: Query<(Entity, &crate::fx::DashTrail)>,
+    mut sfx: EventWriter<crate::audio::Sfx>,
 ) {
     let mut events = Vec::new();
     if let Some(c) = &net.client {
@@ -120,9 +121,11 @@ pub(crate) fn net_pump(
                     zone_name,
                     position,
                     minimap,
+                    bgm,
                 } => {
                     net.zone_name = zone_name;
                     net.zone_minimap = minimap;
+                    net.zone_bgm = bgm.unwrap_or_default();
                     // 跨地图: 重载地图/行走网格, 回收旧分块与远程玩家
                     if zone_id.to_lowercase() != world.map_name && world.switch_map(&zone_id) {
                         for (_, e) in world.chunks.drain() {
@@ -199,6 +202,9 @@ pub(crate) fn net_pump(
                     mp,
                     max_mp,
                 } => {
+                    if net.stat.is_some_and(|st| level > st.level) {
+                        sfx.send(crate::audio::Sfx::ui("ui/levelup"));
+                    }
                     net.stat_rev += 1;
                     net.stat = Some(Stat {
                         level,
@@ -264,6 +270,27 @@ pub(crate) fn net_pump(
                             } else {
                                 hum::CAST
                             };
+                        }
+                    }
+                    // 施放/命中音: magic/{fx}_cast / _hit; 三段技命中音在
+                    // 弹体到达时播 (fx.rs); 补发包 (anim 空) 不重播施放音
+                    if !fx.is_empty() {
+                        if let Ok(p) = q_player.get_single() {
+                            let d = (DVec2::new(position.x, position.y) - p.pos).length();
+                            if !anim.is_empty() {
+                                if let Some(ev) =
+                                    crate::audio::Sfx::at(format!("magic/{fx}_cast"), d)
+                                {
+                                    sfx.send(ev);
+                                }
+                            }
+                            if stages < 3 && !targets.is_empty() {
+                                if let Some(ev) =
+                                    crate::audio::Sfx::at(format!("magic/{fx}_hit"), d)
+                                {
+                                    sfx.send(ev);
+                                }
+                            }
                         }
                     }
                     // 冲锋类分流: 起手包 (anim 非空) 起跟随拖尾 + 本地位移
@@ -451,6 +478,12 @@ pub(crate) fn net_pump(
                     target_id, amount, ..
                 } => {
                     let mine = net.my_id.as_deref() == Some(target_id.as_str());
+                    if mine {
+                        sfx.send(crate::audio::Sfx {
+                            name: "hum/struck".into(),
+                            vol: 0.9,
+                        });
+                    }
                     let pos = if mine {
                         q_player.get_single().ok().map(|p| p.pos)
                     } else {
@@ -543,6 +576,26 @@ pub(crate) fn net_pump(
                         };
                         if anim != r.anim {
                             r.anim_t = 0.0; // 动作切换从头播 (攻击/死亡一次性动画)
+                            // 动作音: 怪物按音效基址 (-1 攻/-2 受/-3 死),
+                            // 其他玩家挥砍/倒地; 按与本地玩家的距离衰减
+                            if matches!(anim, 3 | 4 | 5) {
+                                if let Ok(p) = q_player.get_single() {
+                                    let d = (r.pos - p.pos).length();
+                                    let name = match (r.image.is_some(), anim) {
+                                        (true, 3) => Some(format!("mon/{:03}-1", r.sound)),
+                                        (true, 5) => Some(format!("mon/{:03}-2", r.sound)),
+                                        (true, 4) => Some(format!("mon/{:03}-3", r.sound)),
+                                        (false, 3) => Some("hum/swing".to_string()),
+                                        (false, 4) => Some("hum/die_m".to_string()),
+                                        _ => None,
+                                    };
+                                    if let Some(n) = name {
+                                        if let Some(ev) = crate::audio::Sfx::at(n, d) {
+                                            sfx.send(ev);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         r.anim = anim;
                         if let Some(d) = e.dir {
@@ -570,6 +623,9 @@ pub(crate) fn net_pump(
                         }
                         if e.level.is_some() {
                             r.level = e.level;
+                        }
+                        if let Some(sd) = e.sound {
+                            r.sound = sd;
                         }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;

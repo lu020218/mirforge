@@ -339,6 +339,8 @@ struct Monster {
     template: String,
     /// 模板等级 (展示用, 随实体广播)
     level: u32,
+    /// 音效基址 (客户端 mon/{基址:03}-动作.ogg; 模板 -1 时落形象号)
+    sound: u16,
     /// 显示名 (BOSS 击杀公告用; 普通怪为空)
     name: String,
     /// 是 BOSS: 重生慢, 死亡可全服公告
@@ -771,6 +773,7 @@ impl Game {
                     owner: None,
                     name: None,
                     level: None,
+                    sound: None,
                 })
                 .collect();
             broadcast_to(
@@ -1697,11 +1700,18 @@ impl Game {
             },
         )
         .await;
-        let (zone_id, zone_name, minimap) = self
+        let (zone_id, zone_name, minimap, bgm) = self
             .zones
             .get(&p.zone)
-            .map(|z| (z.id.clone(), z.name.clone(), z.sidecar.minimap))
-            .unwrap_or((p.zone.clone(), p.zone.clone(), None));
+            .map(|z| {
+                (
+                    z.id.clone(),
+                    z.name.clone(),
+                    z.sidecar.minimap,
+                    z.sidecar.bgm.clone(),
+                )
+            })
+            .unwrap_or((p.zone.clone(), p.zone.clone(), None, None));
         let zone_of_npc = zone_id.clone();
         send_to(
             &self.sessions,
@@ -1711,6 +1721,7 @@ impl Game {
                 zone_name,
                 position: Position { x, y },
                 minimap,
+                bgm,
             },
         )
         .await;
@@ -1792,11 +1803,18 @@ impl Game {
         let Some(p) = self.players.get(character_id) else {
             return;
         };
-        let (zone_id, zone_name, minimap) = self
+        let (zone_id, zone_name, minimap, bgm) = self
             .zones
             .get(&p.zone)
-            .map(|z| (z.id.clone(), z.name.clone(), z.sidecar.minimap))
-            .unwrap_or((p.zone.clone(), p.zone.clone(), None));
+            .map(|z| {
+                (
+                    z.id.clone(),
+                    z.name.clone(),
+                    z.sidecar.minimap,
+                    z.sidecar.bgm.clone(),
+                )
+            })
+            .unwrap_or((p.zone.clone(), p.zone.clone(), None, None));
         let zone_of_npc = zone_id.clone();
         send_to(
             &self.sessions,
@@ -1806,6 +1824,7 @@ impl Game {
                 zone_name,
                 position: Position { x, y },
                 minimap,
+                bgm,
             },
         )
         .await;

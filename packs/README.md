@@ -116,6 +116,25 @@ CWeapon 站立帧(与底图同格坐标系,中心差作偏移)。
 一个库含多只怪时,在管理台「怪物设置」给模板配**基址**(该怪的起始帧,
 「选段」按钮可视化挑),引擎从基址起自适应。
 
+## 音频
+
+`packs/sound/` 下全部为 .ogg (bevy 默认解码格式), 由
+`python tools/transcode-sound.py` 从 `resources/Sound`(Crystal 版 wav) 转码。
+客户端按名字直读 (SoundBank 惰性缓存), **缺文件静默跳过** — 加音效只需
+把 ogg 放到对应路径, 不用改代码:
+
+```
+hum/walk_l|walk_r|run_l|run_r|swing|struck|die_m|die_f.ogg
+ui/levelup|gold.ogg
+bgm/<曲名>.ogg          登录固定 login; 区域曲名在管理台地图页配置
+mon/{基址:03}-{动作}.ogg 动作: 0出场 1攻击 2受击 3死亡 4特殊;
+                         基址在管理台怪物页「音效」列配置 (-1=同形象号)
+magic/{技能fx名}_cast|_hit.ogg
+```
+
+音量: `MIRFORGE_SFX_VOL` / `MIRFORGE_BGM_VOL` 环境变量 (0..1);
+世界音效按与玩家的格距线性衰减, 12 格外不播。
+
 ## 运行时说明
 
 引擎以 **mmap** 打开 .mfl(原始字节不进堆,由操作系统页缓存按内存压力

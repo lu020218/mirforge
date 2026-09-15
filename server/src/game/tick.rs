@@ -244,6 +244,7 @@ impl Game {
                     owner: None,
                     name: Some(p.character.name.clone()),
                     level: Some(p.character.level),
+                    sound: None,
                 })
                 .collect();
             if entities.is_empty() {
@@ -276,6 +277,7 @@ impl Game {
                                 owner: None,
                                 name: None,
                                 level: None,
+                                sound: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
@@ -326,6 +328,7 @@ impl Game {
                             } else {
                                 m.level
                             }),
+                            sound: Some(m.sound),
                         })
                     }),
             );

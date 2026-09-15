@@ -1069,6 +1069,7 @@ async fn tame_converts_and_respects_rules() {
         template: "chicken".into(),
         name: "野鸡".into(),
         level: 1,
+        sound: 3,
         boss: false,
         respawn: Duration::from_secs(3600),
         announce: false,

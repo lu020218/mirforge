@@ -409,6 +409,8 @@ pub(crate) fn projectile_step(
         &mut Visibility,
         &Projectile,
     )>,
+    q_player: Query<&crate::Player>,
+    mut sfx: EventWriter<crate::audio::Sfx>,
 ) {
     let now = time.elapsed_secs_f64();
     for (e, mut tf, mut sp, mut vis, pj) in q.iter_mut() {
@@ -426,6 +428,17 @@ pub(crate) fn projectile_step(
         let k = world.block_len(layer, pj.row, fxl::SLOT).min(10);
         if t >= 1.0 || k == 0 {
             commands.entity(e).despawn();
+            // 命中音: 与命中特效同刻, 按落点距离衰减
+            if let Ok(p) = q_player.get_single() {
+                let d = bevy::math::DVec2::new(
+                    pj.to.x as f64 / crate::CELL_W as f64 - p.pos.x,
+                    pj.to.y as f64 / crate::CELL_H as f64 - p.pos.y,
+                )
+                .length();
+                if let Some(ev) = crate::audio::Sfx::at(format!("magic/{}_hit", pj.fx), d) {
+                    sfx.send(ev);
+                }
+            }
             commands.spawn((
                 Sprite::default(),
                 Transform::from_xyz(pj.to.x, -pj.to.y, 700.0),

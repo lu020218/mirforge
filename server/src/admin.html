@@ -208,7 +208,7 @@
       <div class="err-msg" id="err-monsters"></div>
       <div class="table-wrap">
         <table id="mon-table">
-          <thead><tr><th>id</th><th>名称</th><th title="展示用: 客户端目标栏等级徽标">等级</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th title="普通 / 可诱惑 (法师诱惑之光合法目标) / 不死系 (不可诱惑)">类型</th><th title="宠物成长: 被召唤技能引用的模板才生效, 普通怪忽略">宠满级</th><th title="宝宝升到 L+1 需 基数×L 经验">升级基数</th><th title="宝宝每级 HP/攻击 乘法成长 (升级回满血)">每级成长</th><th></th></tr></thead>
+          <thead><tr><th>id</th><th>名称</th><th title="展示用: 客户端目标栏等级徽标">等级</th><th title="音效基址: packs/sound/mon/{基址}-1/2/3.ogg (攻/受/死); -1=同形象号">音效</th><th>形象</th><th title="一库多怪时该怪的起始帧; 点「选段」可视化挑">基址</th><th>HP</th><th>伤害</th><th>经验</th><th>被动</th><th title="格式: 物品模板:概率, 逗号分隔">掉落</th><th title="普通 / 可诱惑 (法师诱惑之光合法目标) / 不死系 (不可诱惑)">类型</th><th title="宠物成长: 被召唤技能引用的模板才生效, 普通怪忽略">宠满级</th><th title="宝宝升到 L+1 需 基数×L 经验">升级基数</th><th title="宝宝每级 HP/攻击 乘法成长 (升级回满血)">每级成长</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -278,6 +278,7 @@
             <span class="hint">出生点 X/Y</span>
             <input id="ze-sx" style="width:74px"><input id="ze-sy" style="width:74px">
             <span class="hint">小地图帧</span><input id="ze-mm" style="width:64px" onchange="syncMinimapPreview()">
+            <span class="hint" title="packs/sound/bgm/<名>.ogg, 留空无 BGM">BGM</span><input id="ze-bgm" style="width:90px">
             <button class="ghost" onclick="openMinimapPicker()">选择…</button>
             <button onclick="saveZone()">保存区域</button>
             <button class="ghost" onclick="closeZone()">关闭</button>
@@ -1846,6 +1847,7 @@ function monRow(m) {
     <td><input class="wide" data-m="id" value="${m.id ?? ''}"></td>
     <td><input class="wide" data-m="name" value="${m.name ?? ''}"></td>
     <td><input data-m="level" value="${m.level ?? 1}" style="width:44px"></td>
+    <td><input data-m="sound" value="${m.sound ?? -1}" style="width:48px"></td>
     <td><input data-m="image" value="${m.image ?? 0}" style="width:55px">
         <img class="icon" title="点击从怪物图库选择" src="/api/frame/monster/${m.image ?? 0}?base=${m.base ?? 0}" onclick="openMonPicker(this)"></td>
     <td><input data-m="base" value="${m.base ?? 0}" style="width:60px">
@@ -1911,6 +1913,7 @@ function collectMonsters() {
     const v = c => { const el = tr.querySelector(`[data-m=${c}]`); return el.type === 'checkbox' ? el.checked : el.value; };
     return {
       id: v('id').trim(), name: v('name').trim(), level: num(v('level')) || 1,
+      sound: v('sound').trim() === '' ? -1 : num(v('sound')),
       image: num(v('image')), base: num(v('base')), hp: num(v('hp')), damage: num(v('damage')),
       exp: num(v('exp')), passive: v('passive'),
       mon_type: v('mon_type') || 'normal',
@@ -2039,6 +2042,7 @@ function showZone(map) {
   sb.innerHTML = '';
   (sc.monsters || []).forEach(m => sb.appendChild(spawnRow(m)));
   document.getElementById('ze-mm').value = sc.minimap ?? '';
+  document.getElementById('ze-bgm').value = sc.bgm ?? '';
   syncMinimapPreview();
   endPick();
   mountZoneEditor(map);
@@ -2146,6 +2150,7 @@ function collectZone() {
     name: name || null,
     spawn: (sx !== '' && sy !== '') ? [num(sx), num(sy)] : null,
     minimap: mm === '' ? null : num(mm),
+    bgm: (document.getElementById('ze-bgm').value.trim() || null),
     portals, monsters,
   };
 }

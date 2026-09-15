@@ -417,6 +417,7 @@ impl Game {
                             template: m.template.clone(),
                             name: m.name.clone(),
                             level: m.level,
+                            sound: m.sound,
                             boss: m.boss,
                             respawn: m.respawn,
                             announce: m.announce,
@@ -977,6 +978,7 @@ impl Game {
                     owner: None,
                     name: None,
                     level: None,
+                    sound: None,
                 }],
                 timestamp: now_ms(),
             },
@@ -1099,6 +1101,11 @@ impl super::Game {
                 template: def.id.clone(),
                 name: def.name.clone(),
                 level: def.level,
+                sound: if def.sound >= 0 {
+                    def.sound as u16
+                } else {
+                    def.image
+                },
                 boss: false,
                 respawn: Duration::from_secs(3600),
                 announce: false,
@@ -1268,6 +1275,7 @@ impl super::Game {
                         owner: None,
                         name: None,
                         level: None,
+                        sound: None,
                     }],
                     timestamp: now_ms(),
                 },

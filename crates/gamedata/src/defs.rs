@@ -12,6 +12,9 @@ pub struct ZoneSidecar {
     /// 小地图帧号 (Data/mmap.Lib); None = 无小地图
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimap: Option<u16>,
+    /// 区域 BGM 曲名 (packs/sound/bgm/<名>.ogg); None = 无 BGM
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bgm: Option<String>,
     #[serde(default)]
     pub portals: Vec<PortalSidecar>,
     #[serde(default)]
@@ -86,6 +89,10 @@ pub struct MonsterDef {
     /// 怪物等级 (展示用: 目标栏等级徽标)
     #[serde(default = "default_mon_level")]
     pub level: u32,
+    /// 音效基址: packs/sound/mon/{基址:03}-1/2/3.ogg (攻击/受击/死亡);
+    /// -1 = 跟随形象号 (购入图库编号常与经典音效编号不一致, 故可单配)
+    #[serde(default = "default_mon_sound")]
+    pub sound: i32,
     /// 宠物成长 (仅被召唤技能引用时生效): 等级上限 (经典 7)
     #[serde(default = "default_pet_max_level")]
     pub pet_max_level: u32,
@@ -102,6 +109,9 @@ fn default_mon_type() -> String {
 }
 fn default_mon_level() -> u32 {
     1
+}
+fn default_mon_sound() -> i32 {
+    -1
 }
 fn default_pet_max_level() -> u32 {
     7

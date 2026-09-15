@@ -48,6 +48,9 @@ pub(super) fn materialize_monsters(
                 template: sp.template.clone(),
                 name: def.map(|m| m.name.clone()).unwrap_or_default(),
                 level: def.map(|m| m.level).unwrap_or(1),
+                sound: def
+                    .map(|m| if m.sound >= 0 { m.sound as u16 } else { m.image })
+                    .unwrap_or(image),
                 boss: false,
                 respawn: RESPAWN_TIME,
                 announce: false,
@@ -106,6 +109,7 @@ pub(super) fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monst
                 name: b.name.clone(),
                 // BOSS 配置无等级字段, 展示按精英档
                 level: 50,
+                sound: b.image,
                 boss: true,
                 respawn: Duration::from_secs(b.respawn_secs.max(1)),
                 announce: b.announce,
@@ -173,6 +177,7 @@ impl Game {
                 owner: None,
                 name: None,
                 level: None,
+                sound: None,
             })
             .collect();
         self.monsters.retain(|m| m.boss);
@@ -222,6 +227,7 @@ impl Game {
                 owner: None,
                 name: None,
                 level: None,
+                sound: None,
             })
             .collect();
         self.monsters.retain(|m| !m.boss);

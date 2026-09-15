@@ -183,7 +183,8 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             pet_exp_base INTEGER NOT NULL DEFAULT 100,
             pet_grow REAL NOT NULL DEFAULT 1.2,
             mon_type TEXT NOT NULL DEFAULT 'normal',
-            level INTEGER NOT NULL DEFAULT 1
+            level INTEGER NOT NULL DEFAULT 1,
+            sound INTEGER NOT NULL DEFAULT -1
         )",
         "CREATE TABLE IF NOT EXISTS cfg_drops (
             spawn_id INTEGER NOT NULL,
@@ -201,6 +202,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN minimap INTEGER")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN bgm TEXT")
         .execute(pool)
         .await;
     let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN magic INTEGER NOT NULL DEFAULT 0")
@@ -508,7 +512,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
 
     let monsters = sqlx::query(
         "SELECT id, name, image, base, hp, damage, exp, passive, drops,
-                pet_max_level, pet_exp_base, pet_grow, mon_type, level
+                pet_max_level, pet_exp_base, pet_grow, mon_type, level, sound
          FROM cfg_monsters ORDER BY ord, id",
     )
     .fetch_all(pool)
@@ -529,6 +533,7 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         pet_exp_base: r.get::<i64, _>("pet_exp_base").max(1) as u64,
         pet_grow: r.get::<f64, _>("pet_grow").max(1.0),
         level: r.get::<i64, _>("level").clamp(1, 999) as u32,
+        sound: r.get::<i64, _>("sound") as i32,
     })
     .collect();
 
@@ -656,7 +661,8 @@ pub async fn load_zone_sidecars(
     pool: &SqlitePool,
 ) -> Result<HashMap<String, ZoneSidecar>, sqlx::Error> {
     let mut out: HashMap<String, ZoneSidecar> = HashMap::new();
-    for r in sqlx::query("SELECT map, name, spawn_x, spawn_y, minimap FROM cfg_zones ORDER BY map")
+    for r in
+        sqlx::query("SELECT map, name, spawn_x, spawn_y, minimap, bgm FROM cfg_zones ORDER BY map")
         .fetch_all(pool)
         .await?
     {
@@ -669,6 +675,7 @@ pub async fn load_zone_sidecars(
                 name: r.get("name"),
                 spawn: sx.zip(sy),
                 minimap: r.get::<Option<i64>, _>("minimap").map(|v| v as u16),
+                bgm: r.get::<Option<String>, _>("bgm").filter(|b| !b.is_empty()),
                 portals: Vec::new(),
                 monsters: Vec::new(),
             },
@@ -883,13 +890,15 @@ pub async fn save_zone(pool: &SqlitePool, map: &str, sc: &ZoneSidecar) -> Result
             .await?;
     }
     sqlx::query(
-        "INSERT INTO cfg_zones (map, name, spawn_x, spawn_y, minimap) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO cfg_zones (map, name, spawn_x, spawn_y, minimap, bgm)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(map)
     .bind(sc.name.as_deref())
     .bind(sc.spawn.map(|s| s.0))
     .bind(sc.spawn.map(|s| s.1))
     .bind(sc.minimap.map(|v| v as i64))
+    .bind(sc.bgm.as_deref())
     .execute(&mut *tx)
     .await?;
     for p in &sc.portals {
@@ -967,8 +976,8 @@ pub async fn save_monsters(
         sqlx::query(
             "INSERT INTO cfg_monsters (id, name, image, base, hp, damage, exp, passive, drops,
                                        ord, pet_max_level, pet_exp_base, pet_grow, mon_type,
-                                       level)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                       level, sound)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&m.id)
         .bind(&m.name)
@@ -985,6 +994,7 @@ pub async fn save_monsters(
         .bind(m.pet_grow)
         .bind(&m.mon_type)
         .bind(m.level as i64)
+        .bind(m.sound as i64)
         .execute(&mut *tx)
         .await?;
     }
@@ -1038,6 +1048,7 @@ pub async fn migrate_monsters(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             pet_exp_base: 100,
             pet_grow: 1.2,
             level: 1,
+            sound: -1,
         });
     }
     if !out.is_empty() {
@@ -1587,6 +1598,28 @@ pub async fn migrate_mon_level(pool: &SqlitePool) -> Result<(), sqlx::Error> {
                 .await?;
         }
         tracing::info!("怪物表已加等级列 (展示用), 内置怪按默认档位点级");
+    }
+    Ok(())
+}
+
+/// 怪物音效基址列 (幂等; 首次补列给内置怪点经典编号 — 鸡3 鹿4 稻草人2 骷髅78)
+pub async fn migrate_mon_sound(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let has = sqlx::query("SELECT 1 FROM pragma_table_info('cfg_monsters') WHERE name = 'sound'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !has {
+        sqlx::query("ALTER TABLE cfg_monsters ADD COLUMN sound INTEGER NOT NULL DEFAULT -1")
+            .execute(pool)
+            .await?;
+        for (id, sd) in [("chicken", 3), ("deer", 4), ("scarecrow", 2), ("skeleton", 78)] {
+            sqlx::query("UPDATE cfg_monsters SET sound = ? WHERE id = ?")
+                .bind(sd)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+        tracing::info!("怪物表已加音效基址列, 内置怪按经典编号点值");
     }
     Ok(())
 }
