@@ -3147,3 +3147,243 @@ pub fn trade_clicks(
         net.storage_rev += 1;
     }
 }
+
+// ─────────── 队伍面板 / 组队邀请 ───────────
+
+#[derive(Component)]
+pub struct PartyRoot;
+#[derive(Component)]
+pub struct PartyInviteRoot;
+#[derive(Component)]
+pub struct PartyAcceptBtn;
+#[derive(Component)]
+pub struct PartyDeclineBtn;
+#[derive(Component)]
+pub struct PartyLeaveBtn;
+/// 踢人按钮 (仅队长可见); 内为成员 id
+#[derive(Component)]
+pub struct PartyKickBtn(String);
+
+/// 队伍面板 (屏幕左侧常驻) + 邀请弹窗, party_rev 驱动重建
+pub fn party_ui(
+    mut commands: Commands,
+    net: Res<Net>,
+    skin: Res<Skin>,
+    mut seen_rev: Local<u32>,
+    q_old: Query<Entity, Or<(With<PartyRoot>, With<PartyInviteRoot>)>>,
+) {
+    if *seen_rev == net.party_rev {
+        return;
+    }
+    *seen_rev = net.party_rev;
+    for e in &q_old {
+        commands.entity(e).despawn_recursive();
+    }
+    let font = skin.font.clone();
+    // 邀请弹窗
+    if let Some((_, from_name)) = &net.party_invite {
+        let msg = format!("{from_name} 邀请你加入队伍");
+        commands
+            .spawn((
+                PartyInviteRoot,
+                UiBlock,
+                RelativeCursorPosition::default(),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(50.0),
+                    top: Val::Px(180.0),
+                    margin: UiRect::left(Val::Px(-140.0)),
+                    width: Val::Px(280.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(10.0),
+                    padding: UiRect::all(Val::Px(14.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                BorderColor(GOLD),
+                BorderRadius::all(Val::Px(6.0)),
+                GlobalZIndex(30),
+            ))
+            .with_children(|root| {
+                root.spawn(text(&font, msg, 14.0, TEXT_MAIN));
+                root.spawn(Node {
+                    column_gap: Val::Px(16.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for (label, ok) in [("接受", true), ("拒绝", false)] {
+                        let mut b = row.spawn((
+                            Button,
+                            Node {
+                                padding: UiRect::axes(Val::Px(18.0), Val::Px(4.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor(if ok { GOLD } else { EDGE_DARK }),
+                            BorderRadius::all(Val::Px(4.0)),
+                        ));
+                        if ok {
+                            b.insert(PartyAcceptBtn);
+                        } else {
+                            b.insert(PartyDeclineBtn);
+                        }
+                        b.with_children(|t| {
+                            t.spawn(text(
+                                &font,
+                                label,
+                                13.0,
+                                if ok { GOLD_BRIGHT } else { TEXT_DIM },
+                            ));
+                        });
+                    }
+                });
+            });
+    }
+    if net.party.is_empty() {
+        return;
+    }
+    let my_id = net.my_id.clone().unwrap_or_default();
+    let i_am_leader = net
+        .party
+        .iter()
+        .any(|m| m.leader && m.id == my_id);
+    let members = net.party.clone();
+    commands
+        .spawn((
+            PartyRoot,
+            UiBlock,
+            RelativeCursorPosition::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(14.0),
+                top: Val::Px(120.0),
+                width: Val::Px(170.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.039, 0.043, 0.071, 0.72)),
+            BorderColor(EDGE_GOLD),
+            BorderRadius::all(Val::Px(6.0)),
+            GlobalZIndex(10),
+        ))
+        .with_children(|root| {
+            root.spawn(text(
+                &font,
+                format!("队伍 ({})", members.len()),
+                12.0,
+                GOLD_BRIGHT,
+            ));
+            for m in &members {
+                let mine = m.id == my_id;
+                root.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(2.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn(Node {
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|line| {
+                        let tag = if m.leader { "★" } else { "" };
+                        let color = if !m.online {
+                            DISABLED
+                        } else if mine {
+                            GOLD_BRIGHT
+                        } else {
+                            TEXT_MAIN
+                        };
+                        line.spawn(text(
+                            &font,
+                            format!("{}{} Lv{}", tag, m.name, m.level),
+                            11.0,
+                            color,
+                        ));
+                        if i_am_leader && !mine {
+                            line.spawn((
+                                Button,
+                                PartyKickBtn(m.id.clone()),
+                                Node::default(),
+                            ))
+                            .with_children(|x| {
+                                x.spawn(text(&font, "×", 12.0, TEXT_DIM));
+                            });
+                        }
+                    });
+                    // 血条
+                    row.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(5.0),
+                            ..default()
+                        },
+                        BackgroundColor(SLOT_BG),
+                        BorderRadius::all(Val::Px(2.0)),
+                    ))
+                    .with_children(|bar| {
+                        let frac =
+                            (m.hp.max(0) as f32 / m.max_hp.max(1) as f32).min(1.0);
+                        bar.spawn((
+                            Node {
+                                width: Val::Percent(100.0 * frac),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(HP_RED),
+                            BorderRadius::all(Val::Px(2.0)),
+                        ));
+                    });
+                });
+            }
+            root.spawn((
+                Button,
+                PartyLeaveBtn,
+                Node {
+                    align_self: AlignSelf::Center,
+                    padding: UiRect::axes(Val::Px(14.0), Val::Px(2.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(EDGE_DARK),
+                BorderRadius::all(Val::Px(4.0)),
+            ))
+            .with_children(|t| {
+                t.spawn(text(&font, "离队", 11.0, TEXT_DIM));
+            });
+        });
+}
+
+pub fn party_clicks(
+    mut net: ResMut<Net>,
+    q_accept: Query<&Interaction, (With<PartyAcceptBtn>, Changed<Interaction>)>,
+    q_decline: Query<&Interaction, (With<PartyDeclineBtn>, Changed<Interaction>)>,
+    q_leave: Query<&Interaction, (With<PartyLeaveBtn>, Changed<Interaction>)>,
+    q_kick: Query<(&Interaction, &PartyKickBtn), Changed<Interaction>>,
+) {
+    let pressed = |it: &Interaction| *it == Interaction::Pressed;
+    if q_accept.iter().any(pressed) {
+        net.send(ClientMessage::PartyAccept);
+    }
+    if q_decline.iter().any(pressed) {
+        net.send(ClientMessage::PartyDecline);
+        net.party_invite = None;
+        net.party_rev += 1;
+    }
+    if q_leave.iter().any(pressed) {
+        net.send(ClientMessage::LeaveParty);
+    }
+    for (it, b) in &q_kick {
+        if pressed(it) {
+            net.send(ClientMessage::PartyKick {
+                member_id: b.0.clone(),
+            });
+        }
+    }
+}

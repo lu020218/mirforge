@@ -161,6 +161,16 @@ pub enum ClientMessage {
     /// 切换攻击模式 ("peace"/"all")
     #[serde(rename = "setPkMode")]
     SetPkMode { mode: String },
+    /// 组队邀请 (对锁定玩家)
+    #[serde(rename = "partyInvite")]
+    PartyInvite { target_player_id: String },
+    #[serde(rename = "partyAccept")]
+    PartyAccept,
+    #[serde(rename = "partyDecline")]
+    PartyDecline,
+    /// 踢出队员 (仅队长)
+    #[serde(rename = "partyKick")]
+    PartyKick { member_id: String },
     #[serde(rename = "createParty")]
     CreateParty,
     #[serde(rename = "joinParty")]
@@ -388,6 +398,12 @@ pub enum ServerMessage {
     /// 攻击模式回执 ("peace"/"all")
     #[serde(rename = "pkMode")]
     PkMode { mode: String },
+    /// 收到组队邀请
+    #[serde(rename = "partyInvited")]
+    PartyInvited { from_id: String, from_name: String },
+    /// 队伍全量状态 (空 = 无队伍/已离队)
+    #[serde(rename = "partyState")]
+    PartyState { members: Vec<PartyMemberInfo> },
     /// 仓库全量状态 (打开与每次存取后推)
     #[serde(rename = "storageState")]
     StorageState {
@@ -442,6 +458,18 @@ pub struct NpcInfo {
 }
 
 /// 一件物品（实例）。slot: weapon/armor/helmet/necklace/ring
+/// 队伍成员条目 (队伍面板)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PartyMemberInfo {
+    pub id: String,
+    pub name: String,
+    pub level: u32,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub online: bool,
+    pub leader: bool,
+}
+
 fn default_dur() -> i32 {
     20
 }

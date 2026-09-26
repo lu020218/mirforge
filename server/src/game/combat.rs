@@ -142,7 +142,7 @@ impl Game {
                     )
                 })
                 .unwrap_or_default();
-            self.award_exp(char_id, exp_gain).await;
+            self.award_exp_party(char_id, exp_gain).await;
             self.roll_drops(char_id, mon_id).await;
             self.progress_quests(char_id, &template).await;
             if let Some(name) = boss_name {

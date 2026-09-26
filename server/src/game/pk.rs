@@ -87,6 +87,9 @@ impl Game {
             if !a.pk_all {
                 return Err("和平模式下无法攻击玩家 (Ctrl+H 切换)");
             }
+            if self.same_party(attacker, target) {
+                return Err("不能攻击队友");
+            }
             if !t.connected || t.dead_until.is_some() || t.zone != a.zone {
                 return Err("目标无效");
             }

@@ -111,7 +111,8 @@ pub(crate) fn cast_skills(
         let pk_all = net.pk_mode == "all";
         let valid = |id: &String| {
             let r = remotes.0.get(id)?;
-            let hostile = r.owner.is_none() && (r.image.is_some() || pk_all);
+            let teammate = net.party.iter().any(|m| m.id == *id);
+            let hostile = r.owner.is_none() && (r.image.is_some() || (pk_all && !teammate));
             (hostile && r.anim != 4).then(|| (id.clone(), (r.pos - p.pos).length(), r.pos))
         };
         if let Some((id, d, mp)) = net.target.as_ref().and_then(&valid) {

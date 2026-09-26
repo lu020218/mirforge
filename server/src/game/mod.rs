@@ -17,6 +17,7 @@ mod items;
 mod monster;
 mod trade;
 mod pk;
+mod party;
 mod npc;
 mod quest;
 #[cfg(test)]
@@ -598,6 +599,12 @@ pub struct Game {
     pending_player_poisons: Vec<(Instant, String, String, i32, f64)>,
     /// 上次 PK 值衰减时刻
     last_pk_decay: Instant,
+    /// 队伍表
+    parties: Vec<party::Party>,
+    /// 待回应组队邀请: 受邀者 → 发起者
+    party_invites: HashMap<String, String>,
+    /// 上次队伍 HP 周期推送时刻
+    last_party_sync: Instant,
     /// 在途交易 (一人至多一笔)
     trades: Vec<trade::Trade>,
     /// 待回应交易邀请: 受邀者 char_id → 发起者 char_id
@@ -690,6 +697,9 @@ impl Game {
             next_slot_id: 1,
             pending_player_poisons: Vec::new(),
             last_pk_decay: Instant::now(),
+            parties: Vec::new(),
+            party_invites: HashMap::new(),
+            last_party_sync: Instant::now(),
             trades: Vec::new(),
             trade_invites: HashMap::new(),
             last_save: Instant::now(),
@@ -1525,6 +1535,21 @@ impl Game {
             ClientMessage::SetPkMode { mode } => {
                 self.handle_set_pk_mode(&conn_id, &mode).await;
             }
+            ClientMessage::PartyInvite { target_player_id } => {
+                self.handle_party_invite(&conn_id, &target_player_id).await;
+            }
+            ClientMessage::PartyAccept => {
+                self.handle_party_accept(&conn_id).await;
+            }
+            ClientMessage::PartyDecline => {
+                self.handle_party_decline(&conn_id).await;
+            }
+            ClientMessage::PartyKick { member_id } => {
+                self.handle_party_kick(&conn_id, &member_id).await;
+            }
+            ClientMessage::LeaveParty => {
+                self.handle_leave_party(&conn_id).await;
+            }
             other => {
                 // M3 玩法消息占位
                 warn!("暂未实现的消息: {other:?}");
@@ -1935,6 +1960,7 @@ impl Game {
         }
         for id in dropped {
             self.cancel_trade_of(&id, "对方已离线, 交易取消").await;
+            self.remove_from_party(&id, "已离线, 自动离队").await;
         }
     }
 }

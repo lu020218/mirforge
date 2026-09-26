@@ -151,6 +151,20 @@ pub(crate) fn net_pump(
                 ServerMessage::PkMode { mode } => {
                     net.pk_mode = mode;
                 }
+                ServerMessage::PartyInvited { from_id, from_name } => {
+                    net.notices.push((
+                        format!("{from_name} 邀请你加入队伍"),
+                        "info".into(),
+                        time.elapsed_secs_f64(),
+                    ));
+                    net.party_invite = Some((from_id, from_name));
+                    net.party_rev += 1;
+                }
+                ServerMessage::PartyState { members } => {
+                    net.party = members;
+                    net.party_invite = None;
+                    net.party_rev += 1;
+                }
                 ServerMessage::StorageState { npc_id, items, cap } => {
                     net.storage = Some(crate::StorageView { npc_id, items, cap });
                     net.storage_rev += 1;

@@ -109,6 +109,7 @@ impl Game {
             self.settle_player_poisons(now_i).await;
             self.process_revives(now_i).await;
             self.decay_pk(now_i).await;
+            self.sync_parties_periodic(now_i).await;
             // 宠物打怪: 归属记主人 (经验/掉落/任务), 仇恨记宠物自身
             for (owner, pet_id, mon_id, dmg) in ai.pet_attacks {
                 self.hit_monster_inner(&owner, &mon_id, dmg, true, Some(&pet_id))

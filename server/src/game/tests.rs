@@ -1586,3 +1586,110 @@ async fn repair_charges_and_restores() {
     assert_eq!(p.gold, 10, "按损耗计费");
     set_data(GameData::builtin());
 }
+
+// ─────────── 组队 ───────────
+
+async fn party_pair(g: &mut Game) {
+    pvp_pair(g);
+    g.handle_party_invite("ca", "pb").await;
+    g.handle_party_accept("cb").await;
+}
+
+#[tokio::test]
+async fn party_invite_accept_forms_party() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    assert_eq!(g.parties.len(), 1);
+    assert_eq!(g.parties[0].members, vec!["pa".to_string(), "pb".to_string()]);
+    assert_eq!(g.parties[0].leader, "pa");
+}
+
+#[tokio::test]
+async fn party_exp_split_with_bonus_in_range() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    let (e0a, e0b) = (g.players["pa"].exp, g.players["pb"].exp);
+    // 两人相邻: 100 × 1.1 = 110, 各 55
+    g.award_exp_party("pa", 100).await;
+    assert_eq!(g.players["pa"].exp - e0a, 55, "击杀者分得 55");
+    assert_eq!(g.players["pb"].exp - e0b, 55, "队友分得 55");
+}
+
+#[tokio::test]
+async fn party_exp_not_shared_out_of_range() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    if let Some(p) = g.players.get_mut("pb") {
+        p.x = 40.0; // 拉出 12 格
+    }
+    let (e0a, e0b) = (g.players["pa"].exp, g.players["pb"].exp);
+    g.award_exp_party("pa", 50).await;
+    assert_eq!(g.players["pa"].exp - e0a, 50, "范围外不摊薄, 全归击杀者");
+    assert_eq!(g.players["pb"].exp, e0b, "范围外不分经验");
+}
+
+#[tokio::test]
+async fn party_blocks_friendly_fire() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    // 双方全体模式也不能互击
+    g.players.get_mut("pb").unwrap().pk_all = true;
+    assert!(
+        g.pvp_check("pa", "pb", 5.0, false).await.is_none(),
+        "同队不可互击"
+    );
+    g.handle_leave_party("cb").await;
+    assert!(
+        g.pvp_check("pa", "pb", 5.0, false).await.is_some(),
+        "离队后可以打了"
+    );
+}
+
+#[tokio::test]
+async fn leader_leave_transfers_then_disbands() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    // 第三人入队
+    let mut c = test_player("cc", "z1", 10.5, 10.0);
+    c.character.id = "pc".into();
+    c.character.name = "丙".into();
+    g.players.insert("pc".into(), c);
+    g.handle_party_invite("ca", "pc").await;
+    g.handle_party_accept("cc").await;
+    assert_eq!(g.parties[0].members.len(), 3);
+    // 队长离队 → 移交给乙
+    g.handle_leave_party("ca").await;
+    assert_eq!(g.parties[0].leader, "pb", "队长应移交");
+    assert_eq!(g.parties[0].members.len(), 2);
+    // 再走一人 → 解散
+    g.handle_leave_party("cb").await;
+    assert!(g.parties.is_empty(), "仅剩一人应解散");
+}
+
+#[tokio::test]
+async fn disconnect_leaves_party() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    g.on_disconnect("cb").await;
+    assert!(g.parties.is_empty(), "两人队掉线一人应解散");
+}
+
+#[tokio::test]
+async fn full_party_rejects_invite() {
+    let mut g = test_game().await;
+    party_pair(&mut g).await;
+    // 塞满到 11 人
+    for i in 0..9 {
+        let id = format!("px{i}");
+        let mut p = test_player(&format!("cx{i}"), "z1", 10.0, 10.0);
+        p.character.id = id.clone();
+        g.players.insert(id.clone(), p);
+        g.parties[0].members.push(id);
+    }
+    assert_eq!(g.parties[0].members.len(), 11);
+    let mut extra = test_player("cy", "z1", 10.0, 10.0);
+    extra.character.id = "py".into();
+    g.players.insert("py".into(), extra);
+    g.handle_party_invite("ca", "py").await;
+    assert!(g.party_invites.is_empty(), "满员不应发出邀请");
+}

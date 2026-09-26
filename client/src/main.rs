@@ -213,7 +213,13 @@ fn main() {
                     panels::dialog,
                     panels::dialog_clicks,
                     (panels::shop, panels::shop_clicks),
-                    (panels::trade_win, panels::trade_clicks, panels::storage_win),
+                    (
+                        panels::trade_win,
+                        panels::trade_clicks,
+                        panels::storage_win,
+                        panels::party_ui,
+                        panels::party_clicks,
+                    ),
                     make_portrait.before(panels::refresh),
                     panels::refresh,
                 )
@@ -293,6 +299,11 @@ struct Net {
     zone_bgm: String,
     /// 攻击模式 ("peace"/"all", 服务器回执驱动)
     pk_mode: String,
+    /// 队伍成员 (空 = 无队伍); 服务器全量推
+    party: Vec<protocol::PartyMemberInfo>,
+    /// 待回应组队邀请 (from_id, from_name)
+    party_invite: Option<(String, String)>,
+    party_rev: u32,
     /// 当前区域安全区 (中心 x, y, 半径); 进出提示 + 客户端预过滤
     safe_zones: Vec<(f64, f64, f64)>,
     /// 当前区域 NPC (服务器下发)

@@ -105,6 +105,10 @@ pub struct TargetAvatar;
 #[derive(Component)]
 pub struct TargetTradeBtn;
 #[derive(Component)]
+pub struct TargetPartyBtn;
+#[derive(Component)]
+pub struct TargetTradeClick;
+#[derive(Component)]
 pub struct PkModeText;
 #[derive(Component)]
 pub struct TargetName;
@@ -870,23 +874,38 @@ pub fn setup(
                                 ));
                             });
                     });
-                    // 交易按钮: 仅锁定玩家时显示
+                    // 交易/组队按钮行: 仅锁定玩家时显示
                     info.spawn((
-                        Button,
-                        TargetTradeBtn,
+                        TargetTradeBtn, // 行整体显隐用交易标记 (历史沿用)
                         Node {
                             display: Display::None,
                             align_self: AlignSelf::Center,
-                            padding: UiRect::axes(Val::Px(10.0), Val::Px(1.0)),
-                            border: UiRect::all(Val::Px(1.0)),
+                            column_gap: Val::Px(8.0),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
-                        BorderColor(EDGE_GOLD),
-                        BorderRadius::all(Val::Px(8.0)),
                     ))
-                    .with_children(|b| {
-                        b.spawn(text(&skin.font, "交易", 10.0, GOLD));
+                    .with_children(|row| {
+                        for (label, party) in [("交易", false), ("组队", true)] {
+                            let mut b = row.spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::axes(Val::Px(10.0), Val::Px(1.0)),
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                                BorderColor(EDGE_GOLD),
+                                BorderRadius::all(Val::Px(8.0)),
+                            ));
+                            if party {
+                                b.insert(TargetPartyBtn);
+                            } else {
+                                b.insert(TargetTradeClick);
+                            }
+                            b.with_children(|t| {
+                                t.spawn(text(&skin.font, label, 10.0, GOLD));
+                            });
+                        }
                     });
                 });
                 // 左: 圆形头像位 (叠在信息块左端; 头像素材接入前留空)
@@ -1393,16 +1412,20 @@ pub fn target_frame(
 
 /// 目标栏「交易」按钮: 对锁定的玩家发起交易请求
 pub fn target_trade_click(
-    q: Query<&Interaction, (With<TargetTradeBtn>, Changed<Interaction>)>,
+    q: Query<&Interaction, (With<TargetTradeClick>, Changed<Interaction>)>,
+    q_party: Query<&Interaction, (With<TargetPartyBtn>, Changed<Interaction>)>,
     net: Res<Net>,
 ) {
-    for it in &q {
-        if *it == Interaction::Pressed {
-            if let Some(t) = &net.target {
-                net.send(ClientMessage::TradeRequest {
-                    target_player_id: t.clone(),
-                });
-            }
+    if let Some(t) = &net.target {
+        if q.iter().any(|it| *it == Interaction::Pressed) {
+            net.send(ClientMessage::TradeRequest {
+                target_player_id: t.clone(),
+            });
+        }
+        if q_party.iter().any(|it| *it == Interaction::Pressed) {
+            net.send(ClientMessage::PartyInvite {
+                target_player_id: t.clone(),
+            });
         }
     }
 }
