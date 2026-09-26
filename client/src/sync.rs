@@ -108,6 +108,50 @@ pub(crate) fn net_pump(
                         net.shop_rev += 1; // 商店窗底栏也显示金币
                     }
                 }
+                ServerMessage::TradeInvited { from_id, from_name } => {
+                    net.notices.push((
+                        format!("{from_name} 请求与你交易"),
+                        "info".into(),
+                        time.elapsed_secs_f64(),
+                    ));
+                    net.trade_invite = Some((from_id, from_name));
+                    net.trade_rev += 1;
+                }
+                ServerMessage::TradeState {
+                    partner,
+                    my_items,
+                    their_items,
+                    my_gold,
+                    their_gold,
+                    my_ok,
+                    their_ok,
+                } => {
+                    net.trade = Some(crate::TradeView {
+                        partner,
+                        my_items,
+                        their_items,
+                        my_gold,
+                        their_gold,
+                        my_ok,
+                        their_ok,
+                    });
+                    net.trade_invite = None;
+                    net.trade_rev += 1;
+                }
+                ServerMessage::TradeClosed { reason, done } => {
+                    net.trade = None;
+                    net.trade_rev += 1;
+                    let kind = if done { "info" } else { "warn" };
+                    net.notices
+                        .push((reason, kind.into(), time.elapsed_secs_f64()));
+                    if net.notices.len() > 6 {
+                        net.notices.remove(0);
+                    }
+                }
+                ServerMessage::StorageState { npc_id, items, cap } => {
+                    net.storage = Some(crate::StorageView { npc_id, items, cap });
+                    net.storage_rev += 1;
+                }
                 ServerMessage::NpcDialogEnd => {
                     net.dialog = None;
                     net.dialog_rev += 1;
@@ -126,6 +170,9 @@ pub(crate) fn net_pump(
                     net.zone_name = zone_name;
                     net.zone_minimap = minimap;
                     net.zone_bgm = bgm.unwrap_or_default();
+                    if net.storage.take().is_some() {
+                        net.storage_rev += 1;
+                    }
                     // 跨地图: 重载地图/行走网格, 回收旧分块与远程玩家
                     if zone_id.to_lowercase() != world.map_name && world.switch_map(&zone_id) {
                         for (_, e) in world.chunks.drain() {

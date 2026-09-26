@@ -15,6 +15,7 @@ mod combat;
 use monster::{materialize_bosses, materialize_monsters};
 mod items;
 mod monster;
+mod trade;
 mod npc;
 mod quest;
 #[cfg(test)]
@@ -297,6 +298,8 @@ fn make_item(template: &str) -> Option<protocol::ItemInfo> {
 
 /// 背包容量上限 (与客户端 panels::BAG_SLOTS 一致)
 const MAX_INVENTORY: usize = 50;
+/// 仓库容量 (格)
+const STORAGE_CAP: usize = 50;
 /// 地面物品存留时长
 const GROUND_ITEM_TTL: Duration = Duration::from_secs(60);
 
@@ -516,6 +519,8 @@ struct PlayerState {
     cooldowns: HashMap<String, Instant>,
     inventory: Vec<protocol::ItemInfo>,
     equipment: HashMap<String, protocol::ItemInfo>,
+    /// 仓库 (NPC 存取; 与背包同一套持久化)
+    storage: Vec<protocol::ItemInfo>,
     quests: HashMap<String, QuestProgress>,
     /// 技能 id → 修炼进度
     skills: HashMap<String, SkillProgress>,
@@ -570,6 +575,10 @@ pub struct Game {
     next_slot_id: u64,
     last_save: Instant,
     last_regen: Instant,
+    /// 在途交易 (一人至多一笔)
+    trades: Vec<trade::Trade>,
+    /// 待回应交易邀请: 受邀者 char_id → 发起者 char_id
+    trade_invites: HashMap<String, String>,
     /// 技能延迟结算队列: 与客户端起手/飞行编排对齐 (到点才掉血)
     pending_hits: Vec<PendingHit>,
     /// 延迟上毒队列 (到点时刻, 施毒者, 目标怪, 每跳伤害, 持续秒)
@@ -656,6 +665,8 @@ impl Game {
             next_drop_id: 1,
             rng: 0x00C0_FFEE_1234_5678,
             next_slot_id: 1,
+            trades: Vec::new(),
+            trade_invites: HashMap::new(),
             last_save: Instant::now(),
             last_regen: Instant::now(),
             pending_hits: Vec::new(),
@@ -1453,6 +1464,38 @@ impl Game {
             } => {
                 self.handle_chat(&conn_id, channel, content).await;
             }
+            ClientMessage::TradeRequest { target_player_id } => {
+                self.handle_trade_request(&conn_id, &target_player_id).await;
+            }
+            ClientMessage::TradeAccept => {
+                self.handle_trade_accept(&conn_id).await;
+            }
+            ClientMessage::TradeDecline => {
+                self.handle_trade_decline(&conn_id).await;
+            }
+            ClientMessage::TradePlaceItem { item_id } => {
+                self.handle_trade_place(&conn_id, &item_id).await;
+            }
+            ClientMessage::TradeTakeItem { item_id } => {
+                self.handle_trade_take(&conn_id, &item_id).await;
+            }
+            ClientMessage::TradeSetGold { gold } => {
+                self.handle_trade_set_gold(&conn_id, gold).await;
+            }
+            ClientMessage::TradeConfirm => {
+                self.handle_trade_confirm(&conn_id).await;
+            }
+            ClientMessage::TradeCancel => {
+                if let Some(me) = self.char_by_conn(&conn_id) {
+                    self.cancel_trade_of(&me, "对方取消了交易").await;
+                }
+            }
+            ClientMessage::StoreItem { npc_id, item_id } => {
+                self.handle_store_item(&conn_id, &npc_id, &item_id).await;
+            }
+            ClientMessage::StorageTake { npc_id, item_id } => {
+                self.handle_storage_take(&conn_id, &npc_id, &item_id).await;
+            }
             other => {
                 // M3 玩法消息占位
                 warn!("暂未实现的消息: {other:?}");
@@ -1542,11 +1585,12 @@ impl Game {
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
         let (level, exp, gold) = (c.level, c.exp, c.gold);
-        let (c_inventory, c_equipment, c_quests, c_skills) = (
+        let (c_inventory, c_equipment, c_quests, c_skills, c_storage) = (
             c.inventory.clone(),
             c.equipment.clone(),
             c.quests.clone(),
             c.skills.clone(),
+            c.storage.clone(),
         );
         self.players.insert(
             character_id.clone(),
@@ -1573,6 +1617,7 @@ impl Game {
                 cooldowns: HashMap::new(),
                 inventory: c_inventory,
                 equipment: c_equipment,
+                storage: c_storage,
                 quests: c_quests,
                 skills: c_skills,
                 dash: None,
@@ -1833,12 +1878,17 @@ impl Game {
 
     async fn on_disconnect(&mut self, conn_id: &str) {
         self.conns.remove(conn_id);
-        for p in self.players.values_mut() {
+        let mut dropped = Vec::new();
+        for (id, p) in self.players.iter_mut() {
             if p.conn_id == conn_id && p.connected {
                 p.connected = false;
                 p.disconnected_at = Some(Instant::now());
                 p.moving = false;
+                dropped.push(id.clone());
             }
+        }
+        for id in dropped {
+            self.cancel_trade_of(&id, "对方已离线, 交易取消").await;
         }
     }
 }

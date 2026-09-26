@@ -45,6 +45,14 @@ impl Game {
                 arg: String::new(),
             });
         }
+        // 仓库类 NPC 缺省页直接带存取入口 (与商店同理)
+        if npc.kind == "storage" {
+            options.push(NpcOptionDef {
+                label: "存取仓库".into(),
+                action: "storage".into(),
+                arg: String::new(),
+            });
+        }
         options.push(NpcOptionDef {
             label: "告辞".into(),
             action: "close".into(),
@@ -407,6 +415,12 @@ impl Game {
             "shop" => {
                 send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
                 self.send_npc_shop(conn_id, &npc).await;
+            }
+            "storage" => {
+                send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+                if let Some(char_id) = self.char_by_conn(conn_id) {
+                    self.send_storage(conn_id, &char_id, &npc.id).await;
+                }
             }
             _ => send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await,
         }

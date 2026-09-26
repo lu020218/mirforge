@@ -103,6 +103,8 @@ pub struct TargetLevel;
 #[derive(Component)]
 pub struct TargetAvatar;
 #[derive(Component)]
+pub struct TargetTradeBtn;
+#[derive(Component)]
 pub struct TargetName;
 #[derive(Component)]
 pub struct TargetHpFill;
@@ -765,6 +767,9 @@ pub fn setup(
         .with_children(|root| {
             root.spawn((
                 TargetFrame,
+                // 挡住穿透: 点交易按钮不该同时当作点地面 (清锁定/走路)
+                crate::panels::UiBlock,
+                RelativeCursorPosition::default(),
                 Node {
                     height: Val::Px(56.0),
                     align_items: AlignItems::Center,
@@ -845,6 +850,24 @@ pub fn setup(
                                     TargetHpText,
                                 ));
                             });
+                    });
+                    // 交易按钮: 仅锁定玩家时显示
+                    info.spawn((
+                        Button,
+                        TargetTradeBtn,
+                        Node {
+                            display: Display::None,
+                            align_self: AlignSelf::Center,
+                            padding: UiRect::axes(Val::Px(10.0), Val::Px(1.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                        BorderColor(EDGE_GOLD),
+                        BorderRadius::all(Val::Px(8.0)),
+                    ))
+                    .with_children(|b| {
+                        b.spawn(text(&skin.font, "交易", 10.0, GOLD));
                     });
                 });
                 // 左: 圆形头像位 (叠在信息块左端; 头像素材接入前留空)
@@ -1228,6 +1251,10 @@ pub fn target_frame(
     mut q_fill: Query<&mut Node, (With<TargetHpFill>, Without<TargetFrame>)>,
     mut q_hp: Query<&mut Text, (With<TargetHpText>, Without<TargetName>)>,
     mut q_lv: Query<&mut Text, (With<TargetLevel>, Without<TargetName>, Without<TargetHpText>)>,
+    mut q_trade: Query<
+        &mut Node,
+        (With<TargetTradeBtn>, Without<TargetFrame>, Without<TargetHpFill>),
+    >,
 ) {
     let info = net
         .target
@@ -1258,7 +1285,9 @@ pub fn target_frame(
             } else {
                 name
             };
-            (name, color, r.hp, r.level)
+            // 玩家目标 (非怪非宠) 才给交易按钮
+            let is_player = r.image.is_none() && r.owner.is_none();
+            (name, color, r.hp, r.level, is_player)
         });
     if info.is_none() && net.target.is_some() {
         net.target = None;
@@ -1267,8 +1296,18 @@ pub fn target_frame(
         return;
     };
     match info {
-        Some((name, color, hp, level)) => {
+        Some((name, color, hp, level, is_player)) => {
             frame.display = Display::Flex;
+            if let Ok(mut n) = q_trade.get_single_mut() {
+                let want = if is_player {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+                if n.display != want {
+                    n.display = want;
+                }
+            }
             if let Ok((mut t, mut c)) = q_name.get_single_mut() {
                 if **t != name {
                     **t = name;
@@ -1303,6 +1342,22 @@ pub fn target_frame(
         None => {
             if frame.display != Display::None {
                 frame.display = Display::None;
+            }
+        }
+    }
+}
+
+/// 目标栏「交易」按钮: 对锁定的玩家发起交易请求
+pub fn target_trade_click(
+    q: Query<&Interaction, (With<TargetTradeBtn>, Changed<Interaction>)>,
+    net: Res<Net>,
+) {
+    for it in &q {
+        if *it == Interaction::Pressed {
+            if let Some(t) = &net.target {
+                net.send(ClientMessage::TradeRequest {
+                    target_player_id: t.clone(),
+                });
             }
         }
     }

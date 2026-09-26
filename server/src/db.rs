@@ -29,6 +29,7 @@ pub struct CharacterRow {
     pub zone: String,
     pub inventory: Vec<protocol::ItemInfo>,
     pub equipment: std::collections::HashMap<String, protocol::ItemInfo>,
+    pub storage: Vec<protocol::ItemInfo>,
     pub quests: std::collections::HashMap<String, crate::game::QuestProgress>,
     pub skills: std::collections::HashMap<String, crate::game::SkillProgress>,
     pub x: f64,
@@ -99,6 +100,7 @@ impl Db {
                 exp INTEGER NOT NULL DEFAULT 0,
                 inventory TEXT NOT NULL DEFAULT '[]',
                 equipment TEXT NOT NULL DEFAULT '{}',
+                storage TEXT NOT NULL DEFAULT '[]',
                 quests TEXT NOT NULL DEFAULT '{}',
                 zone TEXT NOT NULL DEFAULT '0.map',
                 x REAL NOT NULL,
@@ -113,6 +115,10 @@ impl Db {
             .await;
         let _ =
             sqlx::query("ALTER TABLE characters ADD COLUMN inventory TEXT NOT NULL DEFAULT '[]'")
+                .execute(&pool)
+                .await;
+        let _ =
+            sqlx::query("ALTER TABLE characters ADD COLUMN storage TEXT NOT NULL DEFAULT '[]'")
                 .execute(&pool)
                 .await;
         let _ =
@@ -281,7 +287,9 @@ impl Db {
         character_id: &str,
     ) -> Result<Option<CharacterRow>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, name, class, gender, level, exp, gold, zone, x, y, inventory, equipment, quests, skills FROM characters WHERE id = ? AND account_id = ?",
+            "SELECT id, name, class, gender, level, exp, gold, zone, x, y, inventory, equipment,
+                    quests, skills, storage
+             FROM characters WHERE id = ? AND account_id = ?",
         )
         .bind(character_id)
         .bind(account_id)
@@ -298,6 +306,7 @@ impl Db {
             zone: r.get("zone"),
             inventory: serde_json::from_str(&r.get::<String, _>("inventory")).unwrap_or_default(),
             equipment: serde_json::from_str(&r.get::<String, _>("equipment")).unwrap_or_default(),
+            storage: serde_json::from_str(&r.get::<String, _>("storage")).unwrap_or_default(),
             quests: serde_json::from_str(&r.get::<String, _>("quests")).unwrap_or_default(),
             skills: serde_json::from_str(&r.get::<String, _>("skills")).unwrap_or_default(),
             x: r.get("x"),
@@ -331,6 +340,19 @@ impl Db {
         sqlx::query("UPDATE characters SET inventory = ?, equipment = ? WHERE id = ?")
             .bind(serde_json::to_string(inventory).unwrap_or_else(|_| "[]".into()))
             .bind(serde_json::to_string(equipment).unwrap_or_else(|_| "{}".into()))
+            .bind(character_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn save_storage(
+        &self,
+        character_id: &str,
+        storage: &[protocol::ItemInfo],
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE characters SET storage = ? WHERE id = ?")
+            .bind(serde_json::to_string(storage).unwrap_or_else(|_| "[]".into()))
             .bind(character_id)
             .execute(&self.pool)
             .await?;

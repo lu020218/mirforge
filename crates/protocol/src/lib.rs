@@ -143,6 +143,21 @@ pub enum ClientMessage {
     TradePlaceItem { item_id: String },
     #[serde(rename = "tradeSetGold")]
     TradeSetGold { gold: i64 },
+    /// 接受交易邀请
+    #[serde(rename = "tradeAccept")]
+    TradeAccept,
+    /// 拒绝交易邀请
+    #[serde(rename = "tradeDecline")]
+    TradeDecline,
+    /// 从己方托管区取回物品 (成交前)
+    #[serde(rename = "tradeTakeItem")]
+    TradeTakeItem { item_id: String },
+    /// 存物品进仓库 (需在仓库 NPC 旁)
+    #[serde(rename = "storeItem")]
+    StoreItem { npc_id: String, item_id: String },
+    /// 从仓库取物品
+    #[serde(rename = "storageTake")]
+    StorageTake { npc_id: String, item_id: String },
     #[serde(rename = "createParty")]
     CreateParty,
     #[serde(rename = "joinParty")]
@@ -344,6 +359,30 @@ pub enum ServerMessage {
     /// 金币变动
     #[serde(rename = "goldChanged")]
     GoldChanged { gold: u64 },
+    /// 收到交易邀请
+    #[serde(rename = "tradeInvited")]
+    TradeInvited { from_id: String, from_name: String },
+    /// 交易全量状态 (每次变动双方各自视角推一份)
+    #[serde(rename = "tradeState")]
+    TradeState {
+        partner: String,
+        my_items: Vec<ItemInfo>,
+        their_items: Vec<ItemInfo>,
+        my_gold: u64,
+        their_gold: u64,
+        my_ok: bool,
+        their_ok: bool,
+    },
+    /// 交易结束 (done: true=成交 false=取消)
+    #[serde(rename = "tradeClosed")]
+    TradeClosed { reason: String, done: bool },
+    /// 仓库全量状态 (打开与每次存取后推)
+    #[serde(rename = "storageState")]
+    StorageState {
+        npc_id: String,
+        items: Vec<ItemInfo>,
+        cap: u32,
+    },
     #[serde(rename = "npcList")]
     NpcList { npcs: Vec<NpcInfo> },
     #[serde(rename = "inventoryState")]

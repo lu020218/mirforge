@@ -1130,7 +1130,7 @@ function collectSkills() {
 }
 
 // ── NPC ──
-const NPC_KINDS = { talk: '对话', shop: '商店', quest: '任务' };
+const NPC_KINDS = { talk: '对话', shop: '商店', quest: '任务', storage: '仓库' };
 function npcRow(n) {
   const tr = document.createElement('tr');
   tr.innerHTML = `
@@ -1280,8 +1280,8 @@ function shopSection(tr) {
 }
 
 // ── NPC 对话编辑 (行内手风琴, 与地图设置同一交互语言) ──
-const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', shop: '打开商店', teleport: '传送', close: '结束对话' };
-const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', shop: '', teleport: '地图:x:y', close: '' };
+const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', shop: '打开商店', storage: '打开仓库', teleport: '传送', close: '结束对话' };
+const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', shop: '', storage: '', teleport: '地图:x:y', close: '' };
 
 /// 对话数据挂在行元素上 (tr._dialogs), 这样切页/收起编辑器都不会丢
 function npcDialogsOf(tr) { return tr._dialogs || (tr._dialogs = []); }

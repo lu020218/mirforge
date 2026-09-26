@@ -516,6 +516,8 @@ pub fn item_drag(
     q_slot: Query<(&Interaction, &EquipSlotTarget)>,
     q_panel: Query<(&Panel, &RelativeCursorPosition)>,
     q_shop: Query<&RelativeCursorPosition, With<ShopRoot>>,
+    q_trade: Query<&RelativeCursorPosition, With<TradeRoot>>,
+    q_store: Query<&RelativeCursorPosition, With<StorageRoot>>,
 ) {
     grab.released = false;
     // 右键取消: 提起本就没动服务端状态, 清掉即可
@@ -570,6 +572,37 @@ pub fn item_drag(
             }
             net.send(ClientMessage::SellItem {
                 npc_id: sh.npc_id.clone(),
+                item_id: item.id.clone(),
+            });
+        }
+        grab.take();
+        return;
+    }
+    // 2b) 落在交易窗上 — 放入托管区 (装备栏提起的先脱下)
+    if q_trade.iter().any(|r| r.mouse_over()) {
+        if net.trade.is_some() {
+            if let GrabFrom::Equip(slot) = &from {
+                net.send(ClientMessage::Unequip {
+                    slot: slot.to_string(),
+                });
+            }
+            net.send(ClientMessage::TradePlaceItem {
+                item_id: item.id.clone(),
+            });
+        }
+        grab.take();
+        return;
+    }
+    // 2c) 落在仓库窗上 — 存入 (装备栏提起的先脱下)
+    if q_store.iter().any(|r| r.mouse_over()) {
+        if let Some(st) = &net.storage {
+            if let GrabFrom::Equip(slot) = &from {
+                net.send(ClientMessage::Unequip {
+                    slot: slot.to_string(),
+                });
+            }
+            net.send(ClientMessage::StoreItem {
+                npc_id: st.npc_id.clone(),
                 item_id: item.id.clone(),
             });
         }
@@ -2583,5 +2616,502 @@ mod tests {
     #[test]
     fn scales_up_on_hidpi() {
         assert_eq!(icon_scale(32.0, super::BAG_CELL, 2.0), 2.0);
+    }
+}
+
+// ─────────── 交易窗 / 仓库窗 ───────────
+
+#[derive(Component)]
+pub struct TradeRoot;
+#[derive(Component)]
+pub struct TradeInviteRoot;
+#[derive(Component)]
+pub struct TradeAcceptBtn;
+#[derive(Component)]
+pub struct TradeDeclineBtn;
+#[derive(Component)]
+pub struct TradeOkBtn;
+#[derive(Component)]
+pub struct TradeCancelBtn;
+/// 我方托管格 (点击取回); 内为物品 id
+#[derive(Component)]
+pub struct TradeMineSlot(String);
+/// 金币加码按钮: Some(增量) / None=清零
+#[derive(Component)]
+pub struct TradeGoldBtn(Option<u64>);
+#[derive(Component)]
+pub struct StorageRoot;
+#[derive(Component)]
+pub struct StorageClose;
+/// 仓库格 (点击取出); 内为物品 id
+#[derive(Component)]
+pub struct StorageCell(String);
+
+const TRADE_CELL: f32 = 38.0;
+
+/// 托管区 3×2 网格 (mine=我方: 格子可点取回)
+fn trade_grid(
+    col: &mut ChildBuilder,
+    items: &[protocol::ItemInfo],
+    icons: &mut crate::ItemIcons,
+    world: &crate::World,
+    images: &mut Assets<Image>,
+    mine: bool,
+) {
+    col.spawn(Node {
+        display: Display::Grid,
+        grid_template_columns: RepeatedGridTrack::px(3, TRADE_CELL),
+        column_gap: Val::Px(4.0),
+        row_gap: Val::Px(4.0),
+        ..default()
+    })
+    .with_children(|grid| {
+        for i in 0..crate::TRADE_SLOTS {
+            let item = items.get(i);
+            let mut cell = grid.spawn((
+                Node {
+                    width: Val::Px(TRADE_CELL),
+                    height: Val::Px(TRADE_CELL),
+                    border: UiRect::all(Val::Px(1.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.051, 0.059, 0.094, 0.55)),
+                BorderColor(EDGE_DARK),
+                BorderRadius::all(Val::Px(3.0)),
+            ));
+            if let Some(it) = item {
+                if mine {
+                    cell.insert((Button, TradeMineSlot(it.id.clone())));
+                }
+                let icon = icons.get(it.image, &world.data_root, images);
+                cell.with_children(|c| {
+                    if let Some((img, size)) = icon {
+                        let k = (TRADE_CELL - 6.0) / size.x.max(size.y).max(1.0);
+                        c.spawn((
+                            Node {
+                                width: Val::Px(size.x * k.min(1.0)),
+                                height: Val::Px(size.y * k.min(1.0)),
+                                ..default()
+                            },
+                            ImageNode::new(img),
+                        ));
+                    }
+                });
+            }
+        }
+    });
+}
+
+/// 交易窗 + 邀请弹窗 (net.trade_rev 驱动重建)
+pub fn trade_win(
+    mut commands: Commands,
+    net: Res<Net>,
+    skin: Res<Skin>,
+    wood: Res<WoodTex>,
+    world: Res<crate::World>,
+    mut icons: ResMut<crate::ItemIcons>,
+    mut images: ResMut<Assets<Image>>,
+    mut seen_rev: Local<u32>,
+    q_old: Query<Entity, Or<(With<TradeRoot>, With<TradeInviteRoot>)>>,
+) {
+    if *seen_rev == net.trade_rev {
+        return;
+    }
+    *seen_rev = net.trade_rev;
+    for e in &q_old {
+        commands.entity(e).despawn_recursive();
+    }
+    let font = skin.font.clone();
+    // 邀请弹窗 (未开窗时)
+    if net.trade.is_none() {
+        if let Some((_, from_name)) = &net.trade_invite {
+            let msg = format!("{from_name} 请求与你交易");
+            commands
+                .spawn((
+                    TradeInviteRoot,
+                    UiBlock,
+                    RelativeCursorPosition::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(50.0),
+                        top: Val::Px(120.0),
+                        margin: UiRect::left(Val::Px(-140.0)),
+                        width: Val::Px(280.0),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(10.0),
+                        padding: UiRect::all(Val::Px(14.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(PANEL_BG),
+                    BorderColor(GOLD),
+                    BorderRadius::all(Val::Px(6.0)),
+                    GlobalZIndex(30),
+                ))
+                .with_children(|root| {
+                    root.spawn(text(&font, msg, 14.0, TEXT_MAIN));
+                    root.spawn(Node {
+                        column_gap: Val::Px(16.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for (label, ok) in [("接受", true), ("拒绝", false)] {
+                            let mut b = row.spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::axes(Val::Px(18.0), Val::Px(4.0)),
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BorderColor(if ok { GOLD } else { EDGE_DARK }),
+                                BorderRadius::all(Val::Px(4.0)),
+                            ));
+                            if ok {
+                                b.insert(TradeAcceptBtn);
+                            } else {
+                                b.insert(TradeDeclineBtn);
+                            }
+                            b.with_children(|t| {
+                                t.spawn(text(
+                                    &font,
+                                    label,
+                                    13.0,
+                                    if ok { GOLD_BRIGHT } else { TEXT_DIM },
+                                ));
+                            });
+                        }
+                    });
+                });
+        }
+        return;
+    }
+    let tr = net.trade.clone().unwrap();
+    commands
+        .spawn((
+            TradeRoot,
+            UiBlock,
+            RelativeCursorPosition::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Px(110.0),
+                margin: UiRect::left(Val::Px(-190.0)),
+                width: Val::Px(380.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderRadius::all(Val::Px(4.0)),
+            GlobalZIndex(25),
+        ))
+        .with_children(|root| {
+            wood_bg(root, &wood);
+            metal_frame(root, &wood);
+            // 标题
+            root.spawn((
+                Node {
+                    height: Val::Px(40.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(14.0)),
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(TITLE_BG),
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn(text(&font, format!("与 {} 交易", tr.partner), 14.0, GOLD_BRIGHT));
+                bar.spawn((Button, TradeCancelBtn, Node::default()))
+                    .with_children(|x| {
+                        x.spawn(text(&font, "×", 18.0, TEXT_DIM));
+                    });
+            });
+            // 双栏托管区
+            root.spawn(Node {
+                justify_content: JustifyContent::SpaceEvenly,
+                padding: UiRect::axes(Val::Px(12.0), Val::Px(10.0)),
+                ..default()
+            })
+            .with_children(|cols| {
+                for mine in [true, false] {
+                    cols.spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|col| {
+                        let (label, items, gold, ok) = if mine {
+                            ("我方 (拖入物品)", &tr.my_items, tr.my_gold, tr.my_ok)
+                        } else {
+                            ("对方", &tr.their_items, tr.their_gold, tr.their_ok)
+                        };
+                        col.spawn(text(&font, label, 11.0, TEXT_DIM));
+                        trade_grid(col, items, &mut icons, &world, &mut images, mine);
+                        col.spawn(text(&font, format!("金币 {gold}"), 12.0, EXP_GOLD));
+                        col.spawn(text(
+                            &font,
+                            if ok { "已确认" } else { "未确认" },
+                            11.0,
+                            if ok {
+                                Color::srgb(0.45, 0.95, 0.5)
+                            } else {
+                                TEXT_DIM
+                            },
+                        ));
+                    });
+                }
+            });
+            // 金币加码行
+            root.spawn(Node {
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(8.0),
+                padding: UiRect::bottom(Val::Px(8.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                for (label, delta) in [
+                    ("+1百", Some(100u64)),
+                    ("+1千", Some(1000)),
+                    ("+1万", Some(10000)),
+                    ("清零", None),
+                ] {
+                    row.spawn((
+                        Button,
+                        TradeGoldBtn(delta),
+                        Node {
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor(EDGE_DARK),
+                        BorderRadius::all(Val::Px(4.0)),
+                    ))
+                    .with_children(|t| {
+                        t.spawn(text(&font, label, 11.0, TEXT_DIM));
+                    });
+                }
+            });
+            // 底部: 确认 / 取消
+            root.spawn(Node {
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(24.0),
+                padding: UiRect::bottom(Val::Px(12.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((
+                    Button,
+                    TradeOkBtn,
+                    Node {
+                        padding: UiRect::axes(Val::Px(26.0), Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(GOLD),
+                    BorderRadius::all(Val::Px(4.0)),
+                ))
+                .with_children(|t| {
+                    t.spawn(text(&font, "确认交易", 13.0, GOLD_BRIGHT));
+                });
+                row.spawn((
+                    Button,
+                    TradeCancelBtn,
+                    Node {
+                        padding: UiRect::axes(Val::Px(26.0), Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(EDGE_DARK),
+                    BorderRadius::all(Val::Px(4.0)),
+                ))
+                .with_children(|t| {
+                    t.spawn(text(&font, "取消", 13.0, TEXT_DIM));
+                });
+            });
+        });
+}
+
+/// 仓库窗 (net.storage_rev 驱动重建)
+pub fn storage_win(
+    mut commands: Commands,
+    net: Res<Net>,
+    skin: Res<Skin>,
+    wood: Res<WoodTex>,
+    world: Res<crate::World>,
+    mut icons: ResMut<crate::ItemIcons>,
+    mut images: ResMut<Assets<Image>>,
+    mut seen_rev: Local<u32>,
+    q_old: Query<Entity, With<StorageRoot>>,
+) {
+    if *seen_rev == net.storage_rev {
+        return;
+    }
+    *seen_rev = net.storage_rev;
+    for e in &q_old {
+        commands.entity(e).despawn_recursive();
+    }
+    let Some(st) = &net.storage else {
+        return;
+    };
+    let font = skin.font.clone();
+    let title = format!("仓库 ({}/{})", st.items.len(), st.cap);
+    let items = st.items.clone();
+    commands
+        .spawn((
+            StorageRoot,
+            UiBlock,
+            RelativeCursorPosition::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Px(90.0),
+                margin: UiRect::left(Val::Px(-215.0)),
+                width: Val::Px(430.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderRadius::all(Val::Px(4.0)),
+            GlobalZIndex(22),
+        ))
+        .with_children(|root| {
+            wood_bg(root, &wood);
+            metal_frame(root, &wood);
+            root.spawn((
+                Node {
+                    height: Val::Px(40.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::horizontal(Val::Px(14.0)),
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(TITLE_BG),
+                BorderColor(EDGE_DARK),
+            ))
+            .with_children(|bar| {
+                bar.spawn(text(&font, title, 14.0, GOLD_BRIGHT));
+                bar.spawn((Button, StorageClose, Node::default()))
+                    .with_children(|x| {
+                        x.spawn(text(&font, "×", 18.0, TEXT_DIM));
+                    });
+            });
+            root.spawn(text(
+                &font,
+                "拖背包物品到此存入, 点仓库物品取出",
+                10.0,
+                TEXT_DIM,
+            ));
+            root.spawn(Node {
+                display: Display::Grid,
+                grid_template_columns: RepeatedGridTrack::px(BAG_COLS as u16, BAG_CELL),
+                padding: UiRect::all(Val::Px(BAG_PAD)),
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(BAG_GAP),
+                row_gap: Val::Px(BAG_GAP),
+                ..default()
+            })
+            .with_children(|grid| {
+                for i in 0..(st.cap as usize) {
+                    let item = items.get(i);
+                    let mut cell = grid.spawn((
+                        Node {
+                            width: Val::Px(BAG_CELL),
+                            height: Val::Px(BAG_CELL),
+                            border: UiRect::all(Val::Px(1.0)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.051, 0.059, 0.094, 0.55)),
+                        BorderColor(EDGE_DARK),
+                        BorderRadius::all(Val::Px(3.0)),
+                    ));
+                    if let Some(it) = item {
+                        cell.insert((Button, StorageCell(it.id.clone())));
+                        let icon = icons.get(it.image, &world.data_root, &mut images);
+                        cell.with_children(|c| {
+                            if let Some((img, size)) = icon {
+                                let k = (BAG_CELL - 6.0) / size.x.max(size.y).max(1.0);
+                                c.spawn((
+                                    Node {
+                                        width: Val::Px(size.x * k.min(1.0)),
+                                        height: Val::Px(size.y * k.min(1.0)),
+                                        ..default()
+                                    },
+                                    ImageNode::new(img),
+                                ));
+                            }
+                        });
+                    }
+                }
+            });
+        });
+}
+
+/// 交易/仓库按钮点击
+pub fn trade_clicks(
+    mut net: ResMut<Net>,
+    q_accept: Query<&Interaction, (With<TradeAcceptBtn>, Changed<Interaction>)>,
+    q_decline: Query<&Interaction, (With<TradeDeclineBtn>, Changed<Interaction>)>,
+    q_ok: Query<&Interaction, (With<TradeOkBtn>, Changed<Interaction>)>,
+    q_cancel: Query<&Interaction, (With<TradeCancelBtn>, Changed<Interaction>)>,
+    q_gold: Query<(&Interaction, &TradeGoldBtn), Changed<Interaction>>,
+    q_mine: Query<(&Interaction, &TradeMineSlot), Changed<Interaction>>,
+    q_cell: Query<(&Interaction, &StorageCell), Changed<Interaction>>,
+    q_sclose: Query<&Interaction, (With<StorageClose>, Changed<Interaction>)>,
+) {
+    let pressed = |it: &Interaction| *it == Interaction::Pressed;
+    if q_accept.iter().any(pressed) {
+        net.send(ClientMessage::TradeAccept);
+    }
+    if q_decline.iter().any(pressed) {
+        net.send(ClientMessage::TradeDecline);
+        net.trade_invite = None;
+        net.trade_rev += 1;
+    }
+    if q_ok.iter().any(pressed) {
+        net.send(ClientMessage::TradeConfirm);
+    }
+    if q_cancel.iter().any(pressed) {
+        net.send(ClientMessage::TradeCancel);
+    }
+    for (it, b) in &q_gold {
+        if pressed(it) {
+            let cur = net.trade.as_ref().map(|t| t.my_gold).unwrap_or(0);
+            let new = match b.0 {
+                Some(d) => cur.saturating_add(d),
+                None => 0,
+            };
+            net.send(ClientMessage::TradeSetGold { gold: new as i64 });
+        }
+    }
+    for (it, slot) in &q_mine {
+        if pressed(it) {
+            net.send(ClientMessage::TradeTakeItem {
+                item_id: slot.0.clone(),
+            });
+        }
+    }
+    for (it, cell) in &q_cell {
+        if pressed(it) {
+            if let Some(st) = &net.storage {
+                net.send(ClientMessage::StorageTake {
+                    npc_id: st.npc_id.clone(),
+                    item_id: cell.0.clone(),
+                });
+            }
+        }
+    }
+    if q_sclose.iter().any(pressed) {
+        net.storage = None;
+        net.storage_rev += 1;
     }
 }

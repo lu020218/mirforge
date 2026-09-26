@@ -4,7 +4,7 @@
 //! 音量: MIRFORGE_SFX_VOL / MIRFORGE_BGM_VOL 环境变量可调 (0..1);
 //! 设置面板滑杆与持久化留待后续 (P3)。
 
-use bevy::audio::{AudioPlayer, AudioSource, PlaybackMode, PlaybackSettings, Volume};
+use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use bevy::prelude::*;
 use sim::layout::hum;
 use std::collections::HashMap;

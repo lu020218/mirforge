@@ -165,6 +165,92 @@ impl Game {
     }
 
     /// 推送背包与装备
+    /// 存物品进仓库: 需在该 NPC 交谈距离内
+    pub(super) async fn handle_store_item(&mut self, conn_id: &str, npc_id: &str, item_id: &str) {
+        if self.npc_in_reach(conn_id, npc_id).is_none() {
+            return self.notify(conn_id, "离仓库管理员太远了").await;
+        }
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let moved = {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            if p.storage.len() >= STORAGE_CAP {
+                false
+            } else if let Some(pos) = p.inventory.iter().position(|i| i.id == item_id) {
+                let item = p.inventory.remove(pos);
+                p.storage.push(item);
+                true
+            } else {
+                return;
+            }
+        };
+        if !moved {
+            return self.notify(conn_id, "仓库已满").await;
+        }
+        self.persist_storage(&char_id).await;
+        self.send_inventory(&char_id).await;
+        self.send_storage(conn_id, &char_id, npc_id).await;
+    }
+
+    /// 从仓库取物品
+    pub(super) async fn handle_storage_take(&mut self, conn_id: &str, npc_id: &str, item_id: &str) {
+        if self.npc_in_reach(conn_id, npc_id).is_none() {
+            return self.notify(conn_id, "离仓库管理员太远了").await;
+        }
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let moved = {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            if p.inventory.len() >= MAX_INVENTORY {
+                false
+            } else if let Some(pos) = p.storage.iter().position(|i| i.id == item_id) {
+                let item = p.storage.remove(pos);
+                p.inventory.push(item);
+                true
+            } else {
+                return;
+            }
+        };
+        if !moved {
+            return self.notify(conn_id, "背包已满").await;
+        }
+        self.persist_storage(&char_id).await;
+        self.send_inventory(&char_id).await;
+        self.send_storage(conn_id, &char_id, npc_id).await;
+    }
+
+    async fn persist_storage(&self, char_id: &str) {
+        if let Some(p) = self.players.get(char_id) {
+            let _ = self.db.save_storage(char_id, &p.storage).await;
+            let _ = self
+                .db
+                .save_items(char_id, &p.inventory, &p.equipment)
+                .await;
+        }
+    }
+
+    pub(super) async fn send_storage(&self, conn_id: &str, char_id: &str, npc_id: &str) {
+        let Some(p) = self.players.get(char_id) else {
+            return;
+        };
+        send_to(
+            &self.sessions,
+            conn_id,
+            ServerMessage::StorageState {
+                npc_id: npc_id.to_string(),
+                items: p.storage.clone(),
+                cap: STORAGE_CAP as u32,
+            },
+        )
+        .await;
+    }
+
     pub(super) async fn send_inventory(&self, char_id: &str) {
         let Some(p) = self.players.get(char_id) else {
             return;

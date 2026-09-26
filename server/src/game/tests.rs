@@ -78,6 +78,7 @@ fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {
             equipment: HashMap::new(),
             quests: HashMap::new(),
             skills: HashMap::new(),
+            storage: Vec::new(),
             x,
             y,
         },
@@ -100,6 +101,7 @@ fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {
         cooldowns: HashMap::new(),
         inventory: Vec::new(),
         equipment: HashMap::new(),
+        storage: Vec::new(),
         quests: HashMap::new(),
         skills: HashMap::new(),
         dash: None,
@@ -1168,5 +1170,125 @@ async fn tame_converts_and_respects_rules() {
             .is_none(),
         "非可诱惑类型不得被魅惑"
     );
+    set_data(GameData::builtin());
+}
+
+// ─────────── 交易 / 仓库 ───────────
+
+fn trade_pair(g: &mut Game) {
+    let mut a = test_player("ca", "z1", 10.0, 10.0);
+    a.character.id = "pa".into();
+    a.character.name = "甲".into();
+    a.inventory.push(make_item("iron_sword").unwrap());
+    let mut b = test_player("cb", "z1", 11.0, 10.0);
+    b.character.id = "pb".into();
+    b.character.name = "乙".into();
+    b.gold = 500;
+    g.players.insert("pa".into(), a);
+    g.players.insert("pb".into(), b);
+}
+
+#[tokio::test]
+async fn trade_full_flow_swaps_items_and_gold() {
+    let mut g = test_game().await;
+    trade_pair(&mut g);
+    g.handle_trade_request("ca", "pb").await;
+    g.handle_trade_accept("cb").await;
+    assert_eq!(g.trades.len(), 1, "接受后应建立交易");
+    let sword = g.players["pa"].inventory[0].id.clone();
+    g.handle_trade_place("ca", &sword).await;
+    assert!(g.players["pa"].inventory.is_empty(), "放入托管应移出背包");
+    g.handle_trade_set_gold("cb", 300).await;
+    g.handle_trade_confirm("ca").await;
+    g.handle_trade_confirm("cb").await;
+    assert!(g.trades.is_empty(), "双确认后交易应结束");
+    assert_eq!(g.players["pb"].inventory.len(), 1, "乙应拿到剑");
+    assert_eq!(g.players["pa"].gold, 300, "甲应拿到金币");
+    assert_eq!(g.players["pb"].gold, 200);
+}
+
+#[tokio::test]
+async fn trade_modify_resets_confirm() {
+    let mut g = test_game().await;
+    trade_pair(&mut g);
+    g.handle_trade_request("ca", "pb").await;
+    g.handle_trade_accept("cb").await;
+    g.handle_trade_confirm("ca").await;
+    assert!(g.trades[0].ok[0], "甲已确认");
+    // 乙改金币 → 双方确认重置
+    g.handle_trade_set_gold("cb", 100).await;
+    assert!(!g.trades[0].ok[0] && !g.trades[0].ok[1], "改动后确认应重置");
+}
+
+#[tokio::test]
+async fn trade_cancel_returns_escrow() {
+    let mut g = test_game().await;
+    trade_pair(&mut g);
+    g.handle_trade_request("ca", "pb").await;
+    g.handle_trade_accept("cb").await;
+    let sword = g.players["pa"].inventory[0].id.clone();
+    g.handle_trade_place("ca", &sword).await;
+    g.cancel_trade_of("pb", "取消").await;
+    assert!(g.trades.is_empty());
+    assert_eq!(g.players["pa"].inventory.len(), 1, "取消后托管物应退回甲");
+}
+
+#[tokio::test]
+async fn trade_requires_proximity() {
+    let mut g = test_game().await;
+    trade_pair(&mut g);
+    if let Some(b) = g.players.get_mut("pb") {
+        b.x = 40.0; // 拉远
+    }
+    g.handle_trade_request("ca", "pb").await;
+    assert!(g.trade_invites.is_empty(), "距离太远不应发出邀请");
+}
+
+#[tokio::test]
+async fn trade_disconnect_cancels() {
+    let mut g = test_game().await;
+    trade_pair(&mut g);
+    g.handle_trade_request("ca", "pb").await;
+    g.handle_trade_accept("cb").await;
+    let sword = g.players["pa"].inventory[0].id.clone();
+    g.handle_trade_place("ca", &sword).await;
+    g.on_disconnect("ca").await;
+    assert!(g.trades.is_empty(), "掉线应取消交易");
+    assert_eq!(g.players["pa"].inventory.len(), 1, "托管物退回");
+}
+
+#[tokio::test]
+async fn storage_store_and_take() {
+    let mut g = test_game().await;
+    trade_pair(&mut g);
+    // 仓库 NPC 立在甲脚边
+    let mut d = (*data()).clone();
+    d.npcs.push(gamedata::defs::NpcDef {
+        id: "stash".into(),
+        name: "仓库管理员".into(),
+        map: "z1".into(),
+        x: 10.0,
+        y: 10.0,
+        image: 0,
+        kind: "storage".into(),
+        enabled: true,
+        dialogs: Vec::new(),
+        shop: Vec::new(),
+    });
+    set_data(d);
+    let sword = g.players["pa"].inventory[0].id.clone();
+    g.handle_store_item("ca", "stash", &sword).await;
+    assert!(g.players["pa"].inventory.is_empty(), "存入后背包应空");
+    assert_eq!(g.players["pa"].storage.len(), 1, "仓库应有一件");
+    g.handle_storage_take("ca", "stash", &sword).await;
+    assert_eq!(g.players["pa"].inventory.len(), 1, "取出回背包");
+    assert!(g.players["pa"].storage.is_empty());
+    // 距离外拒绝
+    if let Some(p) = g.players.get_mut("pa") {
+        p.x = 40.0;
+    }
+    let id2 = g.players["pa"].inventory[0].id.clone();
+    g.handle_store_item("ca", "stash", &id2).await;
+    assert_eq!(g.players["pa"].inventory.len(), 1, "太远不应存入");
     set_data(GameData::builtin());
 }

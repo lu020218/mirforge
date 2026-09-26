@@ -193,7 +193,8 @@ fn main() {
                 (float_damage, fx_step, projectile_step, fx::dash_trail_step),
                 upload_dirty_pages,
                 net_send,
-                (hud::update, hud::target_frame).run_if(in_state(Screen::InGame)),
+                (hud::update, hud::target_frame, hud::target_trade_click)
+                    .run_if(in_state(Screen::InGame)),
                 (
                     hud::chat_input,
                     panels::toggle,
@@ -209,8 +210,8 @@ fn main() {
                     panels::tooltip,
                     panels::dialog,
                     panels::dialog_clicks,
-                    panels::shop,
-                    panels::shop_clicks,
+                    (panels::shop, panels::shop_clicks),
+                    (panels::trade_win, panels::trade_clicks, panels::storage_win),
                     make_portrait.before(panels::refresh),
                     panels::refresh,
                 )
@@ -220,6 +221,29 @@ fn main() {
                 .chain(),
         )
         .run();
+}
+
+/// 交易托管区容量 (与服务端一致)
+pub const TRADE_SLOTS: usize = 6;
+
+/// 交易窗视图 (TradeState 全量推的本地镜像)
+#[derive(Clone)]
+pub struct TradeView {
+    pub partner: String,
+    pub my_items: Vec<protocol::ItemInfo>,
+    pub their_items: Vec<protocol::ItemInfo>,
+    pub my_gold: u64,
+    pub their_gold: u64,
+    pub my_ok: bool,
+    pub their_ok: bool,
+}
+
+/// 仓库窗视图
+#[derive(Clone)]
+pub struct StorageView {
+    pub npc_id: String,
+    pub items: Vec<protocol::ItemInfo>,
+    pub cap: u32,
 }
 
 // ─────────── 联机状态 ───────────
@@ -277,6 +301,14 @@ struct Net {
     gold: u64,
     /// 当前打开的商店 (None = 没开)
     shop: Option<NpcShop>,
+    /// 交易窗视图 (服务器全量推; None = 没在交易)
+    trade: Option<TradeView>,
+    /// 待回应的交易邀请 (from_id, from_name)
+    trade_invite: Option<(String, String)>,
+    trade_rev: u32,
+    /// 仓库窗视图 (None = 没开)
+    storage: Option<StorageView>,
+    storage_rev: u32,
     /// 商店版本 (变化时重建商店窗)
     shop_rev: u32,
     /// 聊天框滚动: (标签 "系统"/玩家名, 内容)
