@@ -105,6 +105,10 @@ impl Game {
         if !self.players.is_empty() {
             let ai = self.monster_ai(now);
             self.apply_monster_hits(ai.player_hits).await;
+            let now_i = Instant::now();
+            self.settle_player_poisons(now_i).await;
+            self.process_revives(now_i).await;
+            self.decay_pk(now_i).await;
             // 宠物打怪: 归属记主人 (经验/掉落/任务), 仇恨记宠物自身
             for (owner, pet_id, mon_id, dmg) in ai.pet_attacks {
                 self.hit_monster_inner(&owner, &mon_id, dmg, true, Some(&pet_id))
@@ -225,10 +229,14 @@ impl Game {
                     position: Some(Position { x: p.x, y: p.y }),
                     hp: None,
                     animation: Some(
-                        match (p.moving, p.running) {
-                            (true, true) => "run",
-                            (true, false) => "walk",
-                            _ => "stand",
+                        if p.dead_until.is_some() {
+                            "die"
+                        } else {
+                            match (p.moving, p.running) {
+                                (true, true) => "run",
+                                (true, false) => "walk",
+                                _ => "stand",
+                            }
                         }
                         .into(),
                     ),
@@ -245,6 +253,7 @@ impl Game {
                     name: Some(p.character.name.clone()),
                     level: Some(p.character.level),
                     sound: None,
+                    pk: Some(Self::pk_color(p, Instant::now()).into()),
                 })
                 .collect();
             if entities.is_empty() {
@@ -278,6 +287,7 @@ impl Game {
                                 name: None,
                                 level: None,
                                 sound: None,
+                                pk: None,
                             });
                         }
                         let anim = if m.dying_until.is_some() || m.corpse_until.is_some() {
@@ -329,6 +339,7 @@ impl Game {
                                 m.level
                             }),
                             sound: Some(m.sound),
+                            pk: None,
                         })
                     }),
             );

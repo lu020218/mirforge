@@ -79,6 +79,7 @@ fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {
             quests: HashMap::new(),
             skills: HashMap::new(),
             storage: Vec::new(),
+            pk_points: 0,
             x,
             y,
         },
@@ -105,6 +106,11 @@ fn test_player(conn: &str, zone: &str, x: f64, y: f64) -> PlayerState {
         quests: HashMap::new(),
         skills: HashMap::new(),
         dash: None,
+        pk_all: false,
+        pk_points: 0,
+        grey_until: None,
+        dead_until: None,
+        poison: None,
     }
 }
 
@@ -1291,4 +1297,154 @@ async fn storage_store_and_take() {
     g.handle_store_item("ca", "stash", &id2).await;
     assert_eq!(g.players["pa"].inventory.len(), 1, "太远不应存入");
     set_data(GameData::builtin());
+}
+
+// ─────────── PK / 安全区 ───────────
+
+fn pvp_pair(g: &mut Game) {
+    let mut a = test_player("ca", "z1", 10.0, 10.0);
+    a.character.id = "pa".into();
+    a.character.name = "甲".into();
+    a.pk_all = true;
+    let mut b = test_player("cb", "z1", 11.0, 10.0);
+    b.character.id = "pb".into();
+    b.character.name = "乙".into();
+    g.players.insert("pa".into(), a);
+    g.players.insert("pb".into(), b);
+}
+
+#[tokio::test]
+async fn peace_mode_rejects_pvp() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    g.players.get_mut("pa").unwrap().pk_all = false;
+    assert!(
+        g.pvp_check("pa", "pb", 5.0, false).await.is_none(),
+        "和平模式不可攻击玩家"
+    );
+    g.players.get_mut("pa").unwrap().pk_all = true;
+    assert!(g.pvp_check("pa", "pb", 5.0, false).await.is_some());
+}
+
+#[tokio::test]
+async fn safe_zone_blocks_pvp_both_ways() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    // 在 z1 配一个罩住乙的安全区
+    if let Some(z) = g.zones.get_mut("z1") {
+        z.sidecar.safe_zones = vec![(11.0, 10.0, 2.0)];
+    }
+    assert!(
+        g.pvp_check("pa", "pb", 5.0, false).await.is_none(),
+        "目标在安全区不可攻击"
+    );
+    // 反向: 攻击者在安全区同样拒绝
+    if let Some(z) = g.zones.get_mut("z1") {
+        z.sidecar.safe_zones = vec![(10.0, 10.0, 0.5)];
+    }
+    assert!(
+        g.pvp_check("pa", "pb", 5.0, false).await.is_none(),
+        "攻击者在安全区不可出手"
+    );
+}
+
+#[tokio::test]
+async fn hitting_white_marks_grey_and_kill_adds_pk() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    g.hit_player_pvp("pa", "pb", 5).await;
+    let now = Instant::now();
+    assert_eq!(
+        Game::pk_color(&g.players["pa"], now),
+        "grey",
+        "打中白名应变灰名"
+    );
+    // 一刀打死 (乙满血 52, 防 0)
+    g.hit_player_pvp("pa", "pb", 9999).await;
+    assert!(g.players["pb"].dead_until.is_some(), "乙应进入死亡状态");
+    assert_eq!(g.players["pa"].pk_points, 100, "杀白名 +100");
+    assert_eq!(Game::pk_color(&g.players["pa"], now), "grey", "灰名期内仍灰");
+    // 灰名过期后 → 红名
+    g.players.get_mut("pa").unwrap().grey_until = None;
+    assert_eq!(Game::pk_color(&g.players["pa"], now), "red", "PK 值 ≥100 红名");
+}
+
+#[tokio::test]
+async fn killing_non_white_adds_no_pk() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    // 乙先变灰
+    g.players.get_mut("pb").unwrap().grey_until = Some(Instant::now() + Duration::from_secs(60));
+    g.hit_player_pvp("pa", "pb", 9999).await;
+    assert!(g.players["pb"].dead_until.is_some());
+    assert_eq!(g.players["pa"].pk_points, 0, "杀灰名不加 PK 值");
+    assert!(
+        g.players["pa"].grey_until.is_none(),
+        "打灰名自己不变灰"
+    );
+}
+
+#[tokio::test]
+async fn dead_player_revives_at_spawn_full_hp() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    g.hit_player_pvp("pa", "pb", 9999).await;
+    assert_eq!(g.players["pb"].hp, 0);
+    // 尸体期不再吃伤害
+    g.damage_player(None, "pb", 50).await;
+    assert_eq!(g.players["pb"].hp, 0, "尸体不重复扣血");
+    // 时间未到不复活
+    g.process_revives(Instant::now()).await;
+    assert!(g.players["pb"].dead_until.is_some());
+    // 到点复活: 回出生点满血
+    g.players.get_mut("pb").unwrap().dead_until = Some(Instant::now() - Duration::from_secs(1));
+    g.process_revives(Instant::now()).await;
+    let p = &g.players["pb"];
+    assert!(p.dead_until.is_none());
+    assert_eq!(p.hp, p.max_hp, "复活满血");
+    let spawn = g.zones["z1"].spawn;
+    assert!((p.x - spawn.0).abs() < 0.01 && (p.y - spawn.1).abs() < 0.01, "回出生点");
+}
+
+#[tokio::test]
+async fn pk_points_decay_over_time() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    g.players.get_mut("pa").unwrap().pk_points = 5;
+    g.last_pk_decay = Instant::now() - Duration::from_secs(121);
+    g.decay_pk(Instant::now()).await;
+    assert_eq!(g.players["pa"].pk_points, 4, "到点应 -1");
+    g.decay_pk(Instant::now()).await;
+    assert_eq!(g.players["pa"].pk_points, 4, "间隔未到不再扣");
+}
+
+#[tokio::test]
+async fn monster_kill_reuses_death_flow() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    g.apply_monster_hits(vec![("pb".into(), 9999)]).await;
+    assert!(g.players["pb"].dead_until.is_some(), "怪物击杀同样进死亡状态");
+    assert_eq!(g.players["pa"].pk_points, 0, "怪物击杀无善恶结算");
+}
+
+#[tokio::test]
+async fn player_poison_ticks_until_expiry() {
+    let mut g = test_game().await;
+    pvp_pair(&mut g);
+    let now = Instant::now();
+    g.pending_player_poisons
+        .push((now, "pa".into(), "pb".into(), 3, 10.0));
+    let hp0 = g.players["pb"].hp;
+    g.settle_player_poisons(now).await; // 上毒 + 第一跳
+    g.settle_player_poisons(now).await;
+    assert!(g.players["pb"].hp < hp0, "第一跳应掉血");
+    assert!(g.players["pb"].poison.is_some());
+    // 到期清毒
+    if let Some(p) = g.players.get_mut("pb") {
+        if let Some(t) = p.poison.as_mut() {
+            t.0 = now - Duration::from_secs(1);
+        }
+    }
+    g.settle_player_poisons(now).await;
+    assert!(g.players["pb"].poison.is_none(), "到期应清毒");
 }

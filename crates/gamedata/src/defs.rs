@@ -15,6 +15,9 @@ pub struct ZoneSidecar {
     /// 区域 BGM 曲名 (packs/sound/bgm/<名>.ogg); None = 无 BGM
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bgm: Option<String>,
+    /// 安全区列表 (中心 x, 中心 y, 半径); 区内禁止 PvP
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_zones: Vec<(f64, f64, f64)>,
     #[serde(default)]
     pub portals: Vec<PortalSidecar>,
     #[serde(default)]

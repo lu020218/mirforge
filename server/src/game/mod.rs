@@ -16,6 +16,7 @@ use monster::{materialize_bosses, materialize_monsters};
 mod items;
 mod monster;
 mod trade;
+mod pk;
 mod npc;
 mod quest;
 #[cfg(test)]
@@ -526,6 +527,16 @@ struct PlayerState {
     skills: HashMap<String, SkillProgress>,
     /// 冲锋进行态 (Some = 冲锋中, 忽略移动包)
     dash: Option<DashState>,
+    /// 全体攻击模式 (false = 和平, 默认)
+    pk_all: bool,
+    /// PK 值 (杀白名 +100, ≥100 红名, 在线每 2 分钟 -1)
+    pk_points: u32,
+    /// 灰名到期 (打中白名玩家标 60 秒)
+    grey_until: Option<Instant>,
+    /// 死亡状态 (到点复活); Some 期间移动/攻击/施法全阻断
+    dead_until: Option<Instant>,
+    /// 中毒 (到期, 每跳伤害, 下一跳时刻, 施毒者)
+    poison: Option<(Instant, i32, Instant, String)>,
 }
 
 impl PlayerState {
@@ -575,6 +586,10 @@ pub struct Game {
     next_slot_id: u64,
     last_save: Instant,
     last_regen: Instant,
+    /// 玩家延迟上毒队列 (到点, 施毒者, 目标, 每跳, 秒)
+    pending_player_poisons: Vec<(Instant, String, String, i32, f64)>,
+    /// 上次 PK 值衰减时刻
+    last_pk_decay: Instant,
     /// 在途交易 (一人至多一笔)
     trades: Vec<trade::Trade>,
     /// 待回应交易邀请: 受邀者 char_id → 发起者 char_id
@@ -665,6 +680,8 @@ impl Game {
             next_drop_id: 1,
             rng: 0x00C0_FFEE_1234_5678,
             next_slot_id: 1,
+            pending_player_poisons: Vec::new(),
+            last_pk_decay: Instant::now(),
             trades: Vec::new(),
             trade_invites: HashMap::new(),
             last_save: Instant::now(),
@@ -785,6 +802,7 @@ impl Game {
                     name: None,
                     level: None,
                     sound: None,
+                    pk: None,
                 })
                 .collect();
             broadcast_to(
@@ -1496,6 +1514,9 @@ impl Game {
             ClientMessage::StorageTake { npc_id, item_id } => {
                 self.handle_storage_take(&conn_id, &npc_id, &item_id).await;
             }
+            ClientMessage::SetPkMode { mode } => {
+                self.handle_set_pk_mode(&conn_id, &mode).await;
+            }
             other => {
                 // M3 玩法消息占位
                 warn!("暂未实现的消息: {other:?}");
@@ -1585,6 +1606,7 @@ impl Game {
         // 同角色旧连接被顶替
         let character_id = c.id.clone();
         let (level, exp, gold) = (c.level, c.exp, c.gold);
+        let c_pk = c.pk_points;
         let (c_inventory, c_equipment, c_quests, c_skills, c_storage) = (
             c.inventory.clone(),
             c.equipment.clone(),
@@ -1621,6 +1643,11 @@ impl Game {
                 quests: c_quests,
                 skills: c_skills,
                 dash: None,
+                pk_all: false,
+                pk_points: c_pk,
+                grey_until: None,
+                dead_until: None,
+                poison: None,
             },
         );
         if let Some(p) = self.players.get_mut(&character_id) {
@@ -1745,7 +1772,7 @@ impl Game {
             },
         )
         .await;
-        let (zone_id, zone_name, minimap, bgm) = self
+        let (zone_id, zone_name, minimap, bgm, safe_zones) = self
             .zones
             .get(&p.zone)
             .map(|z| {
@@ -1754,9 +1781,10 @@ impl Game {
                     z.name.clone(),
                     z.sidecar.minimap,
                     z.sidecar.bgm.clone(),
+                    z.sidecar.safe_zones.clone(),
                 )
             })
-            .unwrap_or((p.zone.clone(), p.zone.clone(), None, None));
+            .unwrap_or((p.zone.clone(), p.zone.clone(), None, None, Vec::new()));
         let zone_of_npc = zone_id.clone();
         send_to(
             &self.sessions,
@@ -1767,6 +1795,7 @@ impl Game {
                 position: Position { x, y },
                 minimap,
                 bgm,
+                safe_zones,
             },
         )
         .await;
@@ -1782,6 +1811,13 @@ impl Game {
         conn_id: &str,
         direction: Position,
     ) -> Option<(String, String, f64, f64)> {
+        if self
+            .players
+            .values()
+            .any(|p| p.conn_id == conn_id && p.dead_until.is_some())
+        {
+            return None; // 死亡中不移动
+        }
         // 先把要用的值抄出来, 释放对 players 的借用 —— 后面算碰撞要读整张表
         let (id_of, last_move, px0, py0, zone_id) = self
             .players
@@ -1848,7 +1884,7 @@ impl Game {
         let Some(p) = self.players.get(character_id) else {
             return;
         };
-        let (zone_id, zone_name, minimap, bgm) = self
+        let (zone_id, zone_name, minimap, bgm, safe_zones) = self
             .zones
             .get(&p.zone)
             .map(|z| {
@@ -1857,9 +1893,10 @@ impl Game {
                     z.name.clone(),
                     z.sidecar.minimap,
                     z.sidecar.bgm.clone(),
+                    z.sidecar.safe_zones.clone(),
                 )
             })
-            .unwrap_or((p.zone.clone(), p.zone.clone(), None, None));
+            .unwrap_or((p.zone.clone(), p.zone.clone(), None, None, Vec::new()));
         let zone_of_npc = zone_id.clone();
         send_to(
             &self.sessions,
@@ -1870,6 +1907,7 @@ impl Game {
                 position: Position { x, y },
                 minimap,
                 bgm,
+                safe_zones,
             },
         )
         .await;

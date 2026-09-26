@@ -108,10 +108,11 @@ pub(crate) fn cast_skills(
         picked.or_else(|| heal_target(&net, &remotes, &p, range))
     } else {
         // 敌对类: 锁定 → 悬停 → 射程内最近的活怪
+        let pk_all = net.pk_mode == "all";
         let valid = |id: &String| {
             let r = remotes.0.get(id)?;
-            (r.image.is_some() && r.owner.is_none() && r.anim != 4)
-                .then(|| (id.clone(), (r.pos - p.pos).length(), r.pos))
+            let hostile = r.owner.is_none() && (r.image.is_some() || pk_all);
+            (hostile && r.anim != 4).then(|| (id.clone(), (r.pos - p.pos).length(), r.pos))
         };
         if let Some((id, d, mp)) = net.target.as_ref().and_then(&valid) {
             if d > s.range {

@@ -178,6 +178,7 @@ impl Game {
                 name: None,
                 level: None,
                 sound: None,
+                pk: None,
             })
             .collect();
         self.monsters.retain(|m| m.boss);
@@ -228,6 +229,7 @@ impl Game {
                 name: None,
                 level: None,
                 sound: None,
+                pk: None,
             })
             .collect();
         self.monsters.retain(|m| !m.boss);

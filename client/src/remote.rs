@@ -4,6 +4,15 @@ use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 /// 其他玩家插值行走 + 精灵帧 (与本地玩家同一套 CArmour 帧表)
+/// 玩家名牌颜色: 白名淡金 / 灰名灰 / 红名红
+fn player_pk_color(pk: &str) -> Color {
+    match pk {
+        "grey" => Color::srgb(0.62, 0.62, 0.62),
+        "red" => Color::srgb(0.95, 0.28, 0.25),
+        _ => Color::srgb(0.98, 0.93, 0.62),
+    }
+}
+
 /// 生成脚下选中光圈贴图: 128x64 金色椭圆环 + 内圈淡光
 fn ring_image() -> Image {
     const W: usize = 128;
@@ -171,7 +180,10 @@ pub(crate) fn remote_step(
         } else {
             let dirb = r.dir * hum::DIR_STRIDE;
             let acting = r.act_start.filter(|t| now - t < 0.54);
-            let idx = if let Some(t) = acting {
+            let idx = if r.anim == 4 {
+                // 玩家倒地: 4 帧一次性, 停在最后一帧
+                hum::DIE + dirb + ((r.anim_t / 0.15) as usize).min(3)
+            } else if let Some(t) = acting {
                 r.act_base + dirb + (((now - t) / 0.09) as usize).min(5)
             } else if walking && r.anim == 2 {
                 hum::RUN + dirb + foot
@@ -320,15 +332,21 @@ pub(crate) fn remote_step(
                         r.label_text = r.name.clone();
                         commands.entity(l).insert(Text2d::new(r.name.clone()));
                     }
+                    // 玩家名色随善恶变化重染 (灰名/红名)
+                    if r.image.is_none() && r.owner.is_none() && r.label_pk != r.pk {
+                        r.label_pk = r.pk.clone();
+                        commands.entity(l).insert(TextColor(player_pk_color(&r.pk)));
+                    }
                 }
                 None => {
                     r.label_text = r.name.clone();
+                    r.label_pk = r.pk.clone();
                     let color = if r.owner.is_some() {
                         Color::srgb(0.45, 0.95, 0.5) // 宠物 (友方) 绿
                     } else if r.image.is_some() {
                         Color::srgb(0.86, 0.86, 0.9) // 怪物 淡白
                     } else {
-                        Color::srgb(0.98, 0.93, 0.62) // 其他玩家 淡金
+                        player_pk_color(&r.pk) // 其他玩家按善恶名色
                     };
                     let l = commands
                         .spawn((

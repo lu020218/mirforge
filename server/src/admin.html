@@ -279,6 +279,7 @@
             <input id="ze-sx" style="width:74px"><input id="ze-sy" style="width:74px">
             <span class="hint">小地图帧</span><input id="ze-mm" style="width:64px" onchange="syncMinimapPreview()">
             <span class="hint" title="packs/sound/bgm/<名>.ogg, 留空无 BGM">BGM</span><input id="ze-bgm" style="width:90px">
+            <span class="hint" title="安全区: 中心x,中心y,半径; 分号分隔多个 (区内禁止 PvP)">安全区</span><input id="ze-safe" style="width:150px" placeholder="330,150,20; ...">
             <button class="ghost" onclick="openMinimapPicker()">选择…</button>
             <button onclick="saveZone()">保存区域</button>
             <button class="ghost" onclick="closeZone()">关闭</button>
@@ -2043,6 +2044,8 @@ function showZone(map) {
   (sc.monsters || []).forEach(m => sb.appendChild(spawnRow(m)));
   document.getElementById('ze-mm').value = sc.minimap ?? '';
   document.getElementById('ze-bgm').value = sc.bgm ?? '';
+  document.getElementById('ze-safe').value =
+    (sc.safe_zones || []).map(z => z.join(',')).join('; ');
   syncMinimapPreview();
   endPick();
   mountZoneEditor(map);
@@ -2151,6 +2154,10 @@ function collectZone() {
     spawn: (sx !== '' && sy !== '') ? [num(sx), num(sy)] : null,
     minimap: mm === '' ? null : num(mm),
     bgm: (document.getElementById('ze-bgm').value.trim() || null),
+    safe_zones: document.getElementById('ze-safe').value.split(';')
+      .map(x => x.trim()).filter(Boolean)
+      .map(x => x.split(',').map(Number))
+      .filter(a => a.length === 3 && a.every(Number.isFinite)),
     portals, monsters,
   };
 }

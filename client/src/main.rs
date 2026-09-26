@@ -174,6 +174,8 @@ fn main() {
                 (
                     player_move,
                     update_hover,
+                    pk_mode_toggle,
+                    safe_zone_notice,
                     audio::audio_step,
                     audio::bgm_pick,
                     audio::self_sounds,
@@ -289,6 +291,10 @@ struct Net {
     zone_minimap: Option<u16>,
     /// 当前区域 BGM 曲名 (服务器随切区下发; 空 = 无)
     zone_bgm: String,
+    /// 攻击模式 ("peace"/"all", 服务器回执驱动)
+    pk_mode: String,
+    /// 当前区域安全区 (中心 x, y, 半径); 进出提示 + 客户端预过滤
+    safe_zones: Vec<(f64, f64, f64)>,
     /// 当前区域 NPC (服务器下发)
     npcs: Vec<protocol::NpcInfo>,
     /// NPC 列表版本 (变化时重建精灵)
@@ -384,6 +390,10 @@ struct Remote {
     level: Option<u32>,
     /// 音效基址 (怪物; mon/{基址:03}-动作.ogg)
     sound: u16,
+    /// 善恶名色 (玩家: white/grey/red; 空 = 白名)
+    pk: String,
+    /// 名牌当前染色对应的 pk 态 (变化才重染)
+    label_pk: String,
     /// 名牌实体与已渲染文本 (文本变化才重建, 位置每帧跟随)
     label: Option<Entity>,
     label_text: String,
@@ -1016,6 +1026,7 @@ fn setup(
                 dash_dir: DVec2::ZERO,
                 dash_left: 0.0,
                 label_anchor: Vec2::ZERO,
+                dying: None,
             },
             Sprite::default(),
             Transform::default(),
@@ -1135,6 +1146,8 @@ struct Player {
     dash_left: f64,
     /// 名牌锚点 (自身精灵包围盒底部中点; player_sprite 每帧写入)
     label_anchor: Vec2,
+    /// 死亡中 (Some=倒地起始时刻); 复活位置快照到达时清除
+    dying: Option<f64>,
 }
 
 /// 普攻动作时长 (6 帧 × 90ms) 与客户端侧冷却
@@ -1201,6 +1214,46 @@ fn update_hover(
     })();
     if net.hover != hover {
         net.hover = hover;
+    }
+}
+
+/// Ctrl+H 切换攻击模式 (服务器回执后 HUD 更新)
+fn pk_mode_toggle(keys: Res<ButtonInput<KeyCode>>, chat: Res<hud::ChatState>, net: Res<Net>) {
+    if chat.active {
+        return;
+    }
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if ctrl && keys.just_pressed(KeyCode::KeyH) {
+        let want = if net.pk_mode == "all" { "peace" } else { "all" };
+        net.send(ClientMessage::SetPkMode { mode: want.into() });
+    }
+}
+
+/// 进出安全区提示 (按服务器下发的安全区圆, 本地判定零流量)
+fn safe_zone_notice(
+    time: Res<Time>,
+    mut net: ResMut<Net>,
+    q: Query<&Player>,
+    mut was_in: Local<Option<bool>>,
+) {
+    let Ok(p) = q.get_single() else {
+        return;
+    };
+    let inside = net
+        .safe_zones
+        .iter()
+        .any(|(x, y, r)| ((p.pos.x - x).powi(2) + (p.pos.y - y).powi(2)).sqrt() <= *r);
+    if *was_in != Some(inside) {
+        // 首帧不提示, 只记状态
+        if was_in.is_some() {
+            let msg = if inside { "进入安全区" } else { "离开安全区" };
+            let now = time.elapsed_secs_f64();
+            net.notices.push((msg.into(), "info".into(), now));
+            if net.notices.len() > 6 {
+                net.notices.remove(0);
+            }
+        }
+        *was_in = Some(inside);
     }
 }
 
@@ -1378,6 +1431,10 @@ fn player_move(
             }
         }
     }
+    // 死亡中: 不走不打, 等复活快照
+    if p.dying.is_some() {
+        return;
+    }
     // 光标在背包/人物等 UI 上, 或手上正提着物品(含刚放下那一下): 不走路也不攻击
     if ui_hover.0 || grab.item.is_some() || grab.released {
         p.moving = false;
@@ -1420,10 +1477,12 @@ fn player_move(
                     net.target = picked;
                 }
             }
+            let pk_all = net.pk_mode == "all";
             let hit = remotes
                 .0
                 .iter()
-                .filter(|(_, r)| r.image.is_some() && r.anim != 4 && r.owner.is_none())
+                .filter(|(_, r)| r.anim != 4 && r.owner.is_none())
+                .filter(|(_, r)| r.image.is_some() || pk_all) // 玩家仅全体模式可打
                 .find(|(_, r)| (r.pos.x - cc.x).abs() < 0.8 && (r.pos.y - cc.y).abs() < 1.1);
             if let Some((mid, m)) = hit {
                 let d = m.pos - p.pos;

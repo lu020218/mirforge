@@ -158,6 +158,9 @@ pub enum ClientMessage {
     /// 从仓库取物品
     #[serde(rename = "storageTake")]
     StorageTake { npc_id: String, item_id: String },
+    /// 切换攻击模式 ("peace"/"all")
+    #[serde(rename = "setPkMode")]
+    SetPkMode { mode: String },
     #[serde(rename = "createParty")]
     CreateParty,
     #[serde(rename = "joinParty")]
@@ -212,6 +215,9 @@ pub struct EntityUpdate {
     /// 音效基址 (怪物; packs/sound/mon/{基址:03}-动作.ogg)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<u16>,
+    /// 善恶名色 (玩家: "white"/"grey"/"red"); 名牌/目标栏按它染色
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pk: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +271,9 @@ pub enum ServerMessage {
         /// 区域 BGM 曲名 (packs/sound/bgm/<名>.ogg); None = 无
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bgm: Option<String>,
+        /// 安全区列表 (中心 x, y, 半径); 客户端进出提示用
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        safe_zones: Vec<(f64, f64, f64)>,
     },
     #[serde(rename = "playerStatus")]
     PlayerStatus {
@@ -376,6 +385,9 @@ pub enum ServerMessage {
     /// 交易结束 (done: true=成交 false=取消)
     #[serde(rename = "tradeClosed")]
     TradeClosed { reason: String, done: bool },
+    /// 攻击模式回执 ("peace"/"all")
+    #[serde(rename = "pkMode")]
+    PkMode { mode: String },
     /// 仓库全量状态 (打开与每次存取后推)
     #[serde(rename = "storageState")]
     StorageState {
@@ -627,6 +639,7 @@ mod tests {
                 name: None,
                 level: None,
                 sound: None,
+                pk: None,
             }],
             timestamp: 12345,
         };

@@ -207,6 +207,16 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN bgm TEXT")
         .execute(pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE cfg_zones ADD COLUMN safe_zones TEXT NOT NULL DEFAULT '[]'")
+        .execute(pool)
+        .await;
+    // 出生地默认安全区 (只在还没配置过时种一次)
+    let _ = sqlx::query(
+        "UPDATE cfg_zones SET safe_zones = '[[330.5,150.5,20.0]]'
+         WHERE map = '0.map' AND safe_zones = '[]'",
+    )
+    .execute(pool)
+    .await;
     let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN magic INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
@@ -662,7 +672,10 @@ pub async fn load_zone_sidecars(
 ) -> Result<HashMap<String, ZoneSidecar>, sqlx::Error> {
     let mut out: HashMap<String, ZoneSidecar> = HashMap::new();
     for r in
-        sqlx::query("SELECT map, name, spawn_x, spawn_y, minimap, bgm FROM cfg_zones ORDER BY map")
+        sqlx::query(
+            "SELECT map, name, spawn_x, spawn_y, minimap, bgm, safe_zones
+             FROM cfg_zones ORDER BY map",
+        )
         .fetch_all(pool)
         .await?
     {
@@ -676,6 +689,8 @@ pub async fn load_zone_sidecars(
                 spawn: sx.zip(sy),
                 minimap: r.get::<Option<i64>, _>("minimap").map(|v| v as u16),
                 bgm: r.get::<Option<String>, _>("bgm").filter(|b| !b.is_empty()),
+                safe_zones: serde_json::from_str(&r.get::<String, _>("safe_zones"))
+                    .unwrap_or_default(),
                 portals: Vec::new(),
                 monsters: Vec::new(),
             },
@@ -890,8 +905,8 @@ pub async fn save_zone(pool: &SqlitePool, map: &str, sc: &ZoneSidecar) -> Result
             .await?;
     }
     sqlx::query(
-        "INSERT INTO cfg_zones (map, name, spawn_x, spawn_y, minimap, bgm)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cfg_zones (map, name, spawn_x, spawn_y, minimap, bgm, safe_zones)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(map)
     .bind(sc.name.as_deref())
@@ -899,6 +914,7 @@ pub async fn save_zone(pool: &SqlitePool, map: &str, sc: &ZoneSidecar) -> Result
     .bind(sc.spawn.map(|s| s.1))
     .bind(sc.minimap.map(|v| v as i64))
     .bind(sc.bgm.as_deref())
+    .bind(serde_json::to_string(&sc.safe_zones).unwrap_or_else(|_| "[]".into()))
     .execute(&mut *tx)
     .await?;
     for p in &sc.portals {

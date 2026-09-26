@@ -105,6 +105,8 @@ pub struct TargetAvatar;
 #[derive(Component)]
 pub struct TargetTradeBtn;
 #[derive(Component)]
+pub struct PkModeText;
+#[derive(Component)]
 pub struct TargetName;
 #[derive(Component)]
 pub struct TargetHpFill;
@@ -751,6 +753,23 @@ pub fn setup(
             }
         });
 
+    // ── 右上: 攻击模式标记 (小地图下方; Ctrl+H 切换) ──
+    commands
+        .spawn((
+            HudRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(234.0),
+                right: Val::Px(20.0),
+                width: Val::Px(208.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn((text(&skin.font, "和平模式 (Ctrl+H)", 11.0, TEXT_DIM), PkModeText));
+        });
+
     // ── 顶部中央: 锁定目标栏 (异形: 左圆形头像位, 右上等级+名字, 右下血条) ──
     commands
         .spawn((
@@ -1245,6 +1264,15 @@ pub fn update(
 /// 玩家血量不广播 (无 PvP 需求), 锁定玩家时只显示名字、血条置空。
 pub fn target_frame(
     mut net: ResMut<Net>,
+    mut q_pk: Query<
+        (&mut Text, &mut TextColor),
+        (
+            With<PkModeText>,
+            Without<TargetName>,
+            Without<TargetHpText>,
+            Without<TargetLevel>,
+        ),
+    >,
     remotes: Res<crate::Remotes>,
     mut q_frame: Query<&mut Node, With<TargetFrame>>,
     mut q_name: Query<(&mut Text, &mut TextColor), With<TargetName>>,
@@ -1256,6 +1284,17 @@ pub fn target_frame(
         (With<TargetTradeBtn>, Without<TargetFrame>, Without<TargetHpFill>),
     >,
 ) {
+    if let Ok((mut t, mut c)) = q_pk.get_single_mut() {
+        let (label, color) = if net.pk_mode == "all" {
+            ("全体模式 (Ctrl+H)", Color::srgb(0.95, 0.35, 0.3))
+        } else {
+            ("和平模式 (Ctrl+H)", TEXT_DIM)
+        };
+        if **t != label {
+            **t = label.to_string();
+            c.0 = color;
+        }
+    }
     let info = net
         .target
         .as_ref()
@@ -1269,7 +1308,12 @@ pub fn target_frame(
             } else if r.image.is_some() {
                 TEXT_MAIN // 怪物
             } else {
-                GOLD_BRIGHT // 玩家
+                // 玩家按善恶名色
+                match r.pk.as_str() {
+                    "grey" => Color::srgb(0.62, 0.62, 0.62),
+                    "red" => Color::srgb(0.95, 0.28, 0.25),
+                    _ => GOLD_BRIGHT,
+                }
             };
             // 宠物名自带「 LvN」后缀, 等级徽标已单列, 去重
             let name = match r.level {

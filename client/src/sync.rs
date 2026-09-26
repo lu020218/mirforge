@@ -148,6 +148,9 @@ pub(crate) fn net_pump(
                         net.notices.remove(0);
                     }
                 }
+                ServerMessage::PkMode { mode } => {
+                    net.pk_mode = mode;
+                }
                 ServerMessage::StorageState { npc_id, items, cap } => {
                     net.storage = Some(crate::StorageView { npc_id, items, cap });
                     net.storage_rev += 1;
@@ -166,7 +169,9 @@ pub(crate) fn net_pump(
                     position,
                     minimap,
                     bgm,
+                    safe_zones,
                 } => {
+                    net.safe_zones = safe_zones;
                     net.zone_name = zone_name;
                     net.zone_minimap = minimap;
                     net.zone_bgm = bgm.unwrap_or_default();
@@ -194,6 +199,7 @@ pub(crate) fn net_pump(
                     let pos = DVec2::new(position.x, position.y);
                     if let Ok(mut p) = q_player.get_single_mut() {
                         p.pos = pos;
+                        p.dying = None; // 复活/传送快照到达
                     } else {
                         commands.spawn((
                             Player {
@@ -207,6 +213,7 @@ pub(crate) fn net_pump(
                                 dash_dir: DVec2::ZERO,
                                 dash_left: 0.0,
                                 label_anchor: Vec2::ZERO,
+                                dying: None,
                             },
                             Sprite::default(),
                             Transform::default(),
@@ -251,6 +258,16 @@ pub(crate) fn net_pump(
                 } => {
                     if net.stat.is_some_and(|st| level > st.level) {
                         sfx.send(crate::audio::Sfx::ui("ui/levelup"));
+                    }
+                    if hp <= 0 && net.stat.is_some_and(|st| st.hp > 0) {
+                        if let Ok(mut p) = q_player.get_single_mut() {
+                            p.dying = Some(time.elapsed_secs_f64());
+                            p.moving = false;
+                        }
+                        sfx.send(crate::audio::Sfx {
+                            name: "hum/die_m".into(),
+                            vol: 1.0,
+                        });
                     }
                     net.stat_rev += 1;
                     net.stat = Some(Stat {
@@ -673,6 +690,11 @@ pub(crate) fn net_pump(
                         }
                         if let Some(sd) = e.sound {
                             r.sound = sd;
+                        }
+                        if let Some(pk) = &e.pk {
+                            if r.pk != *pk {
+                                r.pk = pk.clone();
+                            }
                         }
                         if e.weapon.is_some() {
                             r.weapon = e.weapon;

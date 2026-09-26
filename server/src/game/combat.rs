@@ -27,17 +27,33 @@ impl Game {
             let Some(p) = self.players.get_mut(&char_id) else {
                 return;
             };
+            if p.dead_until.is_some() {
+                return; // 死亡中不出手
+            }
             if now.duration_since(p.last_attack) < PLAYER_ATTACK_CD {
                 return;
             }
             p.last_attack = now;
         }
-        // 目标怪
+        // 目标怪; 不是怪 → 试玩家 (PvP)
         let Some(m) = self
             .monsters
             .iter_mut()
             .find(|m| m.id == target_id && m.zone == zone && m.alive() && m.owner.is_none())
         else {
+            if self
+                .pvp_check(&char_id, target_id, PLAYER_ATTACK_RANGE, true)
+                .await
+                .is_some()
+            {
+                let equip = self
+                    .players
+                    .get(&char_id)
+                    .map(|p| p.equip_attack())
+                    .unwrap_or(0);
+                let dmg = attack_for(level) + equip;
+                self.hit_player_pvp(&char_id, target_id, dmg).await;
+            }
             return;
         };
         let dist = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
@@ -198,6 +214,13 @@ impl Game {
                 return;
             }
         }
+        if self
+            .players
+            .get(&char_id)
+            .is_some_and(|p| p.dead_until.is_some())
+        {
+            return; // 死亡中不施法
+        }
         // 诱惑: 目标必须是「可诱惑」类型的无主怪 (扣蓝前拒绝)
         if matches!(def.kind, SkillKind::Tame { .. }) {
             let ok = target_id.as_deref().is_some_and(|tid| {
@@ -228,24 +251,38 @@ impl Game {
         }
         // 施法中心: 自我施法 = 自身; 否则目标怪 (射程校验)。
         // 目标/射程无效在扣费之前拒绝 —— 白扣蓝进冷却是 bug
+        // 目标是玩家 (PvP): 仅伤害/范围/毒类技能可指玩家
+        let mut pvp_target: Option<String> = None;
         let center = if def.self_cast {
             (px, py)
-        } else {
-            let Some(m) = self.monsters.iter().find(|m| {
-                Some(m.id.as_str()) == target_id.as_deref()
-                    && m.zone == zone
-                    && m.alive()
-                    && m.owner.is_none()
-            }) else {
-                self.notify(conn_id, "目标无效").await;
-                return;
-            };
+        } else if let Some(m) = self.monsters.iter().find(|m| {
+            Some(m.id.as_str()) == target_id.as_deref()
+                && m.zone == zone
+                && m.alive()
+                && m.owner.is_none()
+        }) {
             let d = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
             if d > def.range {
                 self.notify(conn_id, "目标太远了").await;
                 return;
             }
             (m.x, m.y)
+        } else if matches!(
+            def.kind,
+            SkillKind::Damage(_) | SkillKind::Aoe { .. } | SkillKind::Dot { .. }
+        ) && target_id
+            .as_deref()
+            .is_some_and(|t| self.players.contains_key(t))
+        {
+            let tid = target_id.clone().unwrap();
+            let Some(pos) = self.pvp_check(&char_id, &tid, def.range, true).await else {
+                return;
+            };
+            pvp_target = Some(tid);
+            pos
+        } else {
+            self.notify(conn_id, "目标无效").await;
+            return;
         };
         // 校验全过 → 扣蓝 + 进冷却; 顺带积累修炼度 (每次施放 +1, 到量升级)
         let (skill_level, leveled_to) = {
@@ -280,6 +317,8 @@ impl Game {
         // 修炼加成: 每级 +level_bonus (烈火 3 级 ×1.9, 私服 4/5 级更凶)
         let train_mult = 1.0 + def.level_bonus * skill_level as f64;
         let mut hit_ids: Vec<(String, i32)> = Vec::new();
+        // PvP 命中 (玩家目标即时结算, 不走怪物延迟通道)
+        let mut player_hits: Vec<(String, i32)> = Vec::new();
         let mut dot_target: Option<(String, i32, f64)> = None;
         // 召唤: 烟雾特效播在骷髅出生点 (素材语义: 宠物从烟雾中现身);
         // 治愈: 特效播在受疗者身上 — 共用特效落点覆盖
@@ -288,7 +327,9 @@ impl Game {
         let mut extra_targets: Vec<String> = Vec::new();
         match def.kind {
             SkillKind::Damage(mult) => {
-                if let Some(tid) = &target_id {
+                if let Some(tid) = &pvp_target {
+                    player_hits.push((tid.clone(), (dmg_base as f64 * mult * train_mult) as i32));
+                } else if let Some(tid) = &target_id {
                     hit_ids.push((tid.clone(), (dmg_base as f64 * mult * train_mult) as i32));
                 }
             }
@@ -302,6 +343,24 @@ impl Game {
                     })
                 {
                     hit_ids.push((m.id.clone(), (dmg_base as f64 * mult * train_mult) as i32));
+                }
+                // 范围波及玩家: 仅全体模式, 逐个静默校验 (安全区/死亡跳过)
+                let in_radius: Vec<String> = self
+                    .players
+                    .iter()
+                    .filter(|(id, t)| {
+                        *id != &char_id
+                            && t.zone == zone
+                            && ((t.x - center.0).powi(2) + (t.y - center.1).powi(2)).sqrt()
+                                <= radius
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for tid in in_radius {
+                    if self.pvp_check(&char_id, &tid, f64::MAX, false).await.is_some() {
+                        player_hits
+                            .push((tid, (dmg_base as f64 * mult * train_mult) as i32));
+                    }
                 }
             }
             SkillKind::Heal => {
@@ -347,8 +406,16 @@ impl Game {
             }
             SkillKind::Dot { tick_mult, secs } => {
                 // 命中不打直伤, 到点上毒 (走与命中特效同步的延迟通道)
-                if let Some(tid) = &target_id {
-                    let tick_dmg = (dmg_base as f64 * tick_mult * train_mult).max(1.0) as i32;
+                let tick_dmg = (dmg_base as f64 * tick_mult * train_mult).max(1.0) as i32;
+                if let Some(tid) = &pvp_target {
+                    self.pending_player_poisons.push((
+                        Instant::now() + Duration::from_millis(600),
+                        char_id.clone(),
+                        tid.clone(),
+                        tick_dmg,
+                        secs,
+                    ));
+                } else if let Some(tid) = &target_id {
                     dot_target = Some((tid.clone(), tick_dmg, secs));
                 }
             }
@@ -562,6 +629,9 @@ impl Game {
             ));
         }
         // 延迟结算: 与客户端特效编排同步 (起手播完、弹体到达才掉血)
+        for (tid, dmg) in player_hits {
+            self.hit_player_pvp(&char_id, &tid, dmg).await;
+        }
         if !hit_ids.is_empty() {
             let stages = def.stages.max(1);
             // 单技能标准文件: 起手固定 @0 (无起手帧则时长为 0)
@@ -661,7 +731,7 @@ impl Game {
         let players: Vec<(String, String, f64, f64)> = self
             .players
             .iter()
-            .filter(|(_, p)| p.connected)
+            .filter(|(_, p)| p.connected && p.dead_until.is_none())
             .map(|(id, p)| (id.clone(), p.zone.clone(), p.x, p.y))
             .collect();
         // 怪物位置快照 (宠物索敌 / 敌怪打宠物 都要跨条目读)
@@ -979,6 +1049,7 @@ impl Game {
                     name: None,
                     level: None,
                     sound: None,
+                    pk: None,
                 }],
                 timestamp: now_ms(),
             },
@@ -1017,48 +1088,7 @@ impl Game {
 
     pub(super) async fn apply_monster_hits(&mut self, hits: Vec<(String, i32)>) {
         for (char_id, dmg) in hits {
-            let Some(p) = self.players.get_mut(&char_id) else {
-                continue;
-            };
-            let dmg = (dmg - p.equip_defense()).max(1);
-            p.hp -= dmg;
-            let (zone, conn, dead) = (p.zone.clone(), p.conn_id.clone(), p.hp <= 0);
-            let conns = self.zone_conns(&zone);
-            broadcast_to(
-                &self.sessions,
-                &conns,
-                ServerMessage::DamageNumber {
-                    target_id: char_id.clone(),
-                    amount: dmg,
-                    is_critical: false,
-                },
-            )
-            .await;
-            if dead {
-                // 死亡: 回本区域出生点满血复活 (惩罚机制后续)
-                let spawn = self
-                    .zones
-                    .get(&zone)
-                    .map(|z| z.spawn)
-                    .unwrap_or((330.5, 150.5));
-                if let Some(p) = self.players.get_mut(&char_id) {
-                    p.hp = p.max_hp;
-                    p.x = spawn.0;
-                    p.y = spawn.1;
-                }
-                send_to(
-                    &self.sessions,
-                    &conn,
-                    ServerMessage::Notification {
-                        message: "你死了, 已在出生点复活".into(),
-                        notification_type: "death".into(),
-                    },
-                )
-                .await;
-                self.send_enter_zone_only(&conn, &char_id, spawn.0, spawn.1)
-                    .await;
-            }
-            self.send_player_status(&char_id).await;
+            self.damage_player(None, &char_id, dmg).await;
         }
     }
 }
@@ -1276,6 +1306,7 @@ impl super::Game {
                         name: None,
                         level: None,
                         sound: None,
+                        pk: None,
                     }],
                     timestamp: now_ms(),
                 },
