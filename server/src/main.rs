@@ -9,6 +9,7 @@
 //! - `MIRFORGE_MAP`   缺省区域（新角色出生地，默认 `0.map`）
 //! - `MIRFORGE_ADDR`  监听地址（默认 `127.0.0.1:4000`）
 //! - `MIRFORGE_DB`    SQLite 路径（默认 `mirforge.db`；配置与存档同库）
+//! - `MIRFORGE_NO_MONSTERS=1` 全程不刷怪（测试用, 免野怪干扰）
 //!
 //! 配置存储：物品/技能/任务/区域全部存于 SQLite 配置表，由管理台维护；
 //! `server/data/*.json` 与 `zones/*.json` 仅在首次建库时作为种子导入一次。

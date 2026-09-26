@@ -28,7 +28,10 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             hp INTEGER NOT NULL DEFAULT 0,
             image INTEGER NOT NULL DEFAULT 0,
             shape INTEGER NOT NULL DEFAULT 0,
-            ord INTEGER NOT NULL DEFAULT 0
+            ord INTEGER NOT NULL DEFAULT 0,
+            rare_chance REAL NOT NULL DEFAULT 0.05,
+            rare_max INTEGER NOT NULL DEFAULT 3,
+            durability INTEGER NOT NULL DEFAULT 20
         )",
         "CREATE TABLE IF NOT EXISTS cfg_skills (
             id TEXT PRIMARY KEY,
@@ -217,6 +220,15 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await;
+    let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN rare_chance REAL NOT NULL DEFAULT 0.05")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN rare_max INTEGER NOT NULL DEFAULT 3")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN durability INTEGER NOT NULL DEFAULT 20")
+        .execute(pool)
+        .await;
     let _ = sqlx::query("ALTER TABLE cfg_items ADD COLUMN magic INTEGER NOT NULL DEFAULT 0")
         .execute(pool)
         .await;
@@ -264,7 +276,8 @@ pub async fn is_empty(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 
 pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> {
     let items = sqlx::query(
-        "SELECT template, name, slot, attack, magic, spirit, defense, hp, image, shape, price
+        "SELECT template, name, slot, attack, magic, spirit, defense, hp, image, shape, price,
+                rare_chance, rare_max, durability
          FROM cfg_items ORDER BY ord, template",
     )
     .fetch_all(pool)
@@ -282,6 +295,9 @@ pub async fn load_game_data(pool: &SqlitePool) -> Result<GameData, sqlx::Error> 
         image: r.get::<i64, _>("image") as u16,
         shape: r.get::<i64, _>("shape") as u16,
         price: r.get::<i64, _>("price").max(0) as u32,
+        rare_chance: r.get::<f64, _>("rare_chance").clamp(0.0, 1.0),
+        rare_max: r.get::<i64, _>("rare_max").max(1) as i32,
+        durability: r.get::<i64, _>("durability").max(0) as i32,
     })
     .collect();
 
@@ -757,8 +773,9 @@ pub async fn save_items(pool: &SqlitePool, items: &[ItemDef]) -> Result<(), sqlx
         .await?;
     for (i, d) in items.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO cfg_items (template, name, slot, attack, magic, spirit, defense, hp, image, shape, price, ord)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cfg_items (template, name, slot, attack, magic, spirit, defense, hp,
+                                    image, shape, price, ord, rare_chance, rare_max, durability)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&d.template)
         .bind(&d.name)
@@ -771,6 +788,9 @@ pub async fn save_items(pool: &SqlitePool, items: &[ItemDef]) -> Result<(), sqlx
         .bind(d.image as i64)
         .bind(d.shape as i64)
         .bind(d.price as i64)
+        .bind(d.rare_chance)
+        .bind(d.rare_max as i64)
+        .bind(d.durability as i64)
         .bind(i as i64)
         .execute(&mut *tx)
         .await?;

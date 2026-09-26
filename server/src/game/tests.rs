@@ -54,6 +54,12 @@ fn test_zones() -> HashMap<String, Zone> {
     zones
 }
 
+/// set_data 走全局单例, 用它的测试必须串行 (拿住锁到测试结束)
+static DATA_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn data_lock() -> std::sync::MutexGuard<'static, ()> {
+    DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 async fn test_game() -> Game {
     let db = Db::open(":memory:").await.unwrap();
     let (gw, _rx) = crate::gateway::Gateway::new();
@@ -991,6 +997,7 @@ async fn heal_targets_players_and_pets() {
 
 #[tokio::test]
 async fn pet_growth_params_come_from_template() {
+    let _g = data_lock();
     let mut g = test_game().await;
     g.players
         .insert("char1".into(), test_player("c1", "z1", 12.0, 10.0));
@@ -1036,6 +1043,7 @@ async fn pet_growth_params_come_from_template() {
 
 #[tokio::test]
 async fn tame_converts_and_respects_rules() {
+    let _g = data_lock();
     let mut g = test_game().await;
     let mut p = test_player("c1", "z1", 10.5, 10.5);
     p.character.class = CharacterClass::Mage;
@@ -1265,6 +1273,7 @@ async fn trade_disconnect_cancels() {
 
 #[tokio::test]
 async fn storage_store_and_take() {
+    let _g = data_lock();
     let mut g = test_game().await;
     trade_pair(&mut g);
     // 仓库 NPC 立在甲脚边
@@ -1447,4 +1456,133 @@ async fn player_poison_ticks_until_expiry() {
     }
     g.settle_player_poisons(now).await;
     assert!(g.players["pb"].poison.is_none(), "到期应清毒");
+}
+
+// ─────────── 耐久 / 极品 ───────────
+
+#[tokio::test]
+async fn rare_roll_respects_chance_and_bounds() {
+    let _g = data_lock();
+    let mut g = test_game().await;
+    // 100% 极品率: 一定滚点, 且点数在 1..=上限
+    let mut d = (*data()).clone();
+    if let Some(it) = d.items.iter_mut().find(|i| i.template == "iron_sword") {
+        it.rare_chance = 1.0;
+        it.rare_max = 3;
+    }
+    set_data(d);
+    let mut item = make_item("iron_sword").unwrap();
+    let base_atk = item.attack;
+    g.roll_rare(&mut item);
+    assert!(item.bonus >= 1 && item.bonus <= 3, "点数应在 1..=3: {}", item.bonus);
+    assert_eq!(item.attack, base_atk + item.bonus, "铁剑只有攻击非零, 加点全进攻击");
+    // 0% 极品率: 永不滚点
+    let mut d = (*data()).clone();
+    if let Some(it) = d.items.iter_mut().find(|i| i.template == "iron_sword") {
+        it.rare_chance = 0.0;
+    }
+    set_data(d);
+    for _ in 0..20 {
+        let mut it2 = make_item("iron_sword").unwrap();
+        g.roll_rare(&mut it2);
+        assert_eq!(it2.bonus, 0, "0 概率不该出极品");
+    }
+    set_data(GameData::builtin());
+}
+
+#[tokio::test]
+async fn broken_item_stats_excluded() {
+    let mut g = test_game().await;
+    g.players.insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    let mut sword = make_item("iron_sword").unwrap();
+    let p = g.players.get_mut("char1").unwrap();
+    p.equipment.insert("weapon".into(), sword.clone());
+    assert!(p.equip_attack() > 0, "完好武器计入攻击");
+    sword.dur = 0;
+    p.equipment.insert("weapon".into(), sword);
+    assert_eq!(p.equip_attack(), 0, "损坏武器不计入攻击");
+}
+
+#[tokio::test]
+async fn weapon_wears_and_breaks() {
+    let mut g = test_game().await;
+    g.players.insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    let mut sword = make_item("iron_sword").unwrap();
+    sword.dur = 1;
+    g.players
+        .get_mut("char1")
+        .unwrap()
+        .equipment
+        .insert("weapon".into(), sword);
+    // 1/8 概率: 多磨几次必掉 (随机数确定性推进)
+    for _ in 0..200 {
+        g.wear_weapon("char1").await;
+        if g.players["char1"].equipment["weapon"].dur == 0 {
+            break;
+        }
+    }
+    assert_eq!(g.players["char1"].equipment["weapon"].dur, 0, "200 次内必损坏");
+    assert_eq!(g.players["char1"].equip_attack(), 0, "损坏后攻击失效");
+}
+
+#[tokio::test]
+async fn armor_wears_when_hit() {
+    let mut g = test_game().await;
+    g.players.insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    let armor = make_item("leather_armor").unwrap();
+    g.players
+        .get_mut("char1")
+        .unwrap()
+        .equipment
+        .insert("armor".into(), armor);
+    let d0 = g.players["char1"].equipment["armor"].dur;
+    for _ in 0..300 {
+        g.damage_player(None, "char1", 1).await;
+        if let Some(p) = g.players.get_mut("char1") {
+            p.hp = p.max_hp; // 别打死
+        }
+        if g.players["char1"].equipment["armor"].dur < d0 {
+            break;
+        }
+    }
+    assert!(g.players["char1"].equipment["armor"].dur < d0, "被击应磨防具");
+}
+
+#[tokio::test]
+async fn repair_charges_and_restores() {
+    let _g = data_lock();
+    let mut g = test_game().await;
+    g.players.insert("char1".into(), test_player("c1", "z1", 10.0, 10.0));
+    // 修理 NPC 在脚边
+    let mut d = (*data()).clone();
+    d.npcs.push(gamedata::defs::NpcDef {
+        id: "smith".into(),
+        name: "修理商".into(),
+        map: "z1".into(),
+        x: 10.0,
+        y: 10.0,
+        image: 0,
+        kind: "repair".into(),
+        enabled: true,
+        dialogs: Vec::new(),
+        shop: Vec::new(),
+    });
+    set_data(d);
+    let mut sword = make_item("iron_sword").unwrap();
+    sword.dur = 5; // 损耗 15 点
+    let per = (item_def("iron_sword").unwrap().price as u64 / sword.max_dur as u64).max(1);
+    let expect = 15 * per;
+    {
+        let p = g.players.get_mut("char1").unwrap();
+        p.equipment.insert("weapon".into(), sword);
+        p.gold = expect - 1; // 差一块钱
+    }
+    g.handle_repair("c1", "smith").await;
+    assert_eq!(g.players["char1"].equipment["weapon"].dur, 5, "钱不够不修");
+    g.players.get_mut("char1").unwrap().gold = expect + 10;
+    g.handle_repair("c1", "smith").await;
+    let p = &g.players["char1"];
+    assert_eq!(p.equipment["weapon"].dur, p.equipment["weapon"].max_dur, "修满");
+    assert_eq!(p.gold, 10, "按损耗计费");
+    set_data(GameData::builtin());
 }

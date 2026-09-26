@@ -53,6 +53,7 @@ impl Game {
                     .unwrap_or(0);
                 let dmg = attack_for(level) + equip;
                 self.hit_player_pvp(&char_id, target_id, dmg).await;
+                self.wear_weapon(&char_id).await;
             }
             return;
         };
@@ -66,6 +67,7 @@ impl Game {
         };
         let dmg = attack_for(level) + equip;
         self.hit_monster(&char_id, &mon_id, dmg).await;
+        self.wear_weapon(&char_id).await;
     }
 
     /// 对怪结算一次伤害: 扣血/飘字广播/击杀 → 尸体+经验。返回是否击杀。
@@ -629,6 +631,12 @@ impl Game {
             ));
         }
         // 延迟结算: 与客户端特效编排同步 (起手播完、弹体到达才掉血)
+        if matches!(
+            def.kind,
+            SkillKind::Damage(_) | SkillKind::Aoe { .. } | SkillKind::Dot { .. } | SkillKind::Charge { .. }
+        ) {
+            self.wear_weapon(&char_id).await;
+        }
         for (tid, dmg) in player_hits {
             self.hit_player_pvp(&char_id, &tid, dmg).await;
         }

@@ -53,6 +53,14 @@ impl Game {
                 arg: String::new(),
             });
         }
+        // 修理类 NPC 缺省页带修理入口
+        if npc.kind == "repair" {
+            options.push(NpcOptionDef {
+                label: "修理装备".into(),
+                action: "repair".into(),
+                arg: String::new(),
+            });
+        }
         options.push(NpcOptionDef {
             label: "告辞".into(),
             action: "close".into(),
@@ -421,6 +429,10 @@ impl Game {
                 if let Some(char_id) = self.char_by_conn(conn_id) {
                     self.send_storage(conn_id, &char_id, &npc.id).await;
                 }
+            }
+            "repair" => {
+                send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await;
+                self.handle_repair(conn_id, &npc.id).await;
             }
             _ => send_to(&self.sessions, conn_id, ServerMessage::NpcDialogEnd).await,
         }

@@ -3,11 +3,19 @@ use super::*;
 
 /// 按刷新点物化一个区域的怪物 (出生位置吸附可走格)
 /// `avoid` 是要让开的位置 (在场玩家); 开服时为空
+/// 测试开关: MIRFORGE_NO_MONSTERS=1 全程不刷怪 (含重刷/热重载)
+fn no_monsters() -> bool {
+    std::env::var("MIRFORGE_NO_MONSTERS").is_ok_and(|v| v == "1")
+}
+
 pub(super) fn materialize_monsters(
     zone: &Zone,
     rng: &mut u64,
     avoid: &[(f64, f64)],
 ) -> Vec<Monster> {
+    if no_monsters() {
+        return Vec::new();
+    }
     let mut next = |limit: f64| {
         *rng ^= *rng << 13;
         *rng ^= *rng >> 7;
@@ -95,6 +103,9 @@ pub(super) fn materialize_monsters(
 
 /// 把本区的 BOSS 配置落成 Monster (与普通刷新点走同一套 AI/生命周期)
 pub(super) fn materialize_bosses(zone: &Zone, avoid: &[(f64, f64)]) -> Vec<Monster> {
+    if no_monsters() {
+        return Vec::new();
+    }
     let now = Instant::now();
     data()
         .bosses

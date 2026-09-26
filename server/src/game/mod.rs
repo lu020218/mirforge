@@ -294,7 +294,15 @@ fn make_item(template: &str) -> Option<protocol::ItemInfo> {
         hp: d.hp,
         image: d.image,
         shape: d.shape,
+        bonus: 0,
+        dur: d.durability,
+        max_dur: d.durability,
     })
+}
+
+/// 损坏判定: 有耐久概念且已归零 → 属性不再计入
+fn item_ok(i: &protocol::ItemInfo) -> bool {
+    i.max_dur <= 0 || i.dur > 0
 }
 
 /// 背包容量上限 (与客户端 panels::BAG_SLOTS 一致)
@@ -541,19 +549,19 @@ struct PlayerState {
 
 impl PlayerState {
     fn equip_attack(&self) -> i32 {
-        self.equipment.values().map(|i| i.attack).sum()
+        self.equipment.values().filter(|i| item_ok(i)).map(|i| i.attack).sum()
     }
     fn equip_magic(&self) -> i32 {
-        self.equipment.values().map(|i| i.magic).sum()
+        self.equipment.values().filter(|i| item_ok(i)).map(|i| i.magic).sum()
     }
     fn equip_spirit(&self) -> i32 {
-        self.equipment.values().map(|i| i.spirit).sum()
+        self.equipment.values().filter(|i| item_ok(i)).map(|i| i.spirit).sum()
     }
     fn equip_defense(&self) -> i32 {
-        self.equipment.values().map(|i| i.defense).sum()
+        self.equipment.values().filter(|i| item_ok(i)).map(|i| i.defense).sum()
     }
     fn equip_hp(&self) -> i32 {
-        self.equipment.values().map(|i| i.hp).sum()
+        self.equipment.values().filter(|i| item_ok(i)).map(|i| i.hp).sum()
     }
     /// 装备/升级后重算上限并夹住当前值
     fn recalc(&mut self) {

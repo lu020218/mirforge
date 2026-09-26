@@ -442,6 +442,10 @@ pub struct NpcInfo {
 }
 
 /// 一件物品（实例）。slot: weapon/armor/helmet/necklace/ring
+fn default_dur() -> i32 {
+    20
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ItemInfo {
     pub id: String,
@@ -460,6 +464,14 @@ pub struct ItemInfo {
     pub defense: i32,
     #[serde(default)]
     pub hp: i32,
+    /// 极品附加点数合计 (>0 即极品, 客户端名字淡蓝)
+    #[serde(default)]
+    pub bonus: i32,
+    /// 当前耐久 / 耐久上限 (上限 0 = 无耐久概念; 老存档缺省视为满)
+    #[serde(default = "default_dur")]
+    pub dur: i32,
+    #[serde(default = "default_dur")]
+    pub max_dur: i32,
     /// Items.Lib 图标帧号
     #[serde(default)]
     pub image: u16,

@@ -582,6 +582,25 @@ pub struct ItemDef {
     /// 基准价 (金币)。商店未单独定价时按它卖; 回收价 = 基准价 × SELL_RATE
     #[serde(default)]
     pub price: u32,
+    /// 极品概率 (0~1): 怪物掉落时判定, 命中后在非零属性上随机加点
+    #[serde(default = "default_rare_chance")]
+    pub rare_chance: f64,
+    /// 极品附加点数上限 (1..=上限)
+    #[serde(default = "default_rare_max")]
+    pub rare_max: i32,
+    /// 耐久上限 (0 = 无耐久概念, 如药品)
+    #[serde(default = "default_durability")]
+    pub durability: i32,
+}
+
+fn default_rare_chance() -> f64 {
+    0.05
+}
+fn default_rare_max() -> i32 {
+    3
+}
+fn default_durability() -> i32 {
+    20
 }
 
 /// 掉落表条目 (边车配置)

@@ -1417,11 +1417,20 @@ fn slot_label(slot: &str) -> &'static str {
 }
 
 /// Tips 内容行: 名称 + 部位 + 逐条属性
+/// 极品名字淡蓝
+const RARE_BLUE: Color = Color::srgb(0.55, 0.78, 1.0);
+
 fn tooltip_lines(i: &protocol::ItemInfo) -> Vec<(String, Color)> {
     let mut v = vec![
-        (i.name.clone(), GOLD_BRIGHT),
+        (
+            i.name.clone(),
+            if i.bonus > 0 { RARE_BLUE } else { GOLD_BRIGHT },
+        ),
         (slot_label(&i.slot).to_string(), TEXT_DIM),
     ];
+    if i.bonus > 0 {
+        v.push((format!("极品 +{}", i.bonus), RARE_BLUE));
+    }
     if i.attack > 0 {
         v.push((format!("攻击 +{}", i.attack), TEXT_MAIN));
     }
@@ -1439,6 +1448,21 @@ fn tooltip_lines(i: &protocol::ItemInfo) -> Vec<(String, Color)> {
     }
     if v.len() == 2 {
         v.push(("无附加属性".into(), DISABLED));
+    }
+    if i.max_dur > 0 {
+        let broken = i.dur <= 0;
+        v.push((
+            if broken {
+                "已损坏 (属性失效)".into()
+            } else {
+                format!("持久 {}/{}", i.dur, i.max_dur)
+            },
+            if broken {
+                HP_RED
+            } else {
+                TEXT_DIM
+            },
+        ));
     }
     v
 }
@@ -1800,10 +1824,11 @@ fn build_bag(
                         ..default()
                     },
                     BackgroundColor(SLOT_BG),
-                    BorderColor(if item.is_some() {
-                        QUALITY_COMMON
-                    } else {
-                        EDGE_DARK
+                    BorderColor(match item {
+                        Some(it) if it.max_dur > 0 && it.dur <= 0 => HP_RED,
+                        Some(it) if it.bonus > 0 => RARE_BLUE,
+                        Some(_) => QUALITY_COMMON,
+                        None => EDGE_DARK,
                     }),
                     BorderRadius::all(Val::Px(3.0)),
                 ));
@@ -1881,7 +1906,12 @@ fn equip_slot(
             ..default()
         },
         BackgroundColor(SLOT_BG),
-        BorderColor(if item.is_some() { EDGE_GOLD } else { EDGE_DARK }),
+        BorderColor(match item {
+            Some(it) if it.max_dur > 0 && it.dur <= 0 => HP_RED,
+            Some(it) if it.bonus > 0 => RARE_BLUE,
+            Some(_) => EDGE_GOLD,
+            None => EDGE_DARK,
+        }),
         BorderRadius::all(Val::Px(3.0)),
     ));
     // 空栏也要能接收放下的物品, 所以只要有 slot 键就挂上目标组件
@@ -1927,11 +1957,13 @@ fn build_character(
         .find(|c| Some(&c.id) == net.character_id.as_ref())
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "冒险者".into());
+    // 与服务端同规则: 损坏件 (有耐久概念且归零) 属性不计入
+    let ok = |i: &&protocol::ItemInfo| i.max_dur <= 0 || i.dur > 0;
     let (atk, mag, spi, def): (i32, i32, i32, i32) = (
-        equipment.values().map(|i| i.attack).sum(),
-        equipment.values().map(|i| i.magic).sum(),
-        equipment.values().map(|i| i.spirit).sum(),
-        equipment.values().map(|i| i.defense).sum(),
+        equipment.values().filter(ok).map(|i| i.attack).sum(),
+        equipment.values().filter(ok).map(|i| i.magic).sum(),
+        equipment.values().filter(ok).map(|i| i.spirit).sum(),
+        equipment.values().filter(ok).map(|i| i.defense).sum(),
     );
     e.with_children(|body| {
         // 主区: 左列 4 槽 | 中央立绘+名字 (flex_grow 撑满) | 右列 4 槽

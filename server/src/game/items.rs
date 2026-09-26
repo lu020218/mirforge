@@ -15,7 +15,8 @@ impl Game {
         let mut gained = Vec::new();
         for d in drops {
             if self.rand01() < d.chance {
-                if let Some(item) = make_item(&d.item) {
+                if let Some(mut item) = make_item(&d.item) {
+                    self.roll_rare(&mut item);
                     gained.push(item);
                 }
             }
@@ -165,6 +166,172 @@ impl Game {
     }
 
     /// 推送背包与装备
+    /// 掉落滚极品: 按模板概率命中后, 在非零属性上随机分配 1..=上限 点
+    pub(super) fn roll_rare(&mut self, item: &mut protocol::ItemInfo) {
+        let Some(def) = item_def(&item.template) else {
+            return;
+        };
+        if def.rare_chance <= 0.0 || self.rand01() >= def.rare_chance {
+            return;
+        }
+        // 可加点的属性槽 (0攻 1魔 2道 3防 4HP), 只挑基础非零的
+        let mut slots = Vec::new();
+        for (i, v) in [item.attack, item.magic, item.spirit, item.defense, item.hp]
+            .iter()
+            .enumerate()
+        {
+            if *v > 0 {
+                slots.push(i);
+            }
+        }
+        if slots.is_empty() {
+            return;
+        }
+        let points = 1 + (self.rand01() * def.rare_max.max(1) as f64) as i32;
+        for _ in 0..points.min(def.rare_max.max(1)) {
+            let pick = slots[(self.rand01() * slots.len() as f64) as usize % slots.len()];
+            match pick {
+                0 => item.attack += 1,
+                1 => item.magic += 1,
+                2 => item.spirit += 1,
+                3 => item.defense += 1,
+                _ => item.hp += 1,
+            }
+            item.bonus += 1;
+        }
+    }
+
+    /// 武器损耗: 每次出手 1/8 概率 -1; 归零通知损坏 (属性即刻失效)
+    pub(super) async fn wear_weapon(&mut self, char_id: &str) {
+        if self.rand01() >= 0.125 {
+            return;
+        }
+        let mut broke = None;
+        {
+            let Some(p) = self.players.get_mut(char_id) else {
+                return;
+            };
+            let Some(w) = p.equipment.get_mut("weapon") else {
+                return;
+            };
+            if w.max_dur <= 0 || w.dur <= 0 {
+                return;
+            }
+            w.dur -= 1;
+            if w.dur == 0 {
+                broke = Some(w.name.clone());
+            }
+            p.recalc();
+        }
+        self.persist_items_gold(char_id).await;
+        self.send_inventory(char_id).await;
+        if let Some(name) = broke {
+            let conn = match self.players.get(char_id) {
+                Some(p) => p.conn_id.clone(),
+                None => return,
+            };
+            self.notify(&conn, &format!("你的 {name} 已损坏, 找修理商修理"))
+                .await;
+        }
+    }
+
+    /// 防具损耗: 被击中 1/10 概率随机一件非武器装备 -1
+    pub(super) async fn wear_armor(&mut self, char_id: &str) {
+        if self.rand01() >= 0.1 {
+            return;
+        }
+        let roll = self.rand01();
+        let mut broke = None;
+        {
+            let Some(p) = self.players.get_mut(char_id) else {
+                return;
+            };
+            let mut keys: Vec<String> = p
+                .equipment
+                .iter()
+                .filter(|(k, i)| k.as_str() != "weapon" && i.max_dur > 0 && i.dur > 0)
+                .map(|(k, _)| k.clone())
+                .collect();
+            if keys.is_empty() {
+                return;
+            }
+            keys.sort(); // HashMap 遍历序不稳定, 排序后取随机才可复现
+            let k = keys[(roll * keys.len() as f64) as usize % keys.len()].clone();
+            if let Some(it) = p.equipment.get_mut(&k) {
+                it.dur -= 1;
+                if it.dur == 0 {
+                    broke = Some(it.name.clone());
+                }
+            }
+            p.recalc();
+        }
+        self.persist_items_gold(char_id).await;
+        self.send_inventory(char_id).await;
+        if let Some(name) = broke {
+            let conn = match self.players.get(char_id) {
+                Some(p) => p.conn_id.clone(),
+                None => return,
+            };
+            self.notify(&conn, &format!("你的 {name} 已损坏, 找修理商修理"))
+                .await;
+        }
+    }
+
+    /// 一键修理身上全部装备: 费用 = Σ 损耗点 × max(1, 单价/耐久上限)
+    pub(super) async fn handle_repair(&mut self, conn_id: &str, npc_id: &str) {
+        if self.npc_in_reach(conn_id, npc_id).is_none() {
+            return self.notify(conn_id, "离修理商太远了").await;
+        }
+        let Some(char_id) = self.char_by_conn(conn_id) else {
+            return;
+        };
+        let cost: u64 = {
+            let Some(p) = self.players.get(&char_id) else {
+                return;
+            };
+            p.equipment
+                .values()
+                .filter(|i| i.max_dur > 0 && i.dur < i.max_dur)
+                .map(|i| {
+                    let price = item_def(&i.template).map(|d| d.price).unwrap_or(0) as u64;
+                    let per = (price / i.max_dur.max(1) as u64).max(1);
+                    (i.max_dur - i.dur) as u64 * per
+                })
+                .sum()
+        };
+        if cost == 0 {
+            return self.notify(conn_id, "装备完好, 无需修理").await;
+        }
+        let paid = {
+            let Some(p) = self.players.get_mut(&char_id) else {
+                return;
+            };
+            if p.gold < cost {
+                false
+            } else {
+                p.gold -= cost;
+                for it in p.equipment.values_mut() {
+                    if it.max_dur > 0 {
+                        it.dur = it.max_dur;
+                    }
+                }
+                p.recalc();
+                true
+            }
+        };
+        if !paid {
+            return self
+                .notify(conn_id, &format!("修理需要 {cost} 金币, 金币不足"))
+                .await;
+        }
+        self.persist_items_gold(&char_id).await;
+        self.send_inventory(&char_id).await;
+        let gold = self.players.get(&char_id).map(|p| p.gold).unwrap_or(0);
+        self.send_gold(conn_id, gold).await;
+        self.notify(conn_id, &format!("修理完成, 花费 {cost} 金币"))
+            .await;
+    }
+
     /// 存物品进仓库: 需在该 NPC 交谈距离内
     pub(super) async fn handle_store_item(&mut self, conn_id: &str, npc_id: &str, item_id: &str) {
         if self.npc_in_reach(conn_id, npc_id).is_none() {

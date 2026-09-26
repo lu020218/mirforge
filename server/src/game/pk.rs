@@ -158,6 +158,9 @@ impl Game {
             },
         )
         .await;
+        if !dead {
+            self.wear_armor(target).await; // 被击防具损耗 (致死那下不磨, 尸体免伤)
+        }
         if dead {
             if let Some(p) = self.players.get_mut(target) {
                 p.hp = 0;

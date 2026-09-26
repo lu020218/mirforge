@@ -171,7 +171,7 @@
       <div id="err-items" class="err-msg"></div>
       <div class="card-box">
         <table id="item-table">
-          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>魔法</th><th>道术</th><th>防御</th><th>HP</th><th title="商店基准价; 回收价 = 基准价 × 50%">价格</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
+          <thead><tr><th>template</th><th>名称</th><th>槽位</th><th>攻击</th><th>魔法</th><th>道术</th><th>防御</th><th>HP</th><th title="商店基准价; 回收价 = 基准价 × 50%">价格</th><th title="怪物掉落时判定极品的概率 (0~1)">极品率</th><th title="极品附加点数上限 (在非零属性上随机分配)">极品上限</th><th title="耐久上限; 0=无耐久 (药品等)">耐久</th><th>图标帧</th><th>外观</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -825,8 +825,8 @@ async function openPkModal(idx, url) {
 function closePkModal(ev) { if (ev.target.id === 'pk-modal') ev.target.classList.remove('on'); }
 
 // ── 物品 ──
-const ITEM_COLS = ['template','name','slot','attack','magic','spirit','defense','hp','price','image','shape'];
-const NUM_COLS = new Set(['attack','magic','spirit','defense','hp','price','image','shape']);
+const ITEM_COLS = ['template','name','slot','attack','magic','spirit','defense','hp','price','rare_chance','rare_max','durability','image','shape'];
+const NUM_COLS = new Set(['attack','magic','spirit','defense','hp','price','rare_chance','rare_max','durability','image','shape']);
 function itemRow(it) {
   const tr = document.createElement('tr');
   tr.innerHTML = ITEM_COLS.map(c => {
@@ -849,7 +849,7 @@ function itemRow(it) {
 }
 function addItemRow() {
   document.querySelector('#item-table tbody').appendChild(itemRow(
-    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, magic: 0, spirit: 0, defense: 0, hp: 0, price: 0, image: 0, shape: 0 }));
+    { template: 'new_item', name: '新物品', slot: 'weapon', attack: 0, magic: 0, spirit: 0, defense: 0, hp: 0, price: 0, rare_chance: 0.05, rare_max: 3, durability: 20, image: 0, shape: 0 }));
 }
 function collectItems() {
   return [...document.querySelectorAll('#item-table tbody tr')].map(tr => {
@@ -1131,7 +1131,7 @@ function collectSkills() {
 }
 
 // ── NPC ──
-const NPC_KINDS = { talk: '对话', shop: '商店', quest: '任务', storage: '仓库' };
+const NPC_KINDS = { talk: '对话', shop: '商店', quest: '任务', storage: '仓库', repair: '修理' };
 function npcRow(n) {
   const tr = document.createElement('tr');
   tr.innerHTML = `
@@ -1281,8 +1281,8 @@ function shopSection(tr) {
 }
 
 // ── NPC 对话编辑 (行内手风琴, 与地图设置同一交互语言) ──
-const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', shop: '打开商店', storage: '打开仓库', teleport: '传送', close: '结束对话' };
-const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', shop: '', storage: '', teleport: '地图:x:y', close: '' };
+const DLG_ACTIONS = { page: '跳到指定页', quest_accept: '接取任务', quest_complete: '交付任务', shop: '打开商店', storage: '打开仓库', repair: '修理装备', teleport: '传送', close: '结束对话' };
+const DLG_ARG_HINT = { page: '目标页号', quest_accept: '任务 id', quest_complete: '任务 id', shop: '', storage: '', repair: '', teleport: '地图:x:y', close: '' };
 
 /// 对话数据挂在行元素上 (tr._dialogs), 这样切页/收起编辑器都不会丢
 function npcDialogsOf(tr) { return tr._dialogs || (tr._dialogs = []); }
